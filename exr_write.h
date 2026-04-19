@@ -152,11 +152,17 @@ inline void zip_preprocess(const uint8_t* src, uint8_t* dst, size_t n) {
     }
 }
 
-// Write an RGBA half-float EXR with ZIP compression. Pixels are tightly
-// packed: `pixels[y*w + x]` is RGBA in that order, half-float (16-bit).
-// GL convention is bottom-up; EXR's INCREASING_Y is top-to-bottom, so we
-// flip as we build each chunk.
-inline bool write_rgba_half(const char* path, int w, int h, const uint16_t* rgba) {
+enum class Compression : uint8_t { NONE = 0, ZIP = 3 };
+
+// Write an RGBA half-float EXR. Pixels are tightly packed: `pixels[y*w + x]`
+// is RGBA in that order, half-float (16-bit). GL convention is bottom-up;
+// EXR's INCREASING_Y is top-to-bottom, so we flip as we build each chunk.
+//
+// Compression:
+//   ZIP  — 16 scanlines/chunk, reorder+delta+zlib (Z_BEST_SPEED). ~2-3× smaller.
+//   NONE — 1 scanline/chunk, raw bytes. Much faster to write, larger files.
+inline bool write_rgba_half(const char* path, int w, int h, const uint16_t* rgba,
+                            Compression comp = Compression::ZIP) {
     FILE* f = std::fopen(path, "wb");
     if (!f) return false;
 
@@ -166,7 +172,7 @@ inline bool write_rgba_half(const char* path, int w, int h, const uint16_t* rgba
     std::fwrite(&version, 4, 1, f);
 
     wr_attr_channels_RGBA(f);
-    wr_attr_compression(f, 3);    // ZIP_COMPRESSION
+    wr_attr_compression(f, (uint8_t)comp);
     wr_attr_box2i(f, "dataWindow",    0, 0, w - 1, h - 1);
     wr_attr_box2i(f, "displayWindow", 0, 0, w - 1, h - 1);
     wr_attr_lineorder(f);
@@ -177,8 +183,8 @@ inline bool write_rgba_half(const char* path, int w, int h, const uint16_t* rgba
     uint8_t hdr_term = 0;
     std::fwrite(&hdr_term, 1, 1, f);
 
-    // ZIP uses fixed 16-line chunks.
-    const int LINES_PER_CHUNK = 16;
+    // Spec: ZIP uses 16-line chunks; NO_COMPRESSION uses 1-line chunks.
+    const int LINES_PER_CHUNK = (comp == Compression::ZIP) ? 16 : 1;
     const int nChunks = (h + LINES_PER_CHUNK - 1) / LINES_PER_CHUNK;
     const size_t scanlineBytes = (size_t)w * 4 * 2;  // RGBA × 2 bytes
     const size_t maxChunkBytes = scanlineBytes * LINES_PER_CHUNK;
@@ -191,8 +197,9 @@ inline bool write_rgba_half(const char* path, int w, int h, const uint16_t* rgba
     }
 
     std::vector<uint8_t> uncompressed(maxChunkBytes);
-    std::vector<uint8_t> preprocessed(maxChunkBytes);
-    std::vector<uint8_t> compressed(compressBound((uLong)maxChunkBytes));
+    std::vector<uint8_t> preprocessed(comp == Compression::ZIP ? maxChunkBytes : 0);
+    std::vector<uint8_t> compressed(comp == Compression::ZIP
+                                    ? compressBound((uLong)maxChunkBytes) : 0);
     std::vector<uint64_t> offsets(nChunks);
 
     for (int c = 0; c < nChunks; c++) {
@@ -223,20 +230,24 @@ inline bool write_rgba_half(const char* path, int w, int h, const uint16_t* rgba
             base += scanlineBytes;
         }
 
-        // Reorder + delta, then zlib-compress into the output buffer.
-        zip_preprocess(uncompressed.data(), preprocessed.data(), chunkBytes);
-        uLong compSize = (uLong)compressed.size();
-        int z = compress2(compressed.data(), &compSize,
-                          preprocessed.data(), (uLong)chunkBytes,
-                          Z_BEST_SPEED);
-        if (z != Z_OK) { std::fclose(f); return false; }
-
-        // EXR rule: if compressed isn't smaller, store uncompressed raw chunk.
         const uint8_t* outBuf;
         size_t outBytes;
-        if ((size_t)compSize < chunkBytes) {
-            outBuf = compressed.data();
-            outBytes = (size_t)compSize;
+        if (comp == Compression::ZIP) {
+            // Reorder + delta, then zlib-compress.
+            zip_preprocess(uncompressed.data(), preprocessed.data(), chunkBytes);
+            uLong compSize = (uLong)compressed.size();
+            int z = compress2(compressed.data(), &compSize,
+                              preprocessed.data(), (uLong)chunkBytes,
+                              Z_BEST_SPEED);
+            if (z != Z_OK) { std::fclose(f); return false; }
+            // EXR rule: if compressed isn't smaller, store uncompressed raw chunk.
+            if ((size_t)compSize < chunkBytes) {
+                outBuf = compressed.data();
+                outBytes = (size_t)compSize;
+            } else {
+                outBuf = uncompressed.data();
+                outBytes = chunkBytes;
+            }
         } else {
             outBuf = uncompressed.data();
             outBytes = chunkBytes;

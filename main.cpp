@@ -51,6 +51,10 @@ struct Cfg {
     bool vsync = true;
     int  playerFps = 60;            // hard cap on display loop; 0 = uncapped
     int  recFps = 0;                // 0 = follow playerFps (or 60 if uncapped)
+    // Recorder RAM / compression knobs — passed through to Recorder::Config.
+    int  recRamMB = 0;              // 0 = auto (min(free/4, 8 GB))
+    int  recEncoders = 0;           // 0 = auto (hw_concurrency - 2, clamped)
+    bool recUncompressed = false;   // write uncompressed EXR
 };
 
 static void print_cli_help() {
@@ -68,6 +72,9 @@ static void print_cli_help() {
       "  --vsync on|off      vsync (default: on)\n"
       "  --fps N             cap display loop to N fps, 0=uncapped (default: 60)\n"
       "  --rec-fps N         recording framerate metadata tag (default: follow --fps)\n"
+      "  --rec-ram-gb N      RAM buffer for recording, GB (default: auto, capped at 8)\n"
+      "  --rec-encoders N    encoder threads for EXR writes (default: auto)\n"
+      "  --rec-uncompressed  write uncompressed EXR — larger files, much faster writes\n"
       "  -h, --help          show this help\n\n"
       "Examples:\n"
       "  feedback --fullscreen\n"
@@ -93,6 +100,9 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--vsync"))        { c.vsync = (strcmp(next(), "on") == 0); }
         else if (eq("--fps"))          { c.playerFps = atoi(next()); if (c.playerFps < 0) c.playerFps = 0; }
         else if (eq("--rec-fps"))      { c.recFps = atoi(next()); if (c.recFps < 1) c.recFps = 60; }
+        else if (eq("--rec-ram-gb"))   { int g = atoi(next()); if (g > 0) c.recRamMB = g * 1024; }
+        else if (eq("--rec-encoders")) { int n = atoi(next()); if (n > 0) c.recEncoders = n; }
+        else if (eq("--rec-uncompressed")) { c.recUncompressed = true; }
         else if (eq("-h") || eq("--help")) { print_cli_help(); exit(0); }
         else { fprintf(stderr, "[cli] unknown arg: %s\n", argv[i]); print_cli_help(); exit(1); }
     }
@@ -1036,8 +1046,13 @@ static void key_cb(GLFWwindow* w, int key, int, int action, int mods) {
                     S.recordingsThisSession.push_back(S.rec.lastDir());
                 S.ov.logEvent("recording: stopped");
             }
-            else                { S.rec.start(S.simW, S.simH,
-                                                g_cfg.recFps, g_cfg.precision, S.win);
+            else                { Recorder::Config rcfg{};
+                                  rcfg.ramBudgetMB   = g_cfg.recRamMB;
+                                  rcfg.encoderThreads = g_cfg.recEncoders;
+                                  rcfg.uncompressed  = g_cfg.recUncompressed;
+                                  S.rec.start(S.simW, S.simH,
+                                              g_cfg.recFps, g_cfg.precision,
+                                              S.win, rcfg);
                                   S.ov.logEvent("recording: started"); }
             return;
 
