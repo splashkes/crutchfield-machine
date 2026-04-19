@@ -5,9 +5,6 @@ feedback.exe
 # Recorded output (EXR sequences + encoded MP4s are large)
 recordings/
 
-# Auto-saved preset snapshots
-presets/auto_*.ini
-
 # OS junk
 Thumbs.db
 .DS_Store
