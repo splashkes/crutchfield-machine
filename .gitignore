@@ -11,3 +11,6 @@ presets/auto_*.ini
 # OS junk
 Thumbs.db
 .DS_Store
+
+# Claude session state
+.claude/
