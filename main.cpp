@@ -1440,9 +1440,12 @@ static std::string human_bytes(uint64_t b) {
     return buf;
 }
 
-// Read manifest.txt to recover sim resolution and fps for encoder args.
-static bool read_manifest(const std::string& dir, int& w, int& h, int& fps) {
+// Read manifest.txt to recover sim resolution, fps, and drop stats.
+// framesDropped defaults to 0 for manifests that predate that field.
+static bool read_manifest(const std::string& dir, int& w, int& h, int& fps,
+                          int& framesDropped) {
     w = h = fps = 0;
+    framesDropped = 0;
     FILE* f = std::fopen((fs::path(dir) / "manifest.txt").string().c_str(), "r");
     if (!f) return false;
     char line[256];
@@ -1453,6 +1456,9 @@ static bool read_manifest(const std::string& dir, int& w, int& h, int& fps) {
         } else if (std::strncmp(line, "fps", 3) == 0) {
             const char* eq = std::strchr(line, '=');
             if (eq) std::sscanf(eq + 1, " %d", &fps);
+        } else if (std::strncmp(line, "frames_dropped", 14) == 0) {
+            const char* eq = std::strchr(line, '=');
+            if (eq) std::sscanf(eq + 1, " %d", &framesDropped);
         }
     }
     std::fclose(f);
@@ -1507,7 +1513,7 @@ static const char* encoder_label(Encoder e) {
 }
 
 static void run_ffmpeg_encode(const std::string& dir, const EncodePreset& p,
-                              int srcW, int srcH, int fps,
+                              int srcW, int srcH, double fps,
                               const std::string& filenameSuffix = "") {
     (void)srcW; (void)srcH;
     Encoder enc = pick_encoder(p);
@@ -1553,7 +1559,7 @@ static void run_ffmpeg_encode(const std::string& dir, const EncodePreset& p,
 
     char cmd[2048];
     std::snprintf(cmd, sizeof cmd,
-        "ffmpeg -y -framerate %d -i \"%s/frame_%%06d.exr\" "
+        "ffmpeg -y -framerate %g -i \"%s/frame_%%06d.exr\" "
         "%s %s"
         "-pix_fmt yuv420p \"%s\"",
         fps, dir.c_str(), encArgs, vfArg, outPath.c_str());
@@ -1580,15 +1586,27 @@ static void encode_prompt(const std::vector<std::string>& dirs) {
     std::printf("  Recordings captured this session\n");
     std::printf("════════════════════════════════════════════════════════════\n");
 
-    struct Entry { std::string dir; int w, h, fps, frames; uint64_t bytes; };
+    struct Entry {
+        std::string dir;
+        int w, h, fps, frames, dropped;
+        uint64_t bytes;
+        double realFps;   // effective capture rate (= fps if no drops)
+    };
     std::vector<Entry> entries;
     for (auto& d : dirs) {
         if (!fs::exists(d)) continue;
         Entry e;
         e.dir = d;
-        if (!read_manifest(d, e.w, e.h, e.fps)) continue;
+        if (!read_manifest(d, e.w, e.h, e.fps, e.dropped)) continue;
         e.frames = dir_frame_count(d);
         e.bytes = dir_size_bytes(d);
+        // If the recorder dropped frames (disk couldn't keep up), the file
+        // manifest's nominal fps will play back too fast. Scale to the
+        // effective capture rate so playback matches wall-clock.
+        int total = e.frames + e.dropped;
+        e.realFps = (e.dropped > 0 && total > 0)
+            ? (double)e.fps * (double)e.frames / (double)total
+            : (double)e.fps;
         entries.push_back(e);
     }
     if (entries.empty()) {
@@ -1598,10 +1616,16 @@ static void encode_prompt(const std::vector<std::string>& dirs) {
 
     for (size_t i = 0; i < entries.size(); i++) {
         const auto& e = entries[i];
-        double dur = (e.fps > 0) ? (double)e.frames / e.fps : 0.0;
+        double dur = (e.realFps > 0) ? (double)e.frames / e.realFps : 0.0;
         std::printf("\n  [%zu] %s\n", i + 1, e.dir.c_str());
         std::printf("      %dx%d @ %d fps,  %d frames (~%.1f sec),  %s on disk\n",
                     e.w, e.h, e.fps, e.frames, dur, human_bytes(e.bytes).c_str());
+        if (e.dropped > 0) {
+            double dropPct = 100.0 * (double)e.dropped / (double)(e.frames + e.dropped);
+            std::printf("      WARNING: %d dropped frame(s) (%.1f%%). Encoding at real %.2f fps "
+                        "so playback matches wall-clock.\n",
+                        e.dropped, dropPct, e.realFps);
+        }
     }
 
     std::printf("\n");
@@ -1654,12 +1678,12 @@ static void encode_prompt(const std::vector<std::string>& dirs) {
             for (int k = 0; k < N_PRESETS; k++) {
                 const auto& pk = PRESETS[k];
                 if (pk.kind != PresetKind::Normal) continue;
-                run_ffmpeg_encode(e.dir, pk, e.w, e.h, e.fps, preset_suffix(pk));
+                run_ffmpeg_encode(e.dir, pk, e.w, e.h, e.realFps, preset_suffix(pk));
             }
             continue;
         }
 
-        run_ffmpeg_encode(e.dir, p, e.w, e.h, e.fps);
+        run_ffmpeg_encode(e.dir, p, e.w, e.h, e.realFps);
     }
 
     std::printf("\nAll done. EXR sources remain in their directories.\n");
