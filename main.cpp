@@ -973,40 +973,28 @@ static bool save_screenshot(GLuint fbo, int w, int h) {
 }
 
 // ── music-mode helpers ───────────────────────────────────────────────────
-// Small glue around loopMIDI + the Strudel website, used both by the startup
-// picker's "Music mode" and by the runtime Ctrl+M shortcut.
+// Glue between the app and a running Strudel session.
 //
-// loopMIDI auto-launch strategy:
-//   1. Look for loopMIDI.exe next to feedback.exe (so bundling it into a
-//      release zip "just works" without the user installing anything).
-//   2. Try the standard Program Files install locations.
-//   3. If none exist, print a one-line hint pointing at the download URL.
+// How the integration works: feedback.exe registers itself as a virtual
+// MIDI port called "feedback" via teVirtualMIDI (the driver ships with
+// loopMIDI and is auto-loaded at boot). Strudel's Web MIDI sees the port
+// directly — the user just writes `.midi("feedback")` and it works.
+// The loopMIDI GUI never needs to open.
 //
-// "Is loopMIDI already running?" is a heuristic — we just check
-// midiInGetNumDevs(). If any MIDI port exists we assume the user already
-// has their bridge configured; we don't pile another instance onto it.
+// The only thing we might need to do at runtime: install the driver if
+// it's missing. That's a one-time winget step.
 
 #ifdef _WIN32
-static std::string music_find_loopmidi_path() {
-    // 1. Adjacent to our exe.
-    if (!g_shader_base.empty()) {
-        std::string adj = g_shader_base + "loopMIDI.exe";
-        if (GetFileAttributesA(adj.c_str()) != INVALID_FILE_ATTRIBUTES)
-            return adj;
-    }
-    // 2. Standard install paths.
-    const char* paths[] = {
-        "C:\\Program Files (x86)\\Tobias Erichsen\\loopMIDI\\loopMIDI.exe",
-        "C:\\Program Files\\Tobias Erichsen\\loopMIDI\\loopMIDI.exe",
-    };
-    for (const char* p : paths) {
-        if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return p;
-    }
-    return "";
+static bool driver_installed() {
+    // teVirtualMIDI64.dll ships with loopMIDI and lives in System32 after
+    // install. Presence of the file is our "driver ready" signal.
+    return GetFileAttributesA("C:\\Windows\\System32\\teVirtualMIDI64.dll")
+           != INVALID_FILE_ATTRIBUTES;
 }
 
-// Silent (well — UAC-prompted) winget install. Returns true if the package
-// was installed or was already present. Blocks up to ~3 minutes.
+// winget-based installer for the loopMIDI package, which contains the
+// driver we actually want. UAC prompt appears; all other agreements
+// auto-accepted. Blocks up to ~3 min.
 static bool winget_install(const char* packageId) {
     std::printf("[music] invoking winget to install %s (accept the UAC prompt)…\n",
                 packageId);
@@ -1026,7 +1014,7 @@ static bool winget_install(const char* packageId) {
         std::fprintf(stderr, "[music] winget not available on this system\n");
         return false;
     }
-    DWORD wait = WaitForSingleObject(sei.hProcess, 180000);  // 3 min
+    DWORD wait = WaitForSingleObject(sei.hProcess, 180000);
     DWORD exitCode = 1;
     GetExitCodeProcess(sei.hProcess, &exitCode);
     CloseHandle(sei.hProcess);
@@ -1034,8 +1022,7 @@ static bool winget_install(const char* packageId) {
         std::fprintf(stderr, "[music] winget install timed out\n");
         return false;
     }
-    // winget returns 0 for success, 0x8A15002B when already installed.
-    if (exitCode == 0 || exitCode == 0x8A15002B) {
+    if (exitCode == 0 || exitCode == 0x8A15002B) {   // 0x8A15002B = already installed
         std::printf("[music] winget install succeeded (exit 0x%lx)\n",
                     (unsigned long)exitCode);
         return true;
@@ -1045,56 +1032,31 @@ static bool winget_install(const char* packageId) {
     return false;
 }
 
-// Returns true if a port was already live or we successfully launched
-// something that brought one online.
-static bool music_launch_loopmidi() {
-    if (midiInGetNumDevs() > 0) {
-        std::printf("[music] MIDI port already present — skipping loopMIDI launch\n");
-        return true;
-    }
-    std::string path = music_find_loopmidi_path();
-
-    // If loopMIDI isn't installed, offer to winget-install it. The UAC
-    // prompt makes this explicit to the user; no silent install.
-    if (path.empty()) {
-        std::printf("[music] loopMIDI not found — attempting winget install…\n");
-        if (winget_install("TobiasErichsen.loopMIDI")) {
-            path = music_find_loopmidi_path();
-        }
-    }
-
-    if (path.empty()) {
+// Ensure the teVirtualMIDI driver is present. If missing, winget-install
+// loopMIDI (which bundles the driver). Returns true if the driver is
+// ready to use.
+static bool music_ensure_driver() {
+    if (driver_installed()) return true;
+    std::printf("[music] MIDI driver not found — installing loopMIDI "
+                "(its driver is what Strudel will route through)…\n");
+    if (!winget_install("TobiasErichsen.loopMIDI")) {
         std::fprintf(stderr,
-            "[music] loopMIDI still not found. Install manually from:\n"
-            "        https://www.tobias-erichsen.de/software/loopmidi.html\n"
-            "        (opening the page in your browser)\n");
+            "[music] Couldn't install automatically. Install manually from:\n"
+            "        https://www.tobias-erichsen.de/software/loopmidi.html\n");
         ShellExecuteA(nullptr, "open",
             "https://www.tobias-erichsen.de/software/loopmidi.html",
             nullptr, nullptr, SW_SHOWNORMAL);
         return false;
     }
-
-    HINSTANCE r = ShellExecuteA(nullptr, "open", path.c_str(),
-                                nullptr, nullptr, SW_SHOWMINIMIZED);
-    if ((INT_PTR)r <= 32) {
-        std::fprintf(stderr, "[music] ShellExecute failed (%ld) on %s\n",
-                     (long)(INT_PTR)r, path.c_str());
+    // Post-install verify.
+    if (!driver_installed()) {
+        std::fprintf(stderr,
+            "[music] winget reported success but driver DLL is still missing.\n"
+            "        A reboot may be required to finish driver registration.\n");
         return false;
     }
-    std::printf("[music] launched %s — waiting for it to open a port…\n",
-                path.c_str());
-    // loopMIDI restores its saved ports automatically, but needs a moment.
-    for (int i = 0; i < 50; i++) {   // up to ~5s (fresh install is slower)
-        Sleep(100);
-        if (midiInGetNumDevs() > 0) {
-            std::printf("[music] port online after %d ms\n", (i + 1) * 100);
-            return true;
-        }
-    }
-    std::fprintf(stderr,
-        "[music] loopMIDI launched but no port appeared. Open the loopMIDI\n"
-        "        window and click + to create a port (default name is fine).\n");
-    return false;
+    std::printf("[music] driver installed. Virtual port will activate now.\n");
+    return true;
 }
 
 static void music_open_strudel() {
@@ -1104,25 +1066,23 @@ static void music_open_strudel() {
         std::fprintf(stderr, "[music] couldn't open browser (%ld)\n",
                      (long)(INT_PTR)r);
     else
-        std::printf("[music] opened https://strudel.cc/ — paste the MIDI\n"
-                    "        snippet from README and hit Play.\n");
+        std::printf("[music] opened https://strudel.cc/ — use .midi(\"feedback\")\n"
+                    "        in your pattern to route to this app.\n");
 }
 
-// Passive hint on every launch when no MIDI device is visible. Non-
-// intrusive; just a printf block so CLI users know what's missing.
+// Passive hint on every launch when the driver's absent. Silent when
+// everything's ready to go.
 static void music_startup_hint() {
-    if (midiInGetNumDevs() > 0) return;
+    if (driver_installed()) return;
     std::printf(
-        "\n[music] No MIDI input detected.\n"
-        "        To drive BPM + visual hits from Strudel (https://strudel.cc):\n"
-        "          Press Ctrl+M in-app — it will winget-install loopMIDI\n"
-        "          (free, ~1 MB), launch it, and you're done. First run needs\n"
-        "          you to click + in loopMIDI to create a port.\n"
-        "        Or run the startup picker's 'Music mode' option (#7) to do\n"
-        "        everything — install + launch + open strudel.cc.\n\n");
+        "\n[music] MIDI driver not present — Strudel integration is one click away:\n"
+        "        Press Ctrl+M in-app to winget-install the driver (free, ~1 MB),\n"
+        "        then the port 'feedback' appears automatically in Strudel.\n"
+        "        Pattern side: `s(\"bd\").midi(\"feedback\")`\n"
+        "        Startup picker's 'Music mode' (#7) does this plus opens Strudel.\n\n");
 }
 #else
-static bool music_launch_loopmidi() { return false; }
+static bool music_ensure_driver() { return false; }
 static void music_open_strudel() {}
 static void music_startup_hint() {}
 #endif
@@ -1172,7 +1132,7 @@ static void run_mode_picker(Cfg& c) {
             case '7': {
                 c.fullscreen = true;
                 printf("\n");
-                music_launch_loopmidi();
+                music_ensure_driver();
                 music_open_strudel();
                 return;
             }
@@ -1589,7 +1549,7 @@ static std::string section_bpm() {
             mi.portName.c_str());
     } else {
         snprintf(midiLine, sizeof midiLine,
-            "MIDI     : no port — press %s to launch loopMIDI",
+            "MIDI     : no port — press %s to install driver",
             keys_for(ACT_LAUNCH_LOOPMIDI).c_str());
     }
     char lastLine[160] = "";
@@ -2460,9 +2420,9 @@ static void apply_action(ActionId id, float mag) {
                                         : "bpm decay-dip: off"); return;
 
         case ACT_LAUNCH_LOOPMIDI:
-            S.ov.logEvent("launching loopMIDI...");
+            S.ov.logEvent("installing MIDI driver...");
 #ifdef _WIN32
-            music_launch_loopmidi();
+            music_ensure_driver();
 #endif
             return;
 
