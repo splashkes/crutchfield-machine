@@ -14,7 +14,7 @@ LDLIBS    = -lglfw3 -lglew32 -lopengl32 -lgdi32 \
             -lwinmm -lz \
             -static-libgcc -static-libstdc++ -pthread
 
-SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp
+SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp
 OBJS = $(SRCS:.cpp=.o)
 BIN  = feedback.exe
 

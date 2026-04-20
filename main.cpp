@@ -36,6 +36,7 @@
 #include "camera.h"
 #include "recorder.h"
 #include "overlay.h"
+#include "input.h"
 
 // ── runtime config (from CLI) ─────────────────────────────────────────────
 struct Cfg {
@@ -947,178 +948,346 @@ static void reload_shaders() {
     printf("[shaders] reloaded\n"); fflush(stdout);
 }
 
-static void key_cb(GLFWwindow* w, int key, int, int action, int mods) {
-    const bool press  = (action == GLFW_PRESS);
-    const bool rept   = (action == GLFW_PRESS || action == GLFW_REPEAT);
-    const bool shift  = (mods & GLFW_MOD_SHIFT) != 0;
+// ─────────────────────────────────────────────────────────────────────────
+// apply_action — single-source-of-truth mutator for every ActionId.
+//
+// All input sources (keyboard, gamepad C2, MIDI future) dispatch through
+// this function via the g_input callback. `mag` semantics:
+//   STEP  actions: signed step count including Shift's 20x multiplier,
+//                  i.e. +1.0 normal, +20.0 with Shift, -1.0 with invert.
+//                  apply_action scales by the per-parameter fine step.
+//   DISCRETE:      1.0 on fire.
+//   TRIGGER:       1.0 on press, 0.0 on release.
+//   RATE:          magnitude already integrated by the caller (C2 gamepad).
+//
+// Per-parameter step sizes preserved byte-for-byte from pre-refactor code.
+// ─────────────────────────────────────────────────────────────────────────
 
-    // Per-parameter fine step sizes, tuned for 60fps feedback dynamics.
-    // Shift multiplies by ~20 for coarse jumps. These are what makes the
-    // knobs feel like the trim pots on a physical mixer instead of a blunt
-    // instrument — tiny zoom changes produce wildly different cascades, so
-    // zoom/theta in particular want very fine control.
-    const float m = shift ? 20.0f : 1.0f;
-    const float sZoom    = 0.0002f * m;   // 0.02% per pass default
-    const float sTheta   = 0.0002f * m;   // ~0.01° per pass default
-    const float sTrans   = 0.0005f * m;
-    const float sChroma  = 0.0002f * m;
-    const float sBlurR   = 0.02f   * m;
-    const float sBlurA   = 0.005f  * m;
-    const float sGamma   = 0.01f   * m;
-    const float sHue     = 0.0002f * m;
-    const float sSat     = 0.002f  * m;
-    const float sContrast= 0.002f  * m;
-    const float sDecay   = 0.0005f * m;
-    const float sNoise   = 0.0002f * m;
-    const float sCouple  = 0.002f  * m;
-    const float sExt     = 0.002f  * m;
-    // physics step sizes — matched to each knob's useful range
-    const float sSensorG = 0.005f  * m;   // 0.5% per tick; Crutchfield span 0.6..0.9
-    const float sKnee    = 0.005f  * m;   // 0.5% per tick; range 0..1
-    const float sCross   = 0.002f  * m;   // 0.2% per tick; range 0..1
+// hud(): post one parameter change to the overlay with cumulative-burst
+// aggregation. Lifted out of the old key_cb so every action dispatch goes
+// through the same formatter regardless of source.
+static void hud_post(const char* key, const char* label,
+                     float rawDelta, float rawValue,
+                     float scaleD, const char* unitD,
+                     float scaleV, const char* unitV)
+{
+    static std::map<std::string, float>  cum;
+    static std::map<std::string, double> lastT;
+    double now = glfwGetTime();
+    if (now - lastT[key] > 6.0) cum[key] = 0;
+    cum[key] += rawDelta;
+    lastT[key] = now;
+    char d[64], v[64];
+    snprintf(d, sizeof d, "%+.3f %s", cum[key] * scaleD, unitD);
+    snprintf(v, sizeof v, "%+.3f %s", rawValue * scaleV, unitV);
+    S.ov.logParam(key, label, d, v);
+}
 
-    // layer toggles
-    for (const auto& li : LAYERS)
-        if (press && key == li.fkey) {
-            S.enable ^= li.bit;
-            bool on = (S.enable & li.bit) != 0;
-            printf("[%s] %s\n", li.name, on ? "ON" : "off");
-            char buf[64]; snprintf(buf, sizeof buf, "%s: %s", li.name, on ? "ON" : "off");
-            S.ov.logEvent(buf);
-            return;
-        }
+// Per-parameter fine step sizes, tuned for 60fps feedback dynamics. These
+// are multiplied by the incoming magnitude (which already includes Shift
+// coarse multiplier and any binding-level scale), so a Shift+Q becomes
+// `+20 * 0.0002 = +0.004` zoom units per press.
+namespace step {
+    constexpr float zoom    = 0.0002f;  // 0.02% per pass
+    constexpr float theta   = 0.0002f;  // ~0.01 deg per pass
+    constexpr float trans   = 0.0005f;
+    constexpr float chroma  = 0.0002f;
+    constexpr float blurR   = 0.02f;
+    constexpr float blurA   = 0.005f;
+    constexpr float gammaS  = 0.01f;
+    constexpr float hue     = 0.0002f;
+    constexpr float sat     = 0.002f;
+    constexpr float contrast= 0.002f;
+    constexpr float decay   = 0.0005f;
+    constexpr float noise   = 0.0002f;
+    constexpr float couple  = 0.002f;
+    constexpr float ext     = 0.002f;
+    constexpr float sensorG = 0.005f;
+    constexpr float knee    = 0.005f;
+    constexpr float cross   = 0.002f;
+    constexpr float thermAmp   = 0.002f;
+    constexpr float thermScale = 0.2f;
+    constexpr float thermSpeed = 0.1f;
+    constexpr float thermRise  = 0.02f;
+    constexpr float thermSwirl = 0.02f;
+}
 
-    if (press) switch (key) {
-        case GLFW_KEY_ESCAPE: glfwSetWindowShouldClose(w, 1); return;
-        case GLFW_KEY_P:
-            if (mods & GLFW_MOD_CONTROL) {
-                std::string n = preset_cycle(-1);
-                if (!n.empty()) {
-                    printf("[preset] loaded %s  (%d/%zu)\n", n.c_str(),
-                           g_currentPreset+1, g_presetFiles.size());
-                    char b[128]; snprintf(b, sizeof b, "preset: %s  (%d/%zu)",
-                                          n.c_str(), g_currentPreset+1, g_presetFiles.size());
-                    S.ov.logEvent(b);
-                } else {
-                    S.ov.logEvent("no presets in ./presets/");
-                }
-            } else {
-                S.paused = !S.paused;
-                printf("[%s]\n", S.paused ? "paused" : "running");
-                S.ov.logEvent(S.paused ? "paused" : "running");
-            }
-            return;
-        case GLFW_KEY_C: S.needClear = true; printf("[cleared]\n");
-                         S.ov.logEvent("cleared"); return;
-        case GLFW_KEY_BACKSLASH: reload_shaders();
-                                 S.ov.logEvent("shaders reloaded"); return;
-        case GLFW_KEY_H: S.ov.toggleHelp();
-                         printf("[help] %s\n", S.ov.helpVisible() ? "shown" : "hidden"); return;
-        case GLFW_KEY_SLASH: print_help(); return;   // '?' key (shifted /)
-        case GLFW_KEY_SPACE: {
-            S.p.inject = 1.0f;
-            static const char* names[] = {"H-bars","V-bars","dot","checker","gradient"};
-            printf("[inject pattern=%d]\n", S.p.pattern);
-            char buf[64]; snprintf(buf, sizeof buf, "inject: %s", names[S.p.pattern]);
-            S.ov.logEvent(buf); return;
-        }
-        case GLFW_KEY_1: S.p.pattern = 0; printf("[pattern] H-bars\n");
-                         S.ov.logEvent("pattern: H-bars"); return;
-        case GLFW_KEY_2: S.p.pattern = 1; printf("[pattern] V-bars\n");
-                         S.ov.logEvent("pattern: V-bars"); return;
-        case GLFW_KEY_3: S.p.pattern = 2; printf("[pattern] dot\n");
-                         S.ov.logEvent("pattern: dot"); return;
-        case GLFW_KEY_4: S.p.pattern = 3; printf("[pattern] checker\n");
-                         S.ov.logEvent("pattern: checker"); return;
-        case GLFW_KEY_5: S.p.pattern = 4; printf("[pattern] gradient\n");
-                         S.ov.logEvent("pattern: gradient"); return;
-        case GLFW_KEY_V: {
-            S.p.invert = 1 - S.p.invert;
-            printf("[invert] %s\n", S.p.invert ? "ON" : "off");
+static void apply_action(ActionId id, float mag) {
+    auto& p = S.p;
+
+    // Toggle layers via a small table lookup — replaces the old in-cb loop.
+    auto toggle_layer = [&](int bit, const char* name) {
+        S.enable ^= bit;
+        bool on = (S.enable & bit) != 0;
+        printf("[%s] %s\n", name, on ? "ON" : "off");
+        char buf[64]; snprintf(buf, sizeof buf, "%s: %s", name, on ? "ON" : "off");
+        S.ov.logEvent(buf);
+    };
+
+    switch (id) {
+        // ── layer toggles ─────────────────────────────────────────
+        case ACT_LAYER_WARP:     toggle_layer(L_WARP,     "warp");     return;
+        case ACT_LAYER_OPTICS:   toggle_layer(L_OPTICS,   "optics");   return;
+        case ACT_LAYER_GAMMA:    toggle_layer(L_GAMMA,    "gamma");    return;
+        case ACT_LAYER_COLOR:    toggle_layer(L_COLOR,    "color");    return;
+        case ACT_LAYER_CONTRAST: toggle_layer(L_CONTRAST, "contrast"); return;
+        case ACT_LAYER_DECAY:    toggle_layer(L_DECAY,    "decay");    return;
+        case ACT_LAYER_NOISE:    toggle_layer(L_NOISE,    "noise");    return;
+        case ACT_LAYER_COUPLE:   toggle_layer(L_COUPLE,   "couple");   return;
+        case ACT_LAYER_EXTERNAL: toggle_layer(L_EXTERNAL, "external"); return;
+        case ACT_LAYER_INJECT:   toggle_layer(L_INJECT,   "inject");   return;
+        case ACT_LAYER_PHYSICS:  toggle_layer(L_PHYSICS,  "physics");  return;
+        case ACT_LAYER_THERMAL:  toggle_layer(L_THERMAL,  "thermal");  return;
+
+        // ── warp ──────────────────────────────────────────────────
+        case ACT_ZOOM_UP:   { float d = step::zoom * mag; p.zoom += d;
+            hud_post("zoom","zoom", d, p.zoom-1.0f, 100.f,"% /pass", 100.f,"% /pass"); break; }
+        case ACT_ZOOM_DN:   { float d = -step::zoom * mag; p.zoom += d;
+            hud_post("zoom","zoom", d, p.zoom-1.0f, 100.f,"% /pass", 100.f,"% /pass"); break; }
+        case ACT_THETA_UP:  { float d = step::theta * mag; p.theta += d;
+            hud_post("theta","rotation", d, p.theta, 57.2958f,"deg/pass", 57.2958f*60.f,"deg/s"); break; }
+        case ACT_THETA_DN:  { float d = -step::theta * mag; p.theta += d;
+            hud_post("theta","rotation", d, p.theta, 57.2958f,"deg/pass", 57.2958f*60.f,"deg/s"); break; }
+        case ACT_TRANS_LEFT:  { float d = -step::trans * mag; p.transX += d;
+            hud_post("trX","trans-X", d, p.transX, 100.f,"% /pass", 100.f,"% of frame"); break; }
+        case ACT_TRANS_RIGHT: { float d =  step::trans * mag; p.transX += d;
+            hud_post("trX","trans-X", d, p.transX, 100.f,"% /pass", 100.f,"% of frame"); break; }
+        case ACT_TRANS_UP:    { float d = -step::trans * mag; p.transY += d;
+            hud_post("trY","trans-Y", d, p.transY, 100.f,"% /pass", 100.f,"% of frame"); break; }
+        case ACT_TRANS_DN:    { float d =  step::trans * mag; p.transY += d;
+            hud_post("trY","trans-Y", d, p.transY, 100.f,"% /pass", 100.f,"% of frame"); break; }
+
+        // ── optics ────────────────────────────────────────────────
+        case ACT_CHROMA_UP: { float d =  step::chroma * mag; p.chroma += d;
+            hud_post("chr","chroma", d, p.chroma, 1000.f,"milli", 1000.f,"milli"); break; }
+        case ACT_CHROMA_DN: { float d = -step::chroma * mag; p.chroma += d;
+            hud_post("chr","chroma", d, p.chroma, 1000.f,"milli", 1000.f,"milli"); break; }
+        case ACT_BLURX_UP:  { float d =  step::blurR * mag; p.blurX += d;
+            hud_post("blrX","blur-X", d, p.blurX, 1.f,"px", 1.f,"px"); break; }
+        case ACT_BLURX_DN:  { float d = -step::blurR * mag; p.blurX += d;
+            hud_post("blrX","blur-X", d, p.blurX, 1.f,"px", 1.f,"px"); break; }
+        case ACT_BLURY_UP:  { float d =  step::blurR * mag; p.blurY += d;
+            hud_post("blrY","blur-Y", d, p.blurY, 1.f,"px", 1.f,"px"); break; }
+        case ACT_BLURY_DN:  { float d = -step::blurR * mag; p.blurY += d;
+            hud_post("blrY","blur-Y", d, p.blurY, 1.f,"px", 1.f,"px"); break; }
+        case ACT_BLURANG_UP:{ float d =  step::blurA * mag; p.blurAngle += d;
+            hud_post("blrA","blur-ang", d, p.blurAngle, 57.2958f,"deg", 57.2958f,"deg"); break; }
+        case ACT_BLURANG_DN:{ float d = -step::blurA * mag; p.blurAngle += d;
+            hud_post("blrA","blur-ang", d, p.blurAngle, 57.2958f,"deg", 57.2958f,"deg"); break; }
+
+        // ── color / tone ──────────────────────────────────────────
+        case ACT_GAMMA_UP: { float d =  step::gammaS * mag; p.gamma += d;
+            hud_post("gam","gamma", d, p.gamma, 1.f,"", 1.f,""); break; }
+        case ACT_GAMMA_DN: { float d = -step::gammaS * mag;
+            p.gamma = fmaxf(0.1f, p.gamma + d);
+            hud_post("gam","gamma", d, p.gamma, 1.f,"", 1.f,""); break; }
+        case ACT_HUE_UP:   { float d =  step::hue * mag; p.hueRate += d;
+            hud_post("hue","hue rate", d, p.hueRate, 1000.f,"milli/pass", 60.f,"rot/s"); break; }
+        case ACT_HUE_DN:   { float d = -step::hue * mag; p.hueRate += d;
+            hud_post("hue","hue rate", d, p.hueRate, 1000.f,"milli/pass", 60.f,"rot/s"); break; }
+        case ACT_SAT_UP:   { float d =  step::sat * mag; p.satGain += d;
+            hud_post("sat","satur", d, p.satGain, 100.f,"%", 1.f,"x"); break; }
+        case ACT_SAT_DN:   { float d = -step::sat * mag; p.satGain += d;
+            hud_post("sat","satur", d, p.satGain, 100.f,"%", 1.f,"x"); break; }
+        case ACT_CONTRAST_UP: { float d =  step::contrast * mag; p.contrast += d;
+            hud_post("con","contrast", d, p.contrast, 100.f,"%", 1.f,"x"); break; }
+        case ACT_CONTRAST_DN: { float d = -step::contrast * mag; p.contrast += d;
+            hud_post("con","contrast", d, p.contrast, 100.f,"%", 1.f,"x"); break; }
+
+        // ── dynamics ──────────────────────────────────────────────
+        case ACT_DECAY_UP: { float d =  step::decay * mag;
+            p.decay = fminf(1.0f, p.decay + d);
+            hud_post("dec","decay", d, p.decay, 1000.f,"milli", 1000.f,"milli"); break; }
+        case ACT_DECAY_DN: { float d = -step::decay * mag;
+            p.decay = fmaxf(0.9f, p.decay + d);
+            hud_post("dec","decay", d, p.decay, 1000.f,"milli", 1000.f,"milli"); break; }
+        case ACT_NOISE_UP: { float d =  step::noise * mag; p.noise += d;
+            hud_post("noi","noise", d, p.noise, 1000.f,"milli", 1000.f,"milli"); break; }
+        case ACT_NOISE_DN: { float d = -step::noise * mag;
+            p.noise = fmaxf(0.0f, p.noise + d);
+            hud_post("noi","noise", d, p.noise, 1000.f,"milli", 1000.f,"milli"); break; }
+        case ACT_COUPLE_UP: { float d =  step::couple * mag;
+            p.couple = fminf(1.0f, p.couple + d);
+            hud_post("cpl","couple", d, p.couple, 100.f,"%", 100.f,"%"); break; }
+        case ACT_COUPLE_DN: { float d = -step::couple * mag;
+            p.couple = fmaxf(0.0f, p.couple + d);
+            hud_post("cpl","couple", d, p.couple, 100.f,"%", 100.f,"%"); break; }
+        case ACT_EXTERNAL_UP: { float d =  step::ext * mag;
+            p.external = fminf(1.0f, p.external + d);
+            hud_post("ext","external", d, p.external, 100.f,"%", 100.f,"%"); break; }
+        case ACT_EXTERNAL_DN: { float d = -step::ext * mag;
+            p.external = fmaxf(0.0f, p.external + d);
+            hud_post("ext","external", d, p.external, 100.f,"%", 100.f,"%"); break; }
+
+        // ── physics (Crutchfield) ────────────────────────────────
+        case ACT_INVERT_TOGGLE: {
+            p.invert = 1 - p.invert;
+            printf("[invert] %s\n", p.invert ? "ON" : "off");
             char b[64]; snprintf(b, sizeof b, "luminance invert: %s",
-                                 S.p.invert ? "ON" : "off");
+                                 p.invert ? "ON" : "off");
             S.ov.logEvent(b); return;
         }
-        case GLFW_KEY_GRAVE_ACCENT:
-            if (S.rec.active()) {
-                S.rec.stop();
-                if (!S.rec.lastDir().empty())
-                    S.recordingsThisSession.push_back(S.rec.lastDir());
-                S.ov.logEvent("recording: stopped");
+        case ACT_SENSORGAMMA_UP: { float d =  step::sensorG * mag;
+            p.sensorGamma = fminf(2.0f, p.sensorGamma + d);
+            hud_post("sgam","sens-gamma", d, p.sensorGamma, 1.f,"", 1.f,""); break; }
+        case ACT_SENSORGAMMA_DN: { float d = -step::sensorG * mag;
+            p.sensorGamma = fmaxf(0.1f, p.sensorGamma + d);
+            hud_post("sgam","sens-gamma", d, p.sensorGamma, 1.f,"", 1.f,""); break; }
+        case ACT_SATKNEE_UP: { float d =  step::knee * mag;
+            p.satKnee = fminf(1.0f, p.satKnee + d);
+            hud_post("knee","sat-knee", d, p.satKnee, 100.f,"%", 100.f,"%"); break; }
+        case ACT_SATKNEE_DN: { float d = -step::knee * mag;
+            p.satKnee = fmaxf(0.0f, p.satKnee + d);
+            hud_post("knee","sat-knee", d, p.satKnee, 100.f,"%", 100.f,"%"); break; }
+        case ACT_COLORCROSS_UP: { float d =  step::cross * mag;
+            p.colorCross = fminf(1.0f, p.colorCross + d);
+            hud_post("cx","color-xtalk", d, p.colorCross, 100.f,"%", 100.f,"%"); break; }
+        case ACT_COLORCROSS_DN: { float d = -step::cross * mag;
+            p.colorCross = fmaxf(0.0f, p.colorCross + d);
+            hud_post("cx","color-xtalk", d, p.colorCross, 100.f,"%", 100.f,"%"); break; }
+
+        // ── thermal ───────────────────────────────────────────────
+        case ACT_THERMAMP_UP: { float d =  step::thermAmp * mag;
+            p.thermAmp = fminf(1.0f, p.thermAmp + d);
+            hud_post("tAmp","therm-amp", d, p.thermAmp, 100.f,"%", 100.f,"%"); break; }
+        case ACT_THERMAMP_DN: { float d = -step::thermAmp * mag;
+            p.thermAmp = fmaxf(0.0f, p.thermAmp + d);
+            hud_post("tAmp","therm-amp", d, p.thermAmp, 100.f,"%", 100.f,"%"); break; }
+        case ACT_THERMSCALE_UP: { float d =  step::thermScale * mag;
+            p.thermScale = fminf(40.0f, p.thermScale + d);
+            hud_post("tSca","therm-scale", d, p.thermScale, 1.f,"", 1.f,""); break; }
+        case ACT_THERMSCALE_DN: { float d = -step::thermScale * mag;
+            p.thermScale = fmaxf(0.2f, p.thermScale + d);
+            hud_post("tSca","therm-scale", d, p.thermScale, 1.f,"", 1.f,""); break; }
+        case ACT_THERMSPEED_UP: { float d =  step::thermSpeed * mag;
+            p.thermSpeed = fminf(30.0f, p.thermSpeed + d);
+            hud_post("tSpd","therm-speed", d, p.thermSpeed, 1.f,"", 1.f,""); break; }
+        case ACT_THERMSPEED_DN: { float d = -step::thermSpeed * mag;
+            p.thermSpeed = fmaxf(0.0f, p.thermSpeed + d);
+            hud_post("tSpd","therm-speed", d, p.thermSpeed, 1.f,"", 1.f,""); break; }
+        case ACT_THERMRISE_UP: { float d =  step::thermRise * mag;
+            p.thermRise = fminf(2.0f, p.thermRise + d);
+            hud_post("tRis","therm-rise", d, p.thermRise, 1.f,"", 1.f,""); break; }
+        case ACT_THERMRISE_DN: { float d = -step::thermRise * mag;
+            p.thermRise = fmaxf(-1.0f, p.thermRise + d);
+            hud_post("tRis","therm-rise", d, p.thermRise, 1.f,"", 1.f,""); break; }
+        case ACT_THERMSWIRL_UP: { float d =  step::thermSwirl * mag;
+            p.thermSwirl = fminf(2.0f, p.thermSwirl + d);
+            hud_post("tSwi","therm-swirl", d, p.thermSwirl, 1.f,"", 1.f,""); break; }
+        case ACT_THERMSWIRL_DN: { float d = -step::thermSwirl * mag;
+            p.thermSwirl = fmaxf(0.0f, p.thermSwirl + d);
+            hud_post("tSwi","therm-swirl", d, p.thermSwirl, 1.f,"", 1.f,""); break; }
+
+        // ── patterns / inject ─────────────────────────────────────
+        case ACT_PATTERN_HBARS:   p.pattern = 0; printf("[pattern] H-bars\n");
+            S.ov.logEvent("pattern: H-bars"); return;
+        case ACT_PATTERN_VBARS:   p.pattern = 1; printf("[pattern] V-bars\n");
+            S.ov.logEvent("pattern: V-bars"); return;
+        case ACT_PATTERN_DOT:     p.pattern = 2; printf("[pattern] dot\n");
+            S.ov.logEvent("pattern: dot"); return;
+        case ACT_PATTERN_CHECKER: p.pattern = 3; printf("[pattern] checker\n");
+            S.ov.logEvent("pattern: checker"); return;
+        case ACT_PATTERN_GRAD:    p.pattern = 4; printf("[pattern] gradient\n");
+            S.ov.logEvent("pattern: gradient"); return;
+        case ACT_INJECT_HOLD: {
+            if (mag > 0.5f) {
+                p.inject = 1.0f;
+                static const char* names[] = {"H-bars","V-bars","dot","checker","gradient"};
+                printf("[inject pattern=%d]\n", p.pattern);
+                char buf[64]; snprintf(buf, sizeof buf, "inject: %s", names[p.pattern]);
+                S.ov.logEvent(buf);
+            } else {
+                p.inject = 0.3f;
             }
-            else                { Recorder::Config rcfg{};
-                                  rcfg.ramBudgetMB   = g_cfg.recRamMB;
-                                  rcfg.encoderThreads = g_cfg.recEncoders;
-                                  rcfg.uncompressed  = g_cfg.recUncompressed;
-                                  S.rec.start(S.simW, S.simH,
-                                              g_cfg.recFps, g_cfg.precision,
-                                              S.win, rcfg);
-                                  S.ov.logEvent("recording: started"); }
             return;
+        }
 
-        // ── presets (Ctrl modifier; Ctrl+S save, Ctrl+N next, Ctrl+P prev) ──
-        case GLFW_KEY_S:
-            if (mods & GLFW_MOD_CONTROL) {
-                std::string fn = preset_save_now();
-                if (!fn.empty()) {
-                    printf("[preset] saved %s\n", fn.c_str());
-                    char b[128]; snprintf(b, sizeof b, "preset SAVED: %s", fn.c_str());
-                    S.ov.logEvent(b);
-                } else {
-                    S.ov.logEvent("preset save FAILED");
-                }
-                return;
-            }
-            // No Ctrl: don't consume; fall through so the param-section S
-            // still works for rotation-down.
-            break;
-        case GLFW_KEY_N:
-            if (mods & GLFW_MOD_CONTROL) {
-                std::string n = preset_cycle(+1);
-                if (!n.empty()) {
-                    printf("[preset] loaded %s  (%d/%zu)\n", n.c_str(),
-                           g_currentPreset+1, g_presetFiles.size());
-                    char b[128]; snprintf(b, sizeof b, "preset: %s  (%d/%zu)",
-                                          n.c_str(), g_currentPreset+1, g_presetFiles.size());
-                    S.ov.logEvent(b);
-                } else {
-                    S.ov.logEvent("no presets in ./presets/");
-                }
-                return;
-            }
-            // No Ctrl: fall through to N=noise+ in param section
-            break;
-
-        // ── quality cycles (live, no restart) ──
-        case GLFW_KEY_F11: {
+        // ── app ───────────────────────────────────────────────────
+        case ACT_QUIT: glfwSetWindowShouldClose(S.win, 1); return;
+        case ACT_CLEAR: S.needClear = true; printf("[cleared]\n");
+            S.ov.logEvent("cleared"); return;
+        case ACT_PAUSE: S.paused = !S.paused;
+            printf("[%s]\n", S.paused ? "paused" : "running");
+            S.ov.logEvent(S.paused ? "paused" : "running"); return;
+        case ACT_HELP: S.ov.toggleHelp();
+            printf("[help] %s\n", S.ov.helpVisible() ? "shown" : "hidden"); return;
+        case ACT_RELOAD_SHADERS: reload_shaders();
+            S.ov.logEvent("shaders reloaded"); return;
+        case ACT_FULLSCREEN: {
             toggle_fullscreen();
             char b[64]; snprintf(b, sizeof b, "fullscreen: %s",
                                  S.isFullscreen ? "ON" : "off");
             S.ov.logEvent(b); return;
         }
-        case GLFW_KEY_PAGE_UP: {
+        case ACT_REC_TOGGLE:
+            if (S.rec.active()) {
+                S.rec.stop();
+                if (!S.rec.lastDir().empty())
+                    S.recordingsThisSession.push_back(S.rec.lastDir());
+                S.ov.logEvent("recording: stopped");
+            } else {
+                Recorder::Config rcfg{};
+                rcfg.ramBudgetMB   = g_cfg.recRamMB;
+                rcfg.encoderThreads = g_cfg.recEncoders;
+                rcfg.uncompressed  = g_cfg.recUncompressed;
+                S.rec.start(S.simW, S.simH, g_cfg.recFps, g_cfg.precision,
+                            S.win, rcfg);
+                S.ov.logEvent("recording: started");
+            }
+            return;
+        case ACT_PRESET_SAVE: {
+            std::string fn = preset_save_now();
+            if (!fn.empty()) {
+                printf("[preset] saved %s\n", fn.c_str());
+                char b[128]; snprintf(b, sizeof b, "preset SAVED: %s", fn.c_str());
+                S.ov.logEvent(b);
+            } else S.ov.logEvent("preset save FAILED");
+            return;
+        }
+        case ACT_PRESET_NEXT: {
+            std::string n = preset_cycle(+1);
+            if (!n.empty()) {
+                printf("[preset] loaded %s  (%d/%zu)\n", n.c_str(),
+                       g_currentPreset+1, g_presetFiles.size());
+                char b[128]; snprintf(b, sizeof b, "preset: %s  (%d/%zu)",
+                                      n.c_str(), g_currentPreset+1, g_presetFiles.size());
+                S.ov.logEvent(b);
+            } else S.ov.logEvent("no presets in ./presets/");
+            return;
+        }
+        case ACT_PRESET_PREV: {
+            std::string n = preset_cycle(-1);
+            if (!n.empty()) {
+                printf("[preset] loaded %s  (%d/%zu)\n", n.c_str(),
+                       g_currentPreset+1, g_presetFiles.size());
+                char b[128]; snprintf(b, sizeof b, "preset: %s  (%d/%zu)",
+                                      n.c_str(), g_currentPreset+1, g_presetFiles.size());
+                S.ov.logEvent(b);
+            } else S.ov.logEvent("no presets in ./presets/");
+            return;
+        }
+        case ACT_BLURQ_CYCLE: {
             S.blurQ = (S.blurQ + 1) % 3;
             const char* n[] = {"5-tap cross","9-tap gauss","25-tap gauss"};
             printf("[blur-q] %s\n", n[S.blurQ]);
             char b[64]; snprintf(b, sizeof b, "blur: %s", n[S.blurQ]);
             S.ov.logEvent(b); return;
         }
-        case GLFW_KEY_F12: {
+        case ACT_CAQ_CYCLE: {
             S.caQ = (S.caQ + 1) % 3;
             const char* n[] = {"3-sample","5-ramp","8-wavelen"};
             printf("[ca-q] %s\n", n[S.caQ]);
             char b[64]; snprintf(b, sizeof b, "CA: %s", n[S.caQ]);
             S.ov.logEvent(b); return;
         }
-        case GLFW_KEY_HOME: {
+        case ACT_NOISEQ_CYCLE: {
             S.noiseQ = (S.noiseQ + 1) % 2;
             const char* n[] = {"white","pink 1/f"};
             printf("[noise-q] %s\n", n[S.noiseQ]);
             char b[64]; snprintf(b, sizeof b, "noise: %s", n[S.noiseQ]);
             S.ov.logEvent(b); return;
         }
-        case GLFW_KEY_END: {
-            // Cycle 1 → 2 → 3 → 4 → 1. Allocating a new field's FBOs on demand.
+        case ACT_FIELDS_CYCLE: {
             S.activeFields = (S.activeFields % 4) + 1;
             for (int f = 0; f < S.activeFields; f++) {
                 if (S.field[f][0].fbo == 0) {
@@ -1132,166 +1301,33 @@ static void key_cb(GLFWwindow* w, int key, int, int action, int mods) {
             char b[64]; snprintf(b, sizeof b, "fields: %d", S.activeFields);
             S.ov.logEvent(b); return;
         }
+        case ACT_PRINT_HELP_STDOUT: print_help(); return;
+
+        // ── actions not yet implemented — land in C3/C4/C6/C7 ─────
+        case ACT_HELP_UP: case ACT_HELP_DN:
+        case ACT_HELP_ENTER: case ACT_HELP_BACK:
+        case ACT_VFX1_CYCLE_FWD: case ACT_VFX1_CYCLE_BACK: case ACT_VFX1_OFF:
+        case ACT_VFX1_PARAM_UP:  case ACT_VFX1_PARAM_DN:  case ACT_VFX1_BSRC_CYCLE:
+        case ACT_VFX2_CYCLE_FWD: case ACT_VFX2_CYCLE_BACK: case ACT_VFX2_OFF:
+        case ACT_VFX2_PARAM_UP:  case ACT_VFX2_PARAM_DN:  case ACT_VFX2_BSRC_CYCLE:
+        case ACT_OUTFADE_UP: case ACT_OUTFADE_DN: case ACT_OUTFADE_AXIS:
+        case ACT_BPM_TAP: case ACT_BPM_SYNC_TOGGLE: case ACT_BPM_DIV_CYCLE:
+        case ACT_BPM_INJECT_TOGGLE: case ACT_BPM_STROBE_TOGGLE:
+        case ACT_BPM_VFXCYCLE_TOGGLE: case ACT_BPM_FLASH_TOGGLE:
+        case ACT_BPM_DECAYDIP_TOGGLE:
+            return;
+
+        case ACT_NONE: case ACT__COUNT: return;
     }
-    if (action == GLFW_RELEASE && key == GLFW_KEY_SPACE) S.p.inject = 0.3f;
-
-    if (rept) {
-        auto& p = S.p;
-
-        // Helper: format a parameter change and post to the overlay.
-        // scaleDelta/scaleValue convert from raw units to display units, and
-        // 'fmt' is the printf format (e.g. "%+.3f"). Keys are the same as the
-        // key press so repeated presses aggregate into one HUD line.
-        auto post = [&](const char* key, const char* label,
-                        float scaleDelta, const char* unitDelta,
-                        float curRaw, float scaleValue, const char* unitValue,
-                        const char* fmt) {
-            static std::map<std::string, float> cumByKey;
-            static std::map<std::string, double> lastHit;
-            double now = glfwGetTime();
-            // Reset cumulative if this key has been quiet past fade-out
-            if (now - lastHit[key] > 6.0) cumByKey[key] = 0;
-            lastHit[key] = now;
-            // We don't know the per-press delta here — caller tells us via scaleDelta
-            // Actually, simplest: use the VALUE change as the delta approximation is
-            // not right. Instead caller passes delta directly via a wrapper.
-            (void)scaleDelta; (void)unitDelta; (void)curRaw; (void)scaleValue;
-            (void)unitValue; (void)fmt; (void)label;
-        };
-        (void)post;  // placeholder — using the hud() helper below instead.
-
-        // hud(): post one param change to the overlay with cumulative delta accumulation.
-        auto hud = [&](const char* key, const char* label,
-                       float rawDelta, float rawValue,
-                       float scaleD, const char* unitD,
-                       float scaleV, const char* unitV)
-        {
-            // Static per-process state keyed by `key`.
-            static std::map<std::string, float>  cum;
-            static std::map<std::string, double> lastT;
-            double now = glfwGetTime();
-            if (now - lastT[key] > 6.0) cum[key] = 0;
-            cum[key] += rawDelta;
-            lastT[key] = now;
-            char d[64], v[64];
-            snprintf(d, sizeof d, "%+.3f %s", cum[key] * scaleD, unitD);
-            snprintf(v, sizeof v, "%+.3f %s", rawValue * scaleV, unitV);
-            S.ov.logParam(key, label, d, v);
-        };
-
-        switch (key) {
-            // warp
-            case GLFW_KEY_Q: p.zoom  += sZoom;
-                hud("zoom","zoom", sZoom, p.zoom-1.0f, 100.f,"% /pass", 100.f,"% /pass"); break;
-            case GLFW_KEY_A: p.zoom  -= sZoom;
-                hud("zoom","zoom",-sZoom, p.zoom-1.0f, 100.f,"% /pass", 100.f,"% /pass"); break;
-            case GLFW_KEY_W: p.theta += sTheta;
-                hud("theta","rotation", sTheta, p.theta, 57.2958f,"deg/pass", 57.2958f*60.f,"deg/s"); break;
-            case GLFW_KEY_S: p.theta -= sTheta;
-                hud("theta","rotation",-sTheta, p.theta, 57.2958f,"deg/pass", 57.2958f*60.f,"deg/s"); break;
-            case GLFW_KEY_LEFT:  p.transX -= sTrans;
-                hud("trX","trans-X",-sTrans, p.transX, 100.f,"% /pass", 100.f,"% of frame"); break;
-            case GLFW_KEY_RIGHT: p.transX += sTrans;
-                hud("trX","trans-X", sTrans, p.transX, 100.f,"% /pass", 100.f,"% of frame"); break;
-            case GLFW_KEY_UP:    p.transY -= sTrans;
-                hud("trY","trans-Y",-sTrans, p.transY, 100.f,"% /pass", 100.f,"% of frame"); break;
-            case GLFW_KEY_DOWN:  p.transY += sTrans;
-                hud("trY","trans-Y", sTrans, p.transY, 100.f,"% /pass", 100.f,"% of frame"); break;
-            // optics
-            case GLFW_KEY_LEFT_BRACKET:  p.chroma -= sChroma;
-                hud("chr","chroma",-sChroma, p.chroma, 1000.f,"milli", 1000.f,"milli"); break;
-            case GLFW_KEY_RIGHT_BRACKET: p.chroma += sChroma;
-                hud("chr","chroma", sChroma, p.chroma, 1000.f,"milli", 1000.f,"milli"); break;
-            case GLFW_KEY_SEMICOLON:     p.blurX  -= sBlurR;
-                hud("blrX","blur-X",-sBlurR, p.blurX, 1.f,"px", 1.f,"px"); break;
-            case GLFW_KEY_APOSTROPHE:    p.blurX  += sBlurR;
-                hud("blrX","blur-X", sBlurR, p.blurX, 1.f,"px", 1.f,"px"); break;
-            case GLFW_KEY_COMMA:         p.blurY  -= sBlurR;
-                hud("blrY","blur-Y",-sBlurR, p.blurY, 1.f,"px", 1.f,"px"); break;
-            case GLFW_KEY_PERIOD:        p.blurY  += sBlurR;
-                hud("blrY","blur-Y", sBlurR, p.blurY, 1.f,"px", 1.f,"px"); break;
-            case GLFW_KEY_MINUS:         p.blurAngle -= sBlurA;
-                hud("blrA","blur-ang",-sBlurA, p.blurAngle, 57.2958f,"deg", 57.2958f,"deg"); break;
-            case GLFW_KEY_EQUAL:         p.blurAngle += sBlurA;
-                hud("blrA","blur-ang", sBlurA, p.blurAngle, 57.2958f,"deg", 57.2958f,"deg"); break;
-            // gamma
-            case GLFW_KEY_G: p.gamma += sGamma;
-                hud("gam","gamma", sGamma, p.gamma, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_B: p.gamma  = fmaxf(0.1f, p.gamma - sGamma);
-                hud("gam","gamma",-sGamma, p.gamma, 1.f,"", 1.f,""); break;
-            // color
-            case GLFW_KEY_E: p.hueRate += sHue;
-                hud("hue","hue rate", sHue, p.hueRate, 1000.f,"milli/pass", 60.f,"rot/s"); break;
-            case GLFW_KEY_D: p.hueRate -= sHue;
-                hud("hue","hue rate",-sHue, p.hueRate, 1000.f,"milli/pass", 60.f,"rot/s"); break;
-            case GLFW_KEY_R: p.satGain += sSat;
-                hud("sat","satur", sSat, p.satGain, 100.f,"%", 1.f,"x"); break;
-            case GLFW_KEY_F: p.satGain -= sSat;
-                hud("sat","satur",-sSat, p.satGain, 100.f,"%", 1.f,"x"); break;
-            // contrast
-            case GLFW_KEY_T: p.contrast += sContrast;
-                hud("con","contrast", sContrast, p.contrast, 100.f,"%", 1.f,"x"); break;
-            case GLFW_KEY_Y: p.contrast -= sContrast;
-                hud("con","contrast",-sContrast, p.contrast, 100.f,"%", 1.f,"x"); break;
-            // decay
-            case GLFW_KEY_U: p.decay = fminf(1.0f, p.decay + sDecay);
-                hud("dec","decay", sDecay, p.decay, 1000.f,"milli", 1000.f,"milli"); break;
-            case GLFW_KEY_J: p.decay = fmaxf(0.9f, p.decay - sDecay);
-                hud("dec","decay",-sDecay, p.decay, 1000.f,"milli", 1000.f,"milli"); break;
-            // noise
-            case GLFW_KEY_N: p.noise += sNoise;
-                hud("noi","noise", sNoise, p.noise, 1000.f,"milli", 1000.f,"milli"); break;
-            case GLFW_KEY_M: p.noise = fmaxf(0.0f, p.noise - sNoise);
-                hud("noi","noise",-sNoise, p.noise, 1000.f,"milli", 1000.f,"milli"); break;
-            // couple / external
-            case GLFW_KEY_K: p.couple   = fminf(1.0f, p.couple   + sCouple);
-                hud("cpl","couple", sCouple, p.couple, 100.f,"%", 100.f,"%"); break;
-            case GLFW_KEY_I: p.couple   = fmaxf(0.0f, p.couple   - sCouple);
-                hud("cpl","couple",-sCouple, p.couple, 100.f,"%", 100.f,"%"); break;
-            case GLFW_KEY_O: p.external = fminf(1.0f, p.external + sExt);
-                hud("ext","external", sExt, p.external, 100.f,"%", 100.f,"%"); break;
-            case GLFW_KEY_L: p.external = fmaxf(0.0f, p.external - sExt);
-                hud("ext","external",-sExt, p.external, 100.f,"%", 100.f,"%"); break;
-            // physics (Crutchfield camera-side knobs)
-            case GLFW_KEY_X: p.sensorGamma = fminf(2.0f, p.sensorGamma + sSensorG);
-                hud("sgam","sens-gamma", sSensorG, p.sensorGamma, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_Z: p.sensorGamma = fmaxf(0.1f, p.sensorGamma - sSensorG);
-                hud("sgam","sens-gamma",-sSensorG, p.sensorGamma, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_8: p.satKnee = fminf(1.0f, p.satKnee + sKnee);
-                hud("knee","sat-knee", sKnee, p.satKnee, 100.f,"%", 100.f,"%"); break;
-            case GLFW_KEY_7: p.satKnee = fmaxf(0.0f, p.satKnee - sKnee);
-                hud("knee","sat-knee",-sKnee, p.satKnee, 100.f,"%", 100.f,"%"); break;
-            case GLFW_KEY_0: p.colorCross = fminf(1.0f, p.colorCross + sCross);
-                hud("cx","color-xtalk", sCross, p.colorCross, 100.f,"%", 100.f,"%"); break;
-            case GLFW_KEY_9: p.colorCross = fmaxf(0.0f, p.colorCross - sCross);
-                hud("cx","color-xtalk",-sCross, p.colorCross, 100.f,"%", 100.f,"%"); break;
-            // thermal (numpad column layout: col1=amp, col2=scale, col3=speed;
-            // NP7/8=rise, NP9/NP0-Minus=swirl. Shift = 20x coarse.)
-            case GLFW_KEY_KP_4: p.thermAmp = fminf(1.0f, p.thermAmp + 0.002f * m);
-                hud("tAmp","therm-amp",  0.002f*m, p.thermAmp, 100.f,"%", 100.f,"%"); break;
-            case GLFW_KEY_KP_1: p.thermAmp = fmaxf(0.0f, p.thermAmp - 0.002f * m);
-                hud("tAmp","therm-amp", -0.002f*m, p.thermAmp, 100.f,"%", 100.f,"%"); break;
-            case GLFW_KEY_KP_5: p.thermScale = fminf(40.0f, p.thermScale + 0.2f * m);
-                hud("tSca","therm-scale", 0.2f*m, p.thermScale, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_KP_2: p.thermScale = fmaxf(0.2f, p.thermScale - 0.2f * m);
-                hud("tSca","therm-scale",-0.2f*m, p.thermScale, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_KP_6: p.thermSpeed = fminf(30.0f, p.thermSpeed + 0.1f * m);
-                hud("tSpd","therm-speed", 0.1f*m, p.thermSpeed, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_KP_3: p.thermSpeed = fmaxf(0.0f, p.thermSpeed - 0.1f * m);
-                hud("tSpd","therm-speed",-0.1f*m, p.thermSpeed, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_KP_8: p.thermRise = fminf(2.0f, p.thermRise + 0.02f * m);
-                hud("tRis","therm-rise", 0.02f*m, p.thermRise, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_KP_7: p.thermRise = fmaxf(-1.0f, p.thermRise - 0.02f * m);
-                hud("tRis","therm-rise",-0.02f*m, p.thermRise, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_KP_9: p.thermSwirl = fmaxf(0.0f, p.thermSwirl - 0.02f * m);
-                hud("tSwi","therm-swirl",-0.02f*m, p.thermSwirl, 1.f,"", 1.f,""); break;
-            case GLFW_KEY_KP_0: p.thermSwirl = fminf(2.0f, p.thermSwirl + 0.02f * m);
-                hud("tSwi","therm-swirl", 0.02f*m, p.thermSwirl, 1.f,"", 1.f,""); break;
-            default: return;
-        }
-        print_status();
-    }
+    print_status();
 }
+
+static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
+    // Input routes to apply_action via the handler installed in main().
+    // Kept as a thin forward so gamepad/MIDI (C2+) plug in the same way.
+    g_input.onKey(key, scancode, action, mods);
+}
+
 
 static void size_cb(GLFWwindow*, int w, int h) {
     // EXR sequence recording is FBO-based (sim resolution) — window resize
@@ -1788,6 +1824,23 @@ int main(int argc, char** argv) {
            S.simW, S.simH, g_cfg.precision, g_cfg.iters);
     printf("[quality] blur=%s  ca=%s  noise=%s  fields=%d\n",
            blurNames[S.blurQ], caNames[S.caQ], noiseNames[S.noiseQ], S.activeFields);
+
+    // Input: build default keyboard map, then overlay bindings.ini if present.
+    // bindings.ini lives next to the executable (or at CWD) — we write a default
+    // on first run so users have something to edit.
+    g_input.installDefaults();
+    g_input.setHandler(apply_action);
+    {
+        std::string bindingsPath = g_shader_base.empty()
+            ? std::string("bindings.ini")
+            : (g_shader_base + "bindings.ini");
+        if (!g_input.loadIni(bindingsPath)) {
+            if (g_input.saveIni(bindingsPath))
+                printf("[bindings] wrote default %s\n", bindingsPath.c_str());
+        } else {
+            printf("[bindings] loaded %s\n", bindingsPath.c_str());
+        }
+    }
 
     glfwSetKeyCallback(win, key_cb);
     glfwSetFramebufferSizeCallback(win, size_cb);
