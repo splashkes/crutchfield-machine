@@ -185,7 +185,32 @@ struct Params {
     float thermSpeed  = 2.0f;    // gentle evolution
     float thermRise   = 0.5f;    // some vertical advection
     float thermSwirl  = 0.3f;    // subtle vortical bias
+
+    // V-4 effect slots — two slots, each can host any of 18 effects.
+    //   vfxSlot ∈ [0..18]; 0 means "off".
+    //   vfxParam is the CONTROL-dial-equivalent continuous parameter, 0..1.
+    //   vfxBSource ∈ {0 = camera, 1 = self (current image reprocessed)}
+    //     for key/PinP families that need a second source.
+    int   vfxSlot[2]    = { 0, 0 };
+    float vfxParam[2]   = { 0.5f, 0.5f };
+    int   vfxBSource[2] = { 0, 0 };
+
+    // Output fade — bipolar, -1 = full black, 0 = pass-through, +1 = white.
+    float outFade = 0.0f;
 };
+
+// Effect catalogue shared between host, shader, and UI. Index 0 is "off".
+// Keep in sync with vfx_apply's switch in shaders/layers/vfx_slot.glsl.
+static const char* VFX_NAMES[] = {
+    "off",        "Strobe",    "Still",      "Shake",
+    "Negative",   "Colorize",  "Monochrome", "Posterize",
+    "ColorPass",  "Mirror-H",  "Mirror-V",   "Mirror-HV",
+    "Multi-H",    "Multi-V",   "Multi-HV",
+    "W-LumiKey",  "B-LumiKey", "ChromaKey",  "PinP",
+};
+static constexpr int VFX_COUNT = (int)(sizeof(VFX_NAMES) / sizeof(VFX_NAMES[0]));
+
+static const char* VFX_BSRC_NAMES[] = { "camera", "self-reproc" };
 
 // ── framebuffer-object helper ─────────────────────────────────────────────
 struct FBO { GLuint fbo = 0, tex = 0; int w = 0, h = 0; };
@@ -565,7 +590,22 @@ static bool preset_write(const std::string& path) {
 "scale  = %.6f\n"
 "speed  = %.6f\n"
 "rise   = %.6f\n"
-"swirl  = %.6f\n",
+"swirl  = %.6f\n"
+"\n"
+"[vfx]\n"
+"# V-4-inspired effect slots. slot1/slot2 are effect IDs (0=off, 1..18).\n"
+"# See main.cpp::VFX_NAMES for the full list. param1/param2 are the\n"
+"# CONTROL-dial equivalents (0..1). bsource1/bsource2: 0=camera, 1=self.\n"
+"slot1    = %d\n"
+"param1   = %.6f\n"
+"bsource1 = %d\n"
+"slot2    = %d\n"
+"param2   = %.6f\n"
+"bsource2 = %d\n"
+"\n"
+"[output]\n"
+"# Output fade: bipolar, -1=black, 0=through, +1=white.\n"
+"fade     = %.6f\n",
         ts,
         io(L_WARP), io(L_OPTICS), io(L_GAMMA), io(L_COLOR), io(L_CONTRAST),
         io(L_DECAY), io(L_NOISE), io(L_COUPLE), io(L_EXTERNAL), io(L_INJECT),
@@ -577,7 +617,10 @@ static bool preset_write(const std::string& path) {
         p.decay, p.noise, p.couple, p.external,
         p.pattern,
         p.invert, p.sensorGamma, p.satKnee, p.colorCross,
-        p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl);
+        p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl,
+        p.vfxSlot[0], p.vfxParam[0], p.vfxBSource[0],
+        p.vfxSlot[1], p.vfxParam[1], p.vfxBSource[1],
+        p.outFade);
     fclose(f);
     return true;
 }
@@ -693,6 +736,19 @@ static bool preset_load(const std::string& path) {
             else if (k == "speed") p.thermSpeed = fv;
             else if (k == "rise")  p.thermRise  = fv;
             else if (k == "swirl") p.thermSwirl = fv;
+        } else if (section == "vfx") {
+            int n = atoi(v.c_str());
+            float fv = (float)atof(v.c_str());
+            auto clamp_slot = [](int x) { return x < 0 ? 0 : (x >= VFX_COUNT ? 0 : x); };
+            if      (k == "slot1")    p.vfxSlot[0]    = clamp_slot(n);
+            else if (k == "slot2")    p.vfxSlot[1]    = clamp_slot(n);
+            else if (k == "param1")   p.vfxParam[0]   = fmaxf(0.f, fminf(1.f, fv));
+            else if (k == "param2")   p.vfxParam[1]   = fmaxf(0.f, fminf(1.f, fv));
+            else if (k == "bsource1") p.vfxBSource[0] = (n & 1);
+            else if (k == "bsource2") p.vfxBSource[1] = (n & 1);
+        } else if (section == "output") {
+            float fv = (float)atof(v.c_str());
+            if (k == "fade") p.outFade = fmaxf(-1.f, fminf(1.f, fv));
         }
     }
     fclose(f);
@@ -1062,9 +1118,40 @@ static std::string section_app() {
 }
 
 static std::string section_vfx(int slot) {
-    (void)slot;
-    return "(VFX slot — wired in C4)\n"
-           "next/prev/off + param +/- + B-source cycle";
+    const int e = S.p.vfxSlot[slot];
+    const int b = S.p.vfxBSource[slot];
+    const float pv = S.p.vfxParam[slot];
+    ActionId next  = (slot == 0) ? ACT_VFX1_CYCLE_FWD  : ACT_VFX2_CYCLE_FWD;
+    ActionId prev  = (slot == 0) ? ACT_VFX1_CYCLE_BACK : ACT_VFX2_CYCLE_BACK;
+    ActionId off   = (slot == 0) ? ACT_VFX1_OFF        : ACT_VFX2_OFF;
+    ActionId pup   = (slot == 0) ? ACT_VFX1_PARAM_UP   : ACT_VFX2_PARAM_UP;
+    ActionId pdn   = (slot == 0) ? ACT_VFX1_PARAM_DN   : ACT_VFX2_PARAM_DN;
+    ActionId bsrc  = (slot == 0) ? ACT_VFX1_BSRC_CYCLE : ACT_VFX2_BSRC_CYCLE;
+
+    char buf[1024];
+    snprintf(buf, sizeof buf,
+        "Slot %d — current: %s\n"
+        "control param  : %.2f   (0..1)\n"
+        "B-source       : %s\n"
+        "\n"
+        "%-10s next effect\n"
+        "%-10s prev effect\n"
+        "%-10s off\n"
+        "%-10s param %s\n"
+        "%-10s cycle B-source\n"
+        "\n"
+        "-- 18 effects available --\n"
+        "Strobe  Still  Shake  Negative  Colorize  Monochrome\n"
+        "Posterize  ColorPass  Mirror-H/V/HV  Multi-H/V/HV\n"
+        "W-LumiKey  B-LumiKey  ChromaKey  PinP",
+        slot + 1, VFX_NAMES[e],
+        pv, VFX_BSRC_NAMES[b],
+        keys_for(next).c_str(),
+        keys_for(prev).c_str(),
+        keys_for(off).c_str(),
+        keys_pair(pup, pdn).c_str(), "+/-",
+        keys_for(bsrc).c_str());
+    return buf;
 }
 static std::string section_output() {
     return "(Output fade — wired in C6)\n"
@@ -1535,11 +1622,62 @@ static void apply_action(ActionId id, float mag) {
         case ACT_HELP_ENTER: case ACT_HELP_BACK:
             return;
 
-        // ── actions not yet implemented — land in C4/C6/C7 ─────
-        case ACT_VFX1_CYCLE_FWD: case ACT_VFX1_CYCLE_BACK: case ACT_VFX1_OFF:
-        case ACT_VFX1_PARAM_UP:  case ACT_VFX1_PARAM_DN:  case ACT_VFX1_BSRC_CYCLE:
-        case ACT_VFX2_CYCLE_FWD: case ACT_VFX2_CYCLE_BACK: case ACT_VFX2_OFF:
-        case ACT_VFX2_PARAM_UP:  case ACT_VFX2_PARAM_DN:  case ACT_VFX2_BSRC_CYCLE:
+        // ── V-4 effect slots ───────────────────────────────────────
+        #define VFX_LOG_SLOT(slot) do { \
+            int e = p.vfxSlot[slot]; \
+            char _b[96]; \
+            if (e == 0) snprintf(_b, sizeof _b, "vfx%d: off", (slot)+1); \
+            else        snprintf(_b, sizeof _b, "vfx%d: %s  p=%.2f  B=%s", \
+                                 (slot)+1, VFX_NAMES[e], p.vfxParam[slot], \
+                                 VFX_BSRC_NAMES[p.vfxBSource[slot]]); \
+            S.ov.logEvent(_b); \
+        } while (0)
+
+        case ACT_VFX1_CYCLE_FWD:
+            p.vfxSlot[0] = (p.vfxSlot[0] + 1) % VFX_COUNT;
+            VFX_LOG_SLOT(0); return;
+        case ACT_VFX1_CYCLE_BACK:
+            p.vfxSlot[0] = (p.vfxSlot[0] - 1 + VFX_COUNT) % VFX_COUNT;
+            VFX_LOG_SLOT(0); return;
+        case ACT_VFX1_OFF:
+            p.vfxSlot[0] = 0; VFX_LOG_SLOT(0); return;
+        case ACT_VFX1_PARAM_UP: {
+            p.vfxParam[0] = fminf(1.0f, p.vfxParam[0] + 0.01f * mag);
+            hud_post("vfx1p","vfx1 ctrl", 0.01f*mag, p.vfxParam[0], 100.f,"%", 100.f,"%");
+            break;
+        }
+        case ACT_VFX1_PARAM_DN: {
+            p.vfxParam[0] = fmaxf(0.0f, p.vfxParam[0] - 0.01f * mag);
+            hud_post("vfx1p","vfx1 ctrl", -0.01f*mag, p.vfxParam[0], 100.f,"%", 100.f,"%");
+            break;
+        }
+        case ACT_VFX1_BSRC_CYCLE:
+            p.vfxBSource[0] = (p.vfxBSource[0] + 1) % 2; VFX_LOG_SLOT(0); return;
+
+        case ACT_VFX2_CYCLE_FWD:
+            p.vfxSlot[1] = (p.vfxSlot[1] + 1) % VFX_COUNT;
+            VFX_LOG_SLOT(1); return;
+        case ACT_VFX2_CYCLE_BACK:
+            p.vfxSlot[1] = (p.vfxSlot[1] - 1 + VFX_COUNT) % VFX_COUNT;
+            VFX_LOG_SLOT(1); return;
+        case ACT_VFX2_OFF:
+            p.vfxSlot[1] = 0; VFX_LOG_SLOT(1); return;
+        case ACT_VFX2_PARAM_UP: {
+            p.vfxParam[1] = fminf(1.0f, p.vfxParam[1] + 0.01f * mag);
+            hud_post("vfx2p","vfx2 ctrl", 0.01f*mag, p.vfxParam[1], 100.f,"%", 100.f,"%");
+            break;
+        }
+        case ACT_VFX2_PARAM_DN: {
+            p.vfxParam[1] = fmaxf(0.0f, p.vfxParam[1] - 0.01f * mag);
+            hud_post("vfx2p","vfx2 ctrl", -0.01f*mag, p.vfxParam[1], 100.f,"%", 100.f,"%");
+            break;
+        }
+        case ACT_VFX2_BSRC_CYCLE:
+            p.vfxBSource[1] = (p.vfxBSource[1] + 1) % 2; VFX_LOG_SLOT(1); return;
+
+        #undef VFX_LOG_SLOT
+
+        // ── actions not yet implemented — land in C6/C7 ─────
         case ACT_OUTFADE_UP: case ACT_OUTFADE_DN: case ACT_OUTFADE_AXIS:
         case ACT_BPM_TAP: case ACT_BPM_SYNC_TOGGLE: case ACT_BPM_DIV_CYCLE:
         case ACT_BPM_INJECT_TOGGLE: case ACT_BPM_STROBE_TOGGLE:
@@ -1618,6 +1756,17 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1f("uExternal", p.external);
     U1f("uInject", p.inject);
     U1i("uPattern", p.pattern);
+
+    // V-4 effect slots. Arrays-of-ints can't be set with U1i; use the
+    // array-at-index loc form.
+    {
+        GLint lEff = glGetUniformLocation(progFeedback, "uVfxEffect");
+        GLint lPar = glGetUniformLocation(progFeedback, "uVfxParam");
+        GLint lSrc = glGetUniformLocation(progFeedback, "uVfxBSource");
+        if (lEff >= 0) glUniform1iv(lEff, 2, p.vfxSlot);
+        if (lPar >= 0) glUniform1fv(lPar, 2, p.vfxParam);
+        if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
+    }
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }

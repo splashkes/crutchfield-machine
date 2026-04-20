@@ -67,6 +67,7 @@ uniform int   uPattern;
 #include "layers/couple.glsl"
 #include "layers/external.glsl"
 #include "layers/inject.glsl"
+#include "layers/vfx_slot.glsl"
 
 // ── layer enable bits (mirror the host enum) ────────────────
 const int L_WARP     = 1<<0;
@@ -136,6 +137,12 @@ void main() {
 
     // 10. inject: triggered pattern perturbation
     if ((uEnable & L_INJECT) != 0) col = inject_apply(col, uv);
+
+    // 11. V-4-style effect slots. Two back-to-back slots, each holding
+    //     any of 18 effects (or off). Placed last so effects operate on
+    //     the finished composition and the result is what feeds back.
+    col = vfx_apply(col, uv, 0);
+    col = vfx_apply(col, uv, 1);
 
     oCol = vec4(col.rgb, 1.0);
 }
