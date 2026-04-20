@@ -21,7 +21,7 @@ set LIBDIRS=/LIBPATH:"%VCPKG_ROOT%\installed\x64-windows\lib"
 
 cl /std:c++17 /O2 /EHsc /nologo ^
    %INCLUDES% ^
-   main.cpp camera.cpp ^
+   main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp ^
    /Fe:feedback.exe ^
    /link %LIBDIRS% ^
          glfw3dll.lib glew32.lib opengl32.lib gdi32.lib ^

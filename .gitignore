@@ -10,6 +10,9 @@ screenshots/
 feedback-windows-x64/
 feedback-windows-x64.zip
 
+# User-local input rebindings (regenerated on first launch)
+bindings.ini
+
 # OS junk
 Thumbs.db
 .DS_Store

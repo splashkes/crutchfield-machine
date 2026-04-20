@@ -67,6 +67,8 @@ uniform int   uPattern;
 #include "layers/couple.glsl"
 #include "layers/external.glsl"
 #include "layers/inject.glsl"
+#include "layers/vfx_slot.glsl"
+#include "layers/output_fade.glsl"
 
 // ── layer enable bits (mirror the host enum) ────────────────
 const int L_WARP     = 1<<0;
@@ -103,11 +105,18 @@ void main() {
     if ((uEnable & L_OPTICS) != 0) col = optics_sample(uPrev, src_uv);
     else                            col = texture(uPrev, src_uv);
 
-    //  2.5 physics: Crutchfield's camera-side knobs (luminance inversion,
-    //  sensor gamma, soft saturation knee, RGB cross-coupling). Placed
-    //  here because these all model the photoconductor's *response* to
-    //  the incoming light — i.e. they belong inside the camera before
-    //  any electronic processing happens (gamma_in, color, contrast).
+    //  2.4 invert: always-on (toggled by uInvert itself). Sits outside
+    //  the physics layer gate because users turning on "V" in the UI
+    //  expect it to work regardless of what else is enabled. Crutchfield's
+    //  's' parameter still semantically lives in the physics block; the
+    //  inversion is just lifted out so it's always visible.
+    if (uInvert == 1) col.rgb = vec3(1.0) - col.rgb;
+
+    //  2.5 physics: Crutchfield's camera-side knobs (sensor gamma, soft
+    //  saturation knee, RGB cross-coupling). Placed here because these
+    //  all model the photoconductor's *response* to the incoming light —
+    //  i.e. they belong inside the camera before any electronic
+    //  processing happens (gamma_in, color, contrast).
     if ((uEnable & L_PHYSICS) != 0) col = physics_apply(col);
 
     //  3a. gamma in — linearise for the "analog" stages
@@ -136,6 +145,15 @@ void main() {
 
     // 10. inject: triggered pattern perturbation
     if ((uEnable & L_INJECT) != 0) col = inject_apply(col, uv);
+
+    // 11. V-4-style effect slots. Two back-to-back slots, each holding
+    //     any of 18 effects (or off). Placed last so effects operate on
+    //     the finished composition and the result is what feeds back.
+    col = vfx_apply(col, uv, 0);
+    col = vfx_apply(col, uv, 1);
+
+    // 12. Output fade — bipolar to black / white. The V-4's Output Fade dial.
+    col = output_fade_apply(col);
 
     oCol = vec4(col.rgb, 1.0);
 }

@@ -33,9 +33,9 @@ hackable. There's no black box.
 
 ## What this is NOT
 
-- **Not a VJ/performance tool.** No timeline, no MIDI yet, no sync,
-  no beat detection. That may come — see TODO.md — but it's not the
-  core.
+- **Not a sequencer or DAW.** We don't make music. We can follow an
+  external music source (Strudel via MIDI, planned) and ride its
+  tempo + events, but the composition lives in the other tool.
 - **Not a fractal generator.** The mathematics are *continuous
   dynamical systems*, not iterated escape-time renderers.
 - **Not a filter plug-in.** It's a standalone application with its own
@@ -48,6 +48,27 @@ hackable. There's no black box.
   and macOS ports exist as stubs; contributors welcome (see
   `linux/README.md`, `macOS/README.md`).
 
+### Performance use has moved from "not a goal" to "a first-class
+### use case"
+
+Earlier revisions of this doc said "Not a VJ/performance tool. No
+MIDI yet, no sync, no beat detection." That's no longer accurate:
+
+- BPM sync + tap tempo with beat-locked visual modulations are in.
+  (See ADR-0008.)
+- Gamepad mapping is contextual per help section, so the whole
+  controller surface drives whichever parameter group the user has
+  focus on. (See ADR-0009.)
+- Edirol V-4-inspired effect slots cover 18 effects with a single
+  CONTROL parameter each — the live-switcher vocabulary of the
+  V-4 brought into the feedback system.
+- Real MIDI input (Strudel / hardware controllers) is the next
+  pending piece. Plan in `development/plans/strudel_midi_sync.md`.
+
+The "research-grade, not research-only" principle below already
+permitted this — we were always going to want the system to be
+pleasurable to perform with. The infrastructure just caught up.
+
 ## Principles
 
 ### Precision over prettification
@@ -58,9 +79,10 @@ see [ADR-0001](ADR/0001-rgba32f-default-precision.md).
 
 ### Directness
 A user should be one keystroke away from any parameter, one shader
-reload away from a code change, one `Ctrl+S` away from a saved preset.
-No hidden modes, no nested menus, no wizards. The HUD overlay tells
-you exactly what's happening right now.
+reload away from a code change, one `Ctrl+S` away from a saved preset,
+one `bindings.ini` edit away from any rebinding they want. No hidden
+modes, no wizards. The drill-down help panel (H) shows every action,
+its current value, and the key/pad/MIDI bindings driving it.
 
 ### Extensibility through the shader layer system
 New visual behaviors should be one new `.glsl` file, one `#include`
@@ -155,7 +177,11 @@ respect the principles above?*
 
 - Audio reactivity → yes (installation + creative coders, principle:
   extensibility). On roadmap.
-- MIDI / OSC → yes (installation + performance edge, extensibility).
+- MIDI input → yes (performance). Infrastructure is in, real impl
+  pending — see `development/plans/strudel_midi_sync.md`.
+- A/B bus V-4 refactor → yes but expensive. Held back with a written
+  plan in `research/edirol_v4_ab_bus_future.md`; revisit when core
+  is stable.
 - A Photoshop-style filter pack → no (aesthetic direction).
 - A built-in video editor → no (non-goal).
 - A preset marketplace → maybe, but not a priority over getting the

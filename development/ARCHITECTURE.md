@@ -33,9 +33,10 @@ thread pools. Everything else is single-threaded.
 
 ```
 feedback-GBPS/
-├── main.cpp             ~2100 lines. Window, main loop, input, CLI, state.
+├── main.cpp             ~2500 lines. Window, main loop, CLI, state, apply_action.
+├── input.cpp/h          ~700 lines. Action registry, binding table, kbd/pad/MIDI dispatch.
 ├── recorder.cpp/h       ~400 lines. 3-stage capture pipeline.
-├── overlay.cpp/h        ~400 lines. HUD + help overlay, stb_easy_font.
+├── overlay.cpp/h        ~500 lines. HUD + drill-down help panel + section legend.
 ├── camera.cpp/h         ~300 lines. Windows Media Foundation webcam.
 ├── exr_write.h          Self-contained EXR writer (half-float ZIP + none).
 ├── stb_image_write.h    Vendored (PNG screenshot).
@@ -46,13 +47,16 @@ feedback-GBPS/
 │   ├── common.glsl      Shared helpers (rgb2hsv, hash, etc.).
 │   ├── blit.frag        Sim FBO → display FBO.
 │   └── layers/*.glsl    One layer per file. Authoring target.
+│       Notable: vfx_slot.glsl (V-4 effects), output_fade.glsl (master fade).
+├── bindings.ini         Auto-written on first run. Per-action key/pad/MIDI map.
 ├── presets/*.ini        Curated (01..05) + user-saved (auto_*).
-├── research/            Source papers + PHILOSOPHY.md.
+├── research/            Source papers, V-4 inventory, A/B-bus holdback doc.
 ├── gallery/             README screenshots.
 ├── linux/, macOS/       WIP ports (see their READMEs).
 ├── Makefile             MSYS2/MinGW build + `make dist` target.
 ├── build_msvc.bat       MSVC/vcpkg alternate (less maintained).
 └── development/         You are here.
+    └── plans/           Forward-looking planning docs (Strudel MIDI sync, etc.).
 ```
 
 ## Components
@@ -88,9 +92,15 @@ keeps running and the error is printed. Live-editable.
 **The `State S` singleton** holds everything the app tracks:
 - Window size, sim size, fullscreen flag.
 - Array of up to 4 `FBO` structs (each a ping-pong pair).
-- `Params p` — every per-layer parameter as a named field.
+- `Params p` — every per-layer parameter as a named field, including
+  V-4 effect slot state (`vfxSlot[2]`, `vfxParam[2]`, `vfxBSource[2]`),
+  output fade, and BPM fields (`bpm`, `beatOrigin`, `divIdx`,
+  `bpmSyncOn`, `bpmInject`, `bpmStrobe`, `bpmVfxCycle`, `bpmFlash`,
+  `bpmDecayDip`, plus transient `flashDecay` and `decayDipTimer`).
 - `enable` bitfield for active layers.
 - Runtime quality picks (blur kernel, CA samples, noise type).
+- Cursor-navigation fields (`armedLayer`, `armedQuality`) for the
+  gamepad-driven cursor in Layers and Quality help sections.
 - Recorder, Overlay, Camera instances.
 - Demo-mode timers.
 - Screenshot-pending flag.
@@ -98,12 +108,47 @@ keeps running and the error is printed. Live-editable.
 **The `Cfg g_cfg` struct** is the parsed-once CLI configuration.
 Values flow from `g_cfg` → `State S` at startup, never the other way.
 If you add a CLI flag, add a `Cfg` field, parse it in `parse_cli()`,
-and apply it to `S` near line 1955 where the other applications happen.
+and apply it to `S` near the top of `main()` where the other
+applications happen.
 
-**Key callback** (`key_cb` in main.cpp) is the dispatch table for
-keyboard input. Structured as: layer toggles → modifier combos
-(Ctrl+S/N/P) → parameter adjustments. Additions go in the appropriate
-section; don't create a new callback.
+### Input system (input.cpp/h)
+
+Keyboard, Xbox gamepad, and future MIDI all funnel through a single
+registry. See [ADR-0007](ADR/0007-action-registry-and-bindings-ini.md)
+for the why.
+
+- **`ActionId` enum** — ~120 entries. Each is one thing the app can
+  do (`warp.zoom+`, `vfx1.param-`, `bpm.tap`, …). Stable names, used
+  both in `bindings.ini` and the help panel.
+- **`Binding`** — `{action, source, code, modmask, scale, invert,
+  deadzone, absolute, context}`. Sources: `SRC_KEY`, `SRC_GAMEPAD_BTN`,
+  `SRC_GAMEPAD_AXIS`, `SRC_MIDI_CC`. Context drives the contextual
+  gamepad model (see ADR-0009).
+- **`Input::installDefaults()`** — factory map that preserves every
+  pre-refactor keyboard assignment.
+- **`bindings.ini`** — written next to the exe on first run. Overrides
+  by `(action, source, context)`. Unknown entries logged and skipped.
+- **`Input::onKey`** — GLFW key callback forwards here; dispatches
+  actions by looking up matching bindings. Shift is always the 20×
+  coarse multiplier (not part of the modmask).
+- **`Input::pollGamepad`** — called per frame from the main loop.
+  Polls Xbox-standard 15 buttons + 6 axes via GLFW, edge-detects
+  buttons for DISCRETE/TRIGGER, integrates axes (RATE) or dispatches
+  absolute (when `absolute=true`, for self-centering sticks like
+  output fade).
+- **`Input::pollMidi`** — stub today, implemented in the pending
+  Strudel work. The binding table already accepts `[midi]` entries.
+
+**`apply_action(ActionId, float magnitude)` in `main.cpp`** is the
+single source of truth for state mutation. Keyboard, gamepad, and
+(eventually) MIDI all dispatch here. Adding a new user action is:
+
+1. Add an `ActionId` entry + table row.
+2. Add a default binding (keyboard and/or gamepad) in
+   `Input::installDefaults`.
+3. Add a `case` in `apply_action` for the mutation.
+4. Add a row to the relevant section builder in `main.cpp` so the
+   help panel picks it up.
 
 ### Recorder pipeline
 
@@ -134,17 +179,43 @@ up to ~30s with no UI feedback. See TODO.md.
 
 **Files:** `overlay.cpp`, `overlay.h`.
 
-Renders bottom-left toast lines (cumulative per key, auto-fade after
-~6s) and a full-screen help screen (toggled with H). Uses
-`stb_easy_font.h` for text.
+Three distinct on-screen surfaces:
+
+1. **HUD toasts (bottom-left)** — cumulative per-key parameter
+   changes and one-shot events, auto-fade after ~5s.
+2. **Drill-down help panel (top-left)** — menu of 16 sections;
+   Enter/Up/Down/Esc to navigate; each section renders a live body
+   (current values) + a legend (current gamepad map). Does NOT dim
+   the main view — panel is semi-opaque so the feedback stays
+   readable behind it. See ADR-0009 for why it became the anchor
+   for contextual gamepad.
+3. **Bottom-right gamepad tag** — always-visible when help is
+   closed and a gamepad is connected; shows active section + "Back:
+   help" reminder. Discoverability for gamepad-only users.
 
 Integration points:
 - `S.ov.logEvent("message")` — one-shot toast.
 - `S.ov.logParam(key, label, delta, value)` — accumulating toast.
-- `S.ov.toggleHelp()`, `S.ov.helpVisible()`, `S.ov.setHelpText(s)`.
+- `S.ov.toggleHelp()`, `S.ov.helpVisible()`, `S.ov.inSectionView()`.
+- `S.ov.setHelpSections(names)` — one-time at startup, ordered list.
+- `S.ov.setHelpProvider(fn)` / `setLegendProvider(fn)` — callbacks
+  that return up-to-date body text / legend strings per section.
+- `S.ov.activeSection()` / `setActiveSection(i)` — tracks which
+  section the gamepad is bound to. Defaults to `Warp` (index 2) on
+  startup.
+- `S.ov.helpUp()` / `helpDown()` / `helpEnter()` / `helpBack()` —
+  navigation primitives called from `apply_action` when help is
+  visible.
 
-The help text is rebuilt every frame it's visible (see
-`build_help_text()` at main.cpp:~870) so live values stay current.
+The body and legend providers are invoked every frame the section
+is shown so live values stay current. Section builders live in
+`main.cpp` next to the `help_section_body` dispatcher.
+
+**Text rendering** uses `stb_easy_font.h`. Panel sizing scales with
+window: 380×420 at 720p up through 540×620 at 4K. A separator line
+divides body from legend. The help index lives in `HELP_SECTIONS[]`
+with an invariant mapping onto `CTX_SEC_STATUS + N` in the input
+layer (see `input.h::BindContext`).
 
 ### Preset system
 
@@ -234,11 +305,14 @@ then lower `--iters`, then lower sim resolution.
 | You want to... | ...touch this |
 |---|---|
 | Add a new visual behavior | `shaders/layers/<name>.glsl` + wiring in `main.frag` + host-side uniform plumb in `main.cpp`. See [CONTRIBUTING.md](../CONTRIBUTING.md). |
-| Add a new CLI flag | `Cfg` struct, `parse_cli`, help text, `State S` application near line 1955. |
-| Add a new key binding | `key_cb` in main.cpp, preserving the section structure (layer toggle / action / modifier / parameter). |
+| Add a new CLI flag | `Cfg` struct, `parse_cli`, help text, `State S` application in `main()`. |
+| Add a new user action | `ActionId` entry in `input.h`; table row in `input.cpp::ACTIONS[]`; default binding in `Input::installDefaults`; `case` in `apply_action` in main.cpp; row in the relevant `section_*` builder. |
+| Rebind an existing action | Edit `bindings.ini` next to the exe — no recompile. |
+| Add a new V-4 effect | New `if (eff == N)` branch in `shaders/layers/vfx_slot.glsl`; extend `VFX_NAMES[]` in main.cpp; bump `VFX_COUNT`. |
 | Change recording format | `exr_write.h` + `recorder.cpp` encoder loop. |
 | Add another CPU capture card | `camera.cpp` (Media Foundation). |
 | Port to Linux/macOS | `linux/` and `macOS/` subdirs (separate main.cpp currently). |
+| Add real MIDI support | Implement `Input::pollMidi` on top of winmm. Plan captured in `development/plans/strudel_midi_sync.md`. |
 
 ## Invariants the code relies on
 
@@ -250,12 +324,27 @@ Break these and things go subtly wrong:
    These are mirrored by hand. Getting them out of sync silently breaks
    layer toggles.
 3. **`S.p` is the single source of truth for per-layer parameters.**
-   Uniforms read from it; presets write from/to it; key handlers modify it.
+   Uniforms read from it; presets write from/to it; `apply_action`
+   modifies it.
 4. **Sim FBO never has the overlay drawn on it.** Recording and
    screenshots go from the sim FBO, so the overlay stays display-only.
 5. **The recorder runs lockstep with the render thread for capture
    ONLY.** Subsequent stages are decoupled — the render thread
    doesn't block waiting on disk.
+6. **`CTX_SEC_STATUS + N == section N` in HELP_SECTIONS[].** The
+   input layer's context enum and the overlay's section index use the
+   same ordinal. Reordering `HELP_SECTIONS[]` breaks gamepad dispatch
+   silently.
+7. **`apply_action` is the only writer to `S.p` in response to user
+   input.** Keyboard, gamepad, MIDI, overlay navigation — all go
+   through it. If you add a side path (e.g. a demo scheduler), call
+   `apply_action` rather than mutating directly so HUD toasts and
+   downstream effects stay consistent.
+8. **Beat-driven transients (`flashDecay`, `decayDipTimer`) compose
+   into render-time `effOutFade` / `effDecay` in `render_field`.**
+   The user's `p.outFade` and `p.decay` are the setpoints; BPM
+   modulations ride on top without mutating them. Don't confuse the
+   two in preset save/load.
 
 ## Where the system is brittle
 

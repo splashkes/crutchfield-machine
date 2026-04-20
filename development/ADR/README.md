@@ -83,3 +83,6 @@ Use git commits for those — the history is their ADR.
 | [0004](0004-shader-layer-system.md) | One `.glsl` file per layer, dispatched via bitfield from `main.frag` | Accepted | 2026-04-19 (retroactive) |
 | [0005](0005-three-stage-recorder-pipeline.md) | Three-stage recorder: capture → reader pool → encoder pool with shared RAM buffer | Accepted | 2026-04-19 |
 | [0006](0006-console-picker-on-zero-args.md) | Show interactive console picker when launched with no CLI args | Accepted | 2026-04-19 |
+| [0007](0007-action-registry-and-bindings-ini.md) | Action registry + `bindings.ini` as the unified input layer | Accepted | 2026-04-19 |
+| [0008](0008-edirol-v4-single-bus-integration.md) | Edirol V-4 as single-bus effect slots, not a full A/B mixer port | Accepted | 2026-04-19 |
+| [0009](0009-contextual-gamepad-per-help-section.md) | Gamepad controls rebind per help section; menu navigation is the only reserved surface | Accepted | 2026-04-19 |

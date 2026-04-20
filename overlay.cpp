@@ -1,9 +1,9 @@
-// overlay.cpp — HUD + help screen using stb_easy_font.
+// overlay.cpp — HUD + top-left drill-down help panel.
 
 #include "overlay.h"
 #include "stb_easy_font.h"
 
-#include <GLFW/glfw3.h>    // glfwGetTime
+#include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -16,7 +16,6 @@ layout(location=1) in vec4 aCol;
 uniform vec2 uRes;
 out vec4 vCol;
 void main() {
-    // pixel coords (top-left origin) → NDC
     vec2 ndc = vec2(aPos.x / uRes.x * 2.0 - 1.0,
                     1.0 - aPos.y / uRes.y * 2.0);
     gl_Position = vec4(ndc, 0.0, 1.0);
@@ -66,12 +65,6 @@ bool Overlay::init() {
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, (void*)0);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, 16, (void*)12);
-    // Leave the overlay's VAO bound here. The caller (main) rebinds its own
-    // VAO at the top of every frame loop iteration, so it's safe. Earlier we
-    // were calling glBindVertexArray(0), which unbound main's VAO that had
-    // been set up before init() — and from then on, glDrawArrays calls in
-    // the feedback pass silently failed on some drivers and rendered junk
-    // on others, which is why the loop looked 'totally different'.
     return true;
 }
 
@@ -83,17 +76,11 @@ void Overlay::shutdown() {
 
 void Overlay::resize(int w, int h) { winW_ = w; winH_ = h; }
 
-// ── public posting API ────────────────────────────────────────────────────
-// Fade timing: HUD stays at full opacity for FADE_START seconds after the
-// last keypress, then fades linearly over FADE_DUR seconds. Fully invisible
-// at FADE_START + FADE_DUR — which the user expects to be 5 seconds.
+// ── HUD fade timing ───────────────────────────────────────────────────────
 static constexpr double FADE_START = 3.5;
 static constexpr double FADE_DUR   = 1.5;
-static constexpr double FADE_END   = FADE_START + FADE_DUR;  // = 5.0
-
-// Text magnification for the HUD and help overlay. stb_easy_font is tiny
-// natively (~6x10 px/char); 2.4x gives ~14x24 which reads well at 1280+ wide.
-static constexpr float TEXT_SCALE = 2.4f;
+static constexpr double FADE_END   = FADE_START + FADE_DUR;
+static constexpr float  TEXT_SCALE = 2.4f;
 
 void Overlay::logParam(const std::string& key,
                        const std::string& label,
@@ -109,7 +96,6 @@ void Overlay::logParam(const std::string& key,
              label.c_str(), deltaStr.c_str(), valueStr.c_str());
     std::string txt = buf;
 
-    // Replace existing line for this key if present (cumulative aggregation).
     for (auto& l : lines_) {
         if (l.key == key) { l.text = txt; l.lastTouch = now; return; }
     }
@@ -127,10 +113,8 @@ void Overlay::logEvent(const std::string& text) {
 void Overlay::drawTextLine(float x, float y, const std::string& text,
                            unsigned char rgba[4], float alpha, float scale)
 {
-    // Render chunk-by-chunk so we never bail mid-text on long strings (the
-    // help screen is ~5000 chars and would exceed any reasonable static buf).
     const int CHARS_PER_BATCH = 256;
-    const int VBUF_BYTES = CHARS_PER_BATCH * 270 + 1024; // stb's worst-case per-char
+    const int VBUF_BYTES = CHARS_PER_BATCH * 270 + 1024;
     static std::vector<char> vbuf(VBUF_BYTES);
     static std::vector<float> tris;
     tris.reserve(CHARS_PER_BATCH * 6 * 4);
@@ -140,15 +124,11 @@ void Overlay::drawTextLine(float x, float y, const std::string& text,
     glUniform2f(locRes_, (float)winW_, (float)winH_);
     glUniform1f(locAlpha_, alpha);
 
-    // Walk the text, breaking at newlines and at CHARS_PER_BATCH chunks
-    // (whichever comes first). Track current pen position so multi-batch
-    // lines line up correctly.
     float penX = x, penY = y;
     const float lineAdvance = 12.0f * scale;
 
     size_t i = 0;
     while (i < text.size()) {
-        // Take up to CHARS_PER_BATCH chars on the current line.
         size_t end = i;
         size_t take = 0;
         while (end < text.size() && text[end] != '\n' && take < CHARS_PER_BATCH) {
@@ -160,7 +140,6 @@ void Overlay::drawTextLine(float x, float y, const std::string& text,
             int nq = stb_easy_font_print(penX, penY, (char*)seg.c_str(),
                                          rgba, vbuf.data(), (int)vbuf.size());
             if (nq > 0) {
-                // Per-call scaling about (penX, penY).
                 if (scale != 1.0f) {
                     float* fv = (float*)vbuf.data();
                     for (int k = 0; k < nq * 4; k++) {
@@ -168,7 +147,6 @@ void Overlay::drawTextLine(float x, float y, const std::string& text,
                         fv[k*4 + 1] = penY + (fv[k*4 + 1] - penY) * scale;
                     }
                 }
-                // Quads → triangles
                 tris.clear();
                 tris.reserve(nq * 6 * 4);
                 const float* qv = (const float*)vbuf.data();
@@ -189,14 +167,13 @@ void Overlay::drawTextLine(float x, float y, const std::string& text,
                              tris.data(), GL_STREAM_DRAW);
                 glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(tris.size() / 4));
             }
-            // Advance pen X by the rendered width.
             penX += stb_easy_font_width((char*)seg.c_str()) * scale;
         }
 
         if (end < text.size() && text[end] == '\n') {
             penX = x;
             penY += lineAdvance;
-            end++; // consume the newline
+            end++;
         }
         i = end;
     }
@@ -205,10 +182,6 @@ void Overlay::drawTextLine(float x, float y, const std::string& text,
 void Overlay::drawFilledRect(float x, float y, float w, float h,
                              unsigned char rgba[4], float alpha)
 {
-    // V must be exactly 16 bytes to match the VAO's stride (3 floats for
-    // pos+z, then 4 bytes RGBA). If you collapse the z the attrib pointer
-    // reads garbage on every vertex past the first — which is why the help
-    // box and HUD background were previously rendering as nonsense shapes.
     struct V { float x, y, z; unsigned char c[4]; };
     static_assert(sizeof(V) == 16, "V must be 16 bytes");
 
@@ -228,14 +201,66 @@ void Overlay::drawFilledRect(float x, float y, float w, float h,
     glUniform2f(locRes_, (float)winW_, (float)winH_);
     glUniform1f(locAlpha_, alpha);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    // Deliberately NOT calling glBindVertexArray(0) — leaving our own VAO
-    // bound is harmless; unbinding would break the feedback render that
-    // runs next frame if main hasn't rebound its own VAO yet.
 }
 
-// ── help text ─────────────────────────────────────────────────────────────
-// ── help text comes from the host (main.cpp builds it dynamically with
-//    the current values of every parameter, then calls ov.setHelpText) ──
+// ── help panel state ──────────────────────────────────────────────────────
+void Overlay::setHelpSections(std::vector<std::string> names) {
+    sections_ = std::move(names);
+    if (menuSel_ >= (int)sections_.size()) menuSel_ = 0;
+}
+
+void Overlay::toggleHelp() {
+    helpVisible_ = !helpVisible_;
+    if (!helpVisible_) {
+        // Reset to menu so next open starts fresh.
+        view_ = VIEW_MENU;
+        sectionScroll_ = 0;
+    }
+}
+
+void Overlay::helpUp() {
+    if (view_ == VIEW_MENU) {
+        if (!sections_.empty())
+            menuSel_ = (menuSel_ - 1 + (int)sections_.size()) % (int)sections_.size();
+    } else {
+        if (sectionScroll_ > 0) sectionScroll_--;
+    }
+}
+
+void Overlay::helpDown() {
+    if (view_ == VIEW_MENU) {
+        if (!sections_.empty())
+            menuSel_ = (menuSel_ + 1) % (int)sections_.size();
+    } else {
+        sectionScroll_++;
+        // Clamped in drawHelpSection against actual line count.
+    }
+}
+
+void Overlay::helpEnter() {
+    if (view_ == VIEW_MENU && !sections_.empty()) {
+        view_ = VIEW_SECTION;
+        sectionScroll_ = 0;
+        activeSection_ = menuSel_;   // controller now drives this section
+    }
+}
+
+void Overlay::helpBack() {
+    if (view_ == VIEW_SECTION) { view_ = VIEW_MENU; sectionScroll_ = 0; }
+    else                        { helpVisible_ = false; }
+}
+
+std::vector<std::string> Overlay::splitLines(const std::string& s) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i <= s.size()) {
+        size_t j = s.find('\n', i);
+        if (j == std::string::npos) { out.push_back(s.substr(i)); break; }
+        out.push_back(s.substr(i, j - i));
+        i = j + 1;
+    }
+    return out;
+}
 
 // ── the main draw ─────────────────────────────────────────────────────────
 void Overlay::draw() {
@@ -249,8 +274,6 @@ void Overlay::draw() {
     else if (dt >= FADE_START) alpha = (float)(1.0 - (dt - FADE_START) / FADE_DUR);
 
     const bool hudVisible = (alpha > 0.001f) && !lines_.empty();
-
-    // Fast-path: nothing to draw. Leave blend state clean.
     if (!hudVisible && !helpVisible_) return;
 
     glEnable(GL_BLEND);
@@ -259,8 +282,6 @@ void Overlay::draw() {
 
     // ---- HUD bottom-left ----
     if (hudVisible) {
-        // stb glyph cell is ~10 px tall at 1x. At TEXT_SCALE the line box is
-        // ~10*scale; we add a small gutter so lines don't touch.
         const int lineH    = (int)(12 * TEXT_SCALE) + 4;
         const int leftPad  = 16;
         const int bottomPad= 16;
@@ -270,10 +291,9 @@ void Overlay::draw() {
         int nLines = (int)lines_.size();
         float boxH = (float)(nLines * lineH + 16);
         float boxY = (float)(winH_ - bottomPad - boxH + 6);
-        float boxW = (float)(winW_ / 2 + 80);   // generous; won't exceed half-screen
+        float boxW = (float)(winW_ / 2 + 80);
         drawFilledRect(6, boxY, boxW, boxH, bg, alpha * 0.85f);
 
-        // Newest line at the bottom of the stack, reading up.
         for (int i = 0; i < nLines; i++) {
             const auto& line = lines_[nLines - 1 - i];
             float y = (float)(winH_ - bottomPad - (i+1) * lineH + 4);
@@ -281,59 +301,159 @@ void Overlay::draw() {
         }
     }
 
-    // ---- Help overlay ----
-    if (helpVisible_) {
-        const char* text = helpText_.empty() ? "(help text not set)" : helpText_.c_str();
+    // ---- Help panel (top-left, no dim) ----
+    if (helpVisible_) drawHelpPanel();
 
-        // Pick a scale that fits the help text into ~85% of the window in
-        // both dimensions. Bigger window → bigger help. Floor at 2.4
-        // (HUD-size) so the help is always at least as readable as the HUD,
-        // ceiling at 6.0 so it doesn't get cartoonishly huge on 4K displays.
-        int maxLineW = 0;
-        int nLines   = 1;
-        const char* p = text;
-        const char* s = p;
-        while (*p) {
-            if (*p == '\n') {
-                std::string seg(s, p);
-                int w = stb_easy_font_width((char*)seg.c_str());
-                if (w > maxLineW) maxLineW = w;
-                nLines++;
-                s = p + 1;
-            }
-            p++;
-        }
-        {
-            std::string seg(s, p);
-            int w = stb_easy_font_width((char*)seg.c_str());
-            if (w > maxLineW) maxLineW = w;
-        }
-
-        const float pad = 32.0f;
-        const float availW = winW_ * 0.92f - pad*2;
-        const float availH = winH_ * 0.92f - pad*2;
-        float scaleX = availW / (float)maxLineW;
-        float scaleY = availH / (float)(nLines * 12);
-        float scale  = scaleX < scaleY ? scaleX : scaleY;
-        if (scale < 2.4f) scale = 2.4f;
-        if (scale > 6.0f) scale = 6.0f;
-
-        float textW = maxLineW * scale;
-        float textH = (nLines * 12) * scale;
-        float boxW  = textW + pad*2;
-        float boxH  = textH + pad*2;
-        if (boxW > winW_  - 20) boxW = (float)(winW_  - 20);
-        if (boxH > winH_  - 20) boxH = (float)(winH_  - 20);
-        float boxX = (winW_ - boxW) * 0.5f;
-        float boxY = (winH_ - boxH) * 0.5f;
-
-        unsigned char dim[4]   = { 0, 0, 0, 200 };
-        unsigned char boxBG[4] = { 14, 14, 18, 245 };
-        unsigned char fg[4]    = { 240, 240, 245, 255 };
-        drawFilledRect(0, 0, (float)winW_, (float)winH_, dim, 0.80f);
-        drawFilledRect(boxX, boxY, boxW, boxH, boxBG, 0.97f);
-        drawTextLine(boxX + pad, boxY + pad, text, fg, 1.0f, scale);
+    // ---- Bottom-right gamepad hint (only when help is closed) ----
+    if (!helpVisible_ && showGamepadHint_ && activeSection_ >= 0
+        && activeSection_ < (int)sections_.size())
+    {
+        const float s = 1.4f;
+        const float pad = 10.0f;
+        char buf[128];
+        snprintf(buf, sizeof buf, "%s  \x10  Back: help",
+                 sections_[activeSection_].c_str());
+        int txtW = stb_easy_font_width(buf);
+        float w = txtW * s + pad * 2.0f;
+        float h = 12.0f * s + pad;
+        float x = (float)winW_ - w - 10.0f;
+        float y = (float)winH_ - h - 10.0f;
+        unsigned char bg[4]  = { 10, 12, 16, 170 };
+        unsigned char fg[4]  = { 180, 190, 210, 255 };
+        drawFilledRect(x, y, w, h, bg, 0.85f);
+        drawTextLine(x + pad, y + pad * 0.5f, buf, fg, 1.0f, s);
     }
 
     glDisable(GL_BLEND);
+}
+
+// Panel geometry: fixed top-left. Scales modestly with window width so
+// the panel isn't postage-stamp sized at 4K, but never grows past a
+// readable ~540 px column.
+void Overlay::drawHelpPanel() {
+    const float pad       = 14.0f;
+    const float panelX    = 12.0f;
+    const float panelY    = 12.0f;
+    const float panelW    = (winW_ >= 1920) ? 540.0f
+                          : (winW_ >= 1280) ? 460.0f : 380.0f;
+    const float panelH    = (winH_ >= 1080) ? 620.0f
+                          : (winH_ >= 720)  ? 520.0f : 420.0f;
+
+    unsigned char boxBG[4] = { 10, 10, 14, 235 };
+    unsigned char border[4] = { 70, 72, 82, 255 };
+    drawFilledRect(panelX - 1, panelY - 1, panelW + 2, panelH + 2, border, 0.9f);
+    drawFilledRect(panelX, panelY, panelW, panelH, boxBG, 0.92f);
+
+    if (view_ == VIEW_MENU) drawHelpMenu(panelX + pad, panelY + pad,
+                                         panelW - pad*2, panelH - pad*2);
+    else                    drawHelpSection(panelX + pad, panelY + pad,
+                                            panelW - pad*2, panelH - pad*2);
+}
+
+void Overlay::drawHelpMenu(float x, float y, float w, float /*h*/) {
+    (void)w;
+    unsigned char title[4] = { 220, 230, 255, 255 };
+    unsigned char hint[4]  = { 140, 150, 170, 255 };
+    unsigned char sel[4]   = { 60, 120, 200, 230 };
+    unsigned char selFG[4] = { 255, 255, 255, 255 };
+    unsigned char fg[4]    = { 200, 205, 215, 255 };
+
+    const float titleS = 1.6f;
+    const float hintS  = 1.2f;
+    const float rowS   = 1.6f;
+    const float rowH   = 12.0f * rowS + 4.0f;
+
+    drawTextLine(x, y, "help   [H close]", title, 1.0f, titleS);
+    drawTextLine(x, y + 12.0f * titleS + 4.0f,
+                 "Up/Down select   Enter drill in", hint, 1.0f, hintS);
+
+    float rowY = y + 12.0f * titleS + 4.0f + 12.0f * hintS + 10.0f;
+    for (int i = 0; i < (int)sections_.size(); i++) {
+        if (i == menuSel_) {
+            drawFilledRect(x - 4.0f, rowY - 2.0f,
+                           12.0f * rowS * (int)sections_[i].size() + 24.0f,
+                           rowH, sel, 0.85f);
+            drawTextLine(x, rowY, sections_[i], selFG, 1.0f, rowS);
+        } else {
+            drawTextLine(x, rowY, sections_[i], fg, 1.0f, rowS);
+        }
+        rowY += rowH;
+    }
+}
+
+void Overlay::drawHelpSection(float x, float y, float w, float h) {
+    unsigned char title[4] = { 220, 230, 255, 255 };
+    unsigned char hint[4]  = { 140, 150, 170, 255 };
+    unsigned char fg[4]    = { 200, 205, 215, 255 };
+    unsigned char dim[4]   = { 130, 140, 150, 255 };
+
+    const float titleS = 1.6f;
+    const float hintS  = 1.2f;
+    const float bodyS  = 1.3f;
+    const float lineH  = 12.0f * bodyS + 2.0f;
+
+    const std::string secName = (menuSel_ >= 0 && menuSel_ < (int)sections_.size())
+                                ? sections_[menuSel_] : std::string();
+    char tbuf[128];
+    snprintf(tbuf, sizeof tbuf, "\x10 %s", secName.c_str());
+    drawTextLine(x, y, tbuf, title, 1.0f, titleS);
+    drawTextLine(x, y + 12.0f * titleS + 4.0f,
+                 "Up/Down scroll   Esc back   H close",
+                 hint, 1.0f, hintS);
+
+    float bodyY = y + 12.0f * titleS + 4.0f + 12.0f * hintS + 10.0f;
+    const float bodyH = h - (bodyY - y);
+    int visibleLines = (int)(bodyH / lineH);
+    if (visibleLines < 1) visibleLines = 1;
+
+    std::string body;
+    if (provider_) body = provider_(menuSel_);
+    else           body = "(no provider)";
+    cachedBody_ = body;
+
+    std::vector<std::string> lines = splitLines(body);
+
+    // Clamp scroll to the last page.
+    int maxScroll = (int)lines.size() - visibleLines;
+    if (maxScroll < 0) maxScroll = 0;
+    if (sectionScroll_ > maxScroll) sectionScroll_ = maxScroll;
+    if (sectionScroll_ < 0) sectionScroll_ = 0;
+
+    const float colX = x;
+    float lineY = bodyY;
+    int end = (int)lines.size();
+    int start = sectionScroll_;
+    int shown = 0;
+    for (int i = start; i < end && shown < visibleLines; i++, shown++) {
+        // Rows starting with "-- " are section headings inside the body.
+        bool isHead = (lines[i].size() >= 3 && lines[i].compare(0, 3, "-- ") == 0);
+        drawTextLine(colX, lineY, lines[i], isHead ? title : fg, 1.0f, bodyS);
+        lineY += lineH;
+    }
+
+    // Legend: one block at the bottom showing current gamepad map.
+    // Drawn above the scroll indicator. Styled with the hint colour.
+    if (legend_) {
+        std::string leg = legend_(menuSel_);
+        if (!leg.empty()) {
+            // Count legend lines to position above the bottom scroll hint.
+            int nLegendLines = 1;
+            for (char c : leg) if (c == '\n') nLegendLines++;
+            const float legS = 1.2f;
+            const float legH = 12.0f * legS + 2.0f;
+            float legY = y + h - nLegendLines * legH - 12.0f * hintS - 6.0f;
+            // Soft separator.
+            unsigned char sep[4] = { 70, 75, 90, 255 };
+            drawFilledRect(x, legY - 6.0f, w, 1.0f, sep, 0.6f);
+            drawTextLine(x, legY, leg, hint, 1.0f, legS);
+        }
+    }
+
+    // Scroll indicator.
+    if (maxScroll > 0) {
+        char buf[64];
+        snprintf(buf, sizeof buf, "  -- %d/%d --", start, maxScroll);
+        drawTextLine(x, y + h - 12.0f * hintS, buf, dim, 1.0f, hintS);
+    }
+    (void)w;
 }

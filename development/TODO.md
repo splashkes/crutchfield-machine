@@ -165,17 +165,29 @@ it modulates via a CLI flag or preset key.
 - Works on Windows via WASAPI; Linux/macOS paths deferred.
 **Effort:** medium.
 
-### [P2] MIDI / OSC input
+### [P1] Real MIDI input (for Strudel sync + hardware controllers)
 
-**Why:** Live performers want physical control. A basic "MIDI CC N →
-parameter X" mapping opens this door. OSC is the same idea without
-the driver dependency.
-**Where:** new `control.cpp/h`. Use `rtmidi` for MIDI (small dep) or
-a hand-rolled UDP OSC parser (no dep).
+**Why:** The action-registry refactor (ADR-0007) already put a
+`[midi]` section in `bindings.ini` and a stub `Input::pollMidi`.
+Strudel integration needs real MIDI-in to follow its clock and fire
+visual events on drum hits. Same plumbing unlocks physical MIDI
+controllers (Launchpad, nanoKONTROL) at no extra cost.
+**Where:** `input.cpp::pollMidi`. Use winmm (`midiInOpen`,
+`midiInStart`) — already linked for the recorder; no new dependency.
+Thread-safe queue: callback pushes bytes, main thread drains.
 **Done when:**
-- CC messages route to named parameters via a config file.
-- Works with a standard MIDI controller (e.g., Launchpad, nanoKONTROL).
+- MIDI Clock (0xF8) at 24 PPQN derives BPM; Start/Stop anchors phase.
+- Note-On events bind to any ActionId via `bindings.ini`
+  (`bpm.flash = note:36 ch=10` etc.).
+- CC events drive continuous parameters via the existing axis/rate
+  dispatch path.
+- A new `MIDI` help section shows port status, derived BPM, last
+  note, last CC.
+- Works alongside loopMIDI (Windows virtual MIDI) so a Strudel
+  browser session can drive the feedback app.
 **Effort:** medium.
+**Reference:** full plan in `development/plans/strudel_midi_sync.md`.
+**Blockers:** PR #1 (`roland-v4` branch) merged into main first.
 
 ### [P2] `--record-on-start`
 
@@ -271,6 +283,57 @@ to share with.
 
 ---
 
+## New for P1/P2 — follow-on work from `roland-v4` branch
+
+### [P2] A/B bus V-4 architecture refactor
+
+**Why:** The `roland-v4` pass shipped V-4 effects as single-bus
+(ADR-0008) with a documented holdback list — 216 wipes, 36-entry
+Transformer matrix, 8-slot Memory, Preview bus, Presentation mode,
+V-LINK — none of which can be ported without an A/B bus. A faithful
+V-4 port eventually wants that foundation.
+**Where:** `Params` splits into `BusParams` × 2 + a top-level `Master`.
+`render_field` duplicates per-bus. New `combine.frag` reads both
+buses + `uTbar` and outputs the program frame. Actions prefix with
+`a.*` / `b.*` or introduce an "active bus" focus state.
+**Done when:**
+- Both buses run independent pipelines at full 4K60.
+- T-bar crossfade between them, with selectable curve (A/B/C per
+  V-4 OM §17).
+- At least one wipe and one key transition working on the crossfade.
+- Preset format migrates; old single-bus presets load into bus A
+  with bus B defaulted.
+**Effort:** large (multi-day).
+**Reference:** `research/edirol_v4_ab_bus_future.md` has the
+implementation sketch.
+
+### [P2] Persist active help section across runs
+
+**Why:** Overlay tracks `activeSection` (which section the gamepad
+drives when help is closed) but resets to Warp on every launch.
+Cheap to persist.
+**Where:** `bindings.ini` top-level `activeSection = <name>` key;
+write on change, read at startup.
+**Done when:** Last-used section is restored next launch.
+**Effort:** tiny.
+
+### [P2] `presets/README.md` describing the curated presets
+
+*(Moved from P1 — still open.)*
+
+**Why:** `01_default` through `05_kaneko_cml` ship with the release
+but only have one-line `# notes:` headers. A one-paragraph description
+per preset turns them from mystery files into a guided tour.
+**Where:** new `presets/README.md`.
+**Done when:**
+- Each of `01_*` through `05_*` has a 2-4 sentence description of
+  what it does, what makes it distinct, and what parameters to tweak
+  from there.
+- Linked from root README's `CLI flag cookbook > Presets` section.
+**Effort:** small.
+
+---
+
 ## Recently completed
 
 *Remove from this list after ~2 releases.*
@@ -286,3 +349,21 @@ to share with.
 - CONTRIBUTING.md with shader authoring walkthrough. v0.1.0.
 - Release gallery images via orphan branch (no asset list clutter). v0.1.0.
 - `development/` canonical docs (this set of files). v0.1.1.
+
+### From the `roland-v4` branch (PR #1, pending merge)
+
+- Action registry + `bindings.ini` for unified keyboard / gamepad /
+  MIDI dispatch (ADR-0007).
+- Xbox gamepad support with contextual per-section mapping (ADR-0009).
+- Help overlay rework — top-left drill-down panel, 16 sections with
+  live values and per-section gamepad legends.
+- Edirol V-4-inspired effect slots: 2 slots × 18 effects + output
+  fade (ADR-0008).
+- BPM sync + tap tempo + 5 beat-locked modulations (inject-on-beat,
+  strobe-rate lock, vfx auto-cycle, fade flash, decay dip).
+- Cursor-nav pattern for Layers / Quality / Inject list sections.
+- Luminance-invert fix: lifted out of L_PHYSICS gate so it always
+  works.
+- `build_msvc.bat` missing sources (recorder, overlay, input) fixed.
+- Gamepad help discoverability: Back button = help, bottom-right
+  section tag when help is closed.
