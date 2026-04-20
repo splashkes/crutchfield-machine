@@ -96,4 +96,15 @@ const std::string& currentPresetName();
 // if so. Called cheaply once per frame; stat()s one file max.
 void pollPresetReload();
 
+// ── Video ↔ music bridge ─────────────────────────────────────────────
+// Publish a named scalar to the JS context's `fb` global so patterns
+// can modulate based on live feedback state. Example from Strudel code:
+//
+//   note("c3").lpf(500 + fb.hue * 2000)
+//
+// Zero allocation on the hot path when the property already exists.
+// Call freely (e.g. once per frame per scalar); value is copied into JS
+// as a plain number.
+void setScalar(const char* name, double value);
+
 } // namespace Music

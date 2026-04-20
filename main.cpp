@@ -3150,6 +3150,23 @@ int main(int argc, char** argv) {
         // it. Throttled internally to ~250ms.
         Music::pollPresetReload();
 
+        // Publish live feedback-side scalars to the JS `fb` global so
+        // patterns can modulate based on what's on screen. Keep this
+        // list small + stable — it's the closed-loop contract for music
+        // files to rely on.
+        Music::setScalar("zoom",      S.p.zoom);
+        Music::setScalar("theta",     S.p.theta);
+        Music::setScalar("hueRate",   S.p.hueRate);
+        Music::setScalar("decay",     S.p.decay);
+        Music::setScalar("contrast",  S.p.contrast);
+        Music::setScalar("chroma",    S.p.chroma);
+        Music::setScalar("blur",      S.p.blurX + S.p.blurY);
+        Music::setScalar("noise",     S.p.noise);
+        Music::setScalar("inject",    S.p.inject);
+        Music::setScalar("outFade",   S.p.outFade);
+        Music::setScalar("paused",    S.paused ? 1.0 : 0.0);
+        Music::setScalar("beatPhase", S.p.beatPhase);
+
         glBindVertexArray(mainVAO);
 
         if (S.needClear) {

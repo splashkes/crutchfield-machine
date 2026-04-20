@@ -100,6 +100,15 @@ bool init() {
     g_up = true;
     std::fprintf(stdout, "[music] QuickJS %s runtime up\n", JS_GetVersion());
 
+    // Video ↔ music bridge — create a `fb` global object patterns can
+    // read scalars from. setScalar() mutates properties on this object;
+    // JS sees the updated values on the next queryArc.
+    {
+        JSValue g = JS_GetGlobalObject(g_ctx);
+        JS_SetPropertyStr(g_ctx, g, "fb", JS_NewObject(g_ctx));
+        JS_FreeValue(g_ctx, g);
+    }
+
     // Load the pattern engine. Path resolves relative to the executable
     // so it works when launched from Explorer or from any shell.
     static const char* search[] = {
@@ -359,6 +368,22 @@ void update(double now, float bpm) {
 }
 
 double currentCycle() { return g_curCycle; }
+
+void setScalar(const char* name, double value) {
+    if (!g_up || !name) return;
+    JSValue g  = JS_GetGlobalObject(g_ctx);
+    JSValue fb = JS_GetPropertyStr(g_ctx, g, "fb");
+    if (!JS_IsObject(fb)) {
+        JS_FreeValue(g_ctx, fb);
+        fb = JS_NewObject(g_ctx);
+        // Install the newly-created object (and also drop the reference we
+        // just made by passing it into SetPropertyStr, which takes ownership).
+        JS_SetPropertyStr(g_ctx, g, "fb", JS_DupValue(g_ctx, fb));
+    }
+    JS_SetPropertyStr(g_ctx, fb, name, JS_NewFloat64(g_ctx, value));
+    JS_FreeValue(g_ctx, fb);
+    JS_FreeValue(g_ctx, g);
+}
 
 // ── Preset system ────────────────────────────────────────────────────
 
