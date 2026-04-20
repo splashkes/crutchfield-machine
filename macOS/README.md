@@ -1,26 +1,85 @@
-# macOS port — very early work in progress
+# macOS / Apple Silicon
 
-This subdirectory holds notes and shaders toward a macOS port. There is
-**no runnable app here yet** — just documents and the shared shader tree.
+This subtree keeps the macOS build isolated from the Windows-first app at
+the repo root.
 
-## What's here
+## Shared-source rule
 
-- `shaders/` — same shader source as the Windows build.
-- `NOTES.md`, `PHILOSOPHY.md`, `CREDITS.md` — context material.
+The macOS build does **not** check in near-duplicate copies of the root
+Windows sources. Instead, `macOS/scripts/prepare_sources.py` transforms the
+shared root `main.cpp` and `camera.h` into `build/generated/` at build time,
+then compiles those generated files together with the macOS-specific camera
+backend.
 
-## What's missing
+Shared at build time:
 
-Everything else. No `main.cpp`, no build system, no camera capture code.
+- `../main.cpp`
+- `../camera.h`
+- `../input.cpp`
+- `../overlay.cpp`
+- `../recorder.cpp`
+- `../shaders/`
+- `../presets/`
 
-## Planned approach
+Mac-specific in this directory:
 
-- GL 4.1 core profile (the highest Apple ships; no compute shaders).
-- AVFoundation for camera capture instead of Media Foundation / V4L2.
-- GLFW for window + input — same as Windows.
-- Recorder pipeline ported with minor changes (same EXR code should work;
-  PBO behavior identical on desktop GL).
+- `camera_avfoundation.mm`
+- `Makefile`
+- `Info.plist`
+- `scripts/prepare_sources.py`
 
-## Status
+## Prereqs
 
-Port is **not started**. If you want to help, see `../CONTRIBUTING.md`.
-The Windows build at the repo root is the reference.
+```bash
+brew install glfw glew pkg-config
+```
+
+## Build
+
+```bash
+cd macOS
+make
+```
+
+This produces `macOS/feedback.app`.
+
+## Package
+
+```bash
+cd macOS
+make dist
+```
+
+This produces `macOS/feedback-macos-arm64.zip`.
+
+## Launch
+
+Double-click `feedback.app` in Finder, or:
+
+```bash
+cd macOS
+open feedback.app
+```
+
+The app bundle embeds:
+
+- `shaders/` and `presets/` in `Contents/Resources`
+- `libglfw.3.dylib` and `libGLEW.2.3.dylib` in `Contents/Frameworks`
+
+At runtime the app uses:
+
+`~/Library/Application Support/Crutchfield Machine`
+
+for `bindings.ini`, user presets, screenshots, and recordings, so Finder
+launches do not depend on the shell working directory.
+
+## Camera
+
+- On first launch, macOS should ask for camera permission.
+- If access was denied, re-enable it for `feedback` under
+  System Settings -> Privacy & Security -> Camera.
+
+## Note
+
+This still needs normal signing/notarization work if you want Gatekeeper to
+trust a downloaded release zip on other machines without manual override.
