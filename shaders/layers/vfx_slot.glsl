@@ -43,15 +43,23 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
     float p     = uVfxParam[slot];
     int   bsrc  = uVfxBSource[slot];
 
-    // Common temporary so effects can sample a B source without repeat typing.
-    vec4 B = (eff >= 15) ? vfx_b_source(uv, bsrc) : vec4(0);
-
-    // 19-way dispatch. Each case is a stub returning `col` until its
-    // implementation lands. Keeping the switch exhaustive so the shader
-    // compiler catches missing cases if an effect id slips the table.
+    // 19-way dispatch. B-source is sampled inside each branch that needs
+    // it so PinP can resample at the inset coordinate, not the outer one.
     if      (eff == 0)  return col;                // off
-    else if (eff == 1)  return col;                // Strobe   (C5c)
-    else if (eff == 2)  return col;                // Still    (C5c)
+    else if (eff == 1) {                           // Strobe — intensity modulation
+        // Period 2..30 frames, 50% duty cycle. Off-beats dim to 10% so
+        // trails aren't completely wiped out of the feedback field.
+        int period = int(floor(mix(2.0, 30.0, p)));
+        if (period < 2) period = 2;
+        int phase  = int(uFrame) - (int(uFrame) / period) * period;
+        float k = (phase < period / 2) ? 1.0 : 0.10;
+        return vec4(col.rgb * k, col.a);
+    }
+    else if (eff == 2) {                           // Still — freeze feedback
+        // param = mix between live col and held previous frame.
+        vec4 held = texture(uPrev, uv);
+        return vec4(mix(col.rgb, held.rgb, p), col.a);
+    }
     else if (eff == 3) {                           // Shake
         // Position jitter. param = amplitude in the 0..5% of frame range.
         // Two-frequency random drift via hash on uTime gives less regular
@@ -140,11 +148,48 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
         vec2 tu = fract(uv * N);
         return texture(uPrev, tu);
     }
-    else if (eff == 15) return col;                // W-LumiKey(C5c)  — B
-    else if (eff == 16) return col;                // B-LumiKey(C5c)  — B
-    else if (eff == 17) return col;                // ChromaKey(C5c)  — B
-    else if (eff == 18) return col;                // PinP     (C5c)  — B
+    else if (eff == 15) {                          // W-LumiKey (bright = key)
+        vec4 B = vfx_b_source(uv, bsrc);
+        float L = vfx_lum(col.rgb);
+        float edge = 0.06;
+        float mask = smoothstep(p - edge, p + edge, L);
+        return vec4(mix(col.rgb, B.rgb, mask), col.a);
+    }
+    else if (eff == 16) {                          // B-LumiKey (dark = key)
+        vec4 B = vfx_b_source(uv, bsrc);
+        float L = vfx_lum(col.rgb);
+        float edge = 0.06;
+        float mask = 1.0 - smoothstep(p - edge, p + edge, L);
+        return vec4(mix(col.rgb, B.rgb, mask), col.a);
+    }
+    else if (eff == 17) {                          // ChromaKey (hue = key)
+        vec4 B = vfx_b_source(uv, bsrc);
+        vec3 hsv = rgb2hsv(col.rgb);
+        float target = fract(p);
+        float d = abs(fract(hsv.x - target + 0.5) - 0.5);  // 0..0.5 wrapped
+        float tol = 0.10;
+        float mask = 1.0 - smoothstep(tol, tol + 0.06, d);
+        mask *= smoothstep(0.30, 0.45, hsv.y);             // ignore grays
+        return vec4(mix(col.rgb, B.rgb, mask), col.a);
+    }
+    else if (eff == 18) {                          // PinP (inset from B-source)
+        // Fixed bottom-right inset with param = size. Could extend to
+        // positionable via two slot params later if we grow the slot schema.
+        float size = mix(0.15, 0.60, p);
+        float m    = 0.03;                         // 3% outer margin
+        vec2 lo = vec2(1.0 - size - m, 1.0 - size - m);
+        vec2 hi = vec2(1.0 - m, 1.0 - m);
+        if (uv.x > lo.x && uv.y > lo.y && uv.x < hi.x && uv.y < hi.y) {
+            vec2 ruv = (uv - lo) / size;
+            vec4 B = vfx_b_source(ruv, bsrc);
+            // Thin border: 1px-ish ramp at the inset edge.
+            vec2 edge = min(uv - lo, hi - uv);
+            float border = smoothstep(0.0, 0.004, min(edge.x, edge.y));
+            vec3 borderCol = vec3(1.0) - col.rgb;   // contrast-to-background
+            return vec4(mix(borderCol, B.rgb, border), col.a);
+        }
+        return col;
+    }
 
-    // Silence unused warnings by reading each input (no-op in optimiser).
-    return col + 0.0 * (B * p);
+    return col;
 }
