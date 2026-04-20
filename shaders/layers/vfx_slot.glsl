@@ -52,7 +52,17 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
     if      (eff == 0)  return col;                // off
     else if (eff == 1)  return col;                // Strobe   (C5c)
     else if (eff == 2)  return col;                // Still    (C5c)
-    else if (eff == 3)  return col;                // Shake    (C5b)
+    else if (eff == 3) {                           // Shake
+        // Position jitter. param = amplitude in the 0..5% of frame range.
+        // Two-frequency random drift via hash on uTime gives less regular
+        // motion than a pure sine would.
+        float A = p * 0.05;
+        float tA = uTime * 7.3;
+        float tB = uTime * 11.7;
+        vec2 j = vec2(hash21(vec2(floor(tA), 0.0), uTime) - 0.5,
+                      hash21(vec2(0.0, floor(tB)), uTime) - 0.5) * 2.0 * A;
+        return texture(uPrev, uv + j);
+    }
     else if (eff == 4) {                           // Negative
         // param = mix between original and full RGB inversion.
         vec3 inv = 1.0 - col.rgb;
@@ -93,12 +103,43 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
         vec3 mono = vec3(L);
         return vec4(mix(mono, col.rgb, keep), col.a);
     }
-    else if (eff == 9)  return col;                // Mirror-H (C5b)
-    else if (eff == 10) return col;                // Mirror-V (C5b)
-    else if (eff == 11) return col;                // Mirror-HV(C5b)
-    else if (eff == 12) return col;                // Multi-H  (C5b)
-    else if (eff == 13) return col;                // Multi-V  (C5b)
-    else if (eff == 14) return col;                // Multi-HV (C5b)
+    else if (eff == 9) {                           // Mirror-H (vertical seam)
+        // Reflect the half on the far side of the seam onto the near side.
+        // param slides the seam 0..1; 0.5 = classic centre mirror.
+        float s = clamp(p, 0.02, 0.98);
+        vec2 mu = uv;
+        if (uv.x > s) mu.x = 2.0 * s - uv.x;
+        return texture(uPrev, clamp(mu, 0.0, 1.0));
+    }
+    else if (eff == 10) {                          // Mirror-V (horizontal seam)
+        float s = clamp(p, 0.02, 0.98);
+        vec2 mu = uv;
+        if (uv.y > s) mu.y = 2.0 * s - uv.y;
+        return texture(uPrev, clamp(mu, 0.0, 1.0));
+    }
+    else if (eff == 11) {                          // Mirror-HV (both)
+        float s = clamp(p, 0.02, 0.98);
+        vec2 mu = uv;
+        if (uv.x > s) mu.x = 2.0 * s - uv.x;
+        if (uv.y > s) mu.y = 2.0 * s - uv.y;
+        return texture(uPrev, clamp(mu, 0.0, 1.0));
+    }
+    else if (eff == 12) {                          // Multi-H (horizontal tiling)
+        // Integer tile count 2..8 via continuous param.
+        float N = floor(mix(2.0, 8.0, p) + 0.5);
+        vec2 tu = vec2(fract(uv.x * N), uv.y);
+        return texture(uPrev, tu);
+    }
+    else if (eff == 13) {                          // Multi-V
+        float N = floor(mix(2.0, 8.0, p) + 0.5);
+        vec2 tu = vec2(uv.x, fract(uv.y * N));
+        return texture(uPrev, tu);
+    }
+    else if (eff == 14) {                          // Multi-HV
+        float N = floor(mix(2.0, 8.0, p) + 0.5);
+        vec2 tu = fract(uv * N);
+        return texture(uPrev, tu);
+    }
     else if (eff == 15) return col;                // W-LumiKey(C5c)  — B
     else if (eff == 16) return col;                // B-LumiKey(C5c)  — B
     else if (eff == 17) return col;                // ChromaKey(C5c)  — B
