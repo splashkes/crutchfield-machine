@@ -49,34 +49,62 @@ just copy `feedback.exe` and the `shaders/` directory into one folder.
 
 ## Controls
 
-| Key | Action |
-|---|---|
-| `F1..F10` | Toggle layer (warp, optics, gamma, color, contrast, decay, noise, couple, external, inject) |
-| `Ins` | Toggle physics layer (Crutchfield camera-side knobs) |
-| `PgDn` | Toggle thermal layer (shimmer / convection) |
-| `L` | Reload shaders from disk (edit a .glsl, press L, see the change live) |
-| `C` | Clear both fields |
-| `P` | Pause |
-| `Space` (hold) | Inject current pattern |
-| `1..5` | Pattern: H-bars, V-bars, dot, checker, gradient |
-| `Esc` | Quit |
-| `Q/A` | zoom ± |
-| `W/S` | rotation ± |
-| Arrow keys | translate |
-| `[/]` | chromatic aberration ± |
-| `;` `'` | blur-X ± |
-| `,` `.` | blur-Y ± |
-| `-` `=` | blur angle ± |
-| `G/B` | gamma ± |
-| `E/D` | hue rotation rate ± |
-| `R/F` | saturation gain ± |
-| `T/Y` | contrast ± |
-| `U/J` | decay ± |
-| `N/M` | noise ± |
-| `K/I` | couple amount ± |
-| `O/L` | external (camera) mix ± |
+Press `H` at any time to open the in-window help panel (top-left, drill-down
+by section). It lists every action with the current key binding and the live
+parameter value — the panel stays visible while you play, so you can keep it
+open while turning knobs.
 
-Hold `Shift` for 5× coarse steps on any parameter.
+Top-level sections: Status · Layers · Warp · Optics · Color · Dynamics ·
+Physics · Thermal · Inject · VFX-1 · VFX-2 · Output · BPM · Quality · App ·
+Bindings.
+
+Hold `Shift` for 20× coarse steps on any parameter nudge.
+
+### Remapping
+
+Every action can be rebound via `bindings.ini` (written next to the exe on
+first run). Actions are named like `warp.zoom+`, `preset.save`,
+`bpm.strobeLock`. The same action can take keyboard, gamepad, and (future)
+MIDI bindings — each source has its own `[section]`.
+
+Xbox controller defaults: left stick translates, right stick rotates (X) +
+output fade (Y, absolute), A = tap tempo, B = clear, X = pause, Y = help,
+LB/RB = VFX-1 cycle, D-pad U/D = preset cycle, D-pad L/R = VFX-2 cycle,
+Start = recording, Back = fullscreen, thumb clicks toggle external +
+couple layers.
+
+### V-4 slots
+
+Two V-4-inspired effect slots sit at the tail of the pipeline. Each holds
+one of 18 effects (Strobe, Still, Shake, Negative, Colorize, Monochrome,
+Posterize, ColorPass, Mirror-H/V/HV, Multi-H/V/HV, W-LumiKey, B-LumiKey,
+ChromaKey, PinP) with a single CONTROL parameter that varies its behaviour
+across what the real V-4 spreads across 5–10 sub-variants. Key/PinP
+effects take a "B source" (camera or the current frame itself) cycled
+per-slot.
+
+Default chords: `Alt+[` / `Alt+]` cycle slot 1; `Ctrl+Alt+[` / `Ctrl+Alt+]`
+cycle slot 2. `Alt+;` / `Alt+'` adjust slot 1's parameter. `Alt+/` cycles
+the B-source.
+
+### BPM
+
+`Tab` to tap tempo; `Ctrl+Tab` toggles beat sync. When sync is on, any
+combination of these modulations fires on each beat:
+
+- inject-on-beat (auto-press the inject trigger)
+- strobe-rate lock (Strobe effect snaps to the beat)
+- vfx auto-cycle (slot 1 cycles through effects)
+- fade-flash (outFade pulses ±0.6 alternating, decays)
+- decay-dip (decay drops to 0.90 for ~80 ms post-beat)
+
+Beat division cycles x2 / x1 / ÷2 / ÷4 via `Alt+Tab`.
+
+### Output fade
+
+Bipolar dial: -1 = full black, +1 = full white. `Ctrl+Up` / `Ctrl+Dn`
+nudge it by ±2%. Gamepad right-stick Y is an absolute-position binding
+(self-centering), matching the feel of the V-4's Output Fade dial.
 
 ## First-run expectations
 
