@@ -90,3 +90,4 @@ Use git commits for those — the history is their ADR.
 | [0011](0011-virtual-midi-port-not-loopmidi-launch.md) | Register as a virtual MIDI port (teVirtualMIDI) instead of launching loopMIDI's GUI | Accepted | 2026-04-20 |
 | [0012](0012-clean-room-pattern-engine.md) | Clean-room pattern engine, not Strudel's AGPL source | Accepted | 2026-04-20 |
 | [0013](0013-dt-coupled-music-scheduler.md) | Music scheduler advances on frame dt, not wall time | Accepted | 2026-04-20 |
+| [0014](0014-platform-transforms-for-mac-and-linux.md) | Platform ports live as build-time transforms, not forks | Accepted | 2026-04-20 |

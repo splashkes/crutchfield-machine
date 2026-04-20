@@ -9,6 +9,15 @@ screenshots/
 # Distribution bundle from `make dist`
 feedback-windows-x64/
 feedback-windows-x64.zip
+feedback-linux-x64/
+feedback-linux-x64.tar.gz
+feedback-macos-arm64/
+feedback-macos-arm64.zip
+
+# Out-of-tree build dirs for platform ports (linux/, macOS/)
+linux/build/
+macOS/build/
+macOS/feedback.app/
 
 # User-local input rebindings (regenerated on first launch)
 bindings.ini

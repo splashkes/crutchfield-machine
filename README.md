@@ -29,25 +29,30 @@ picker so scripted launches still work.
 
 If you want to build from source, read on.
 
-## Apple Silicon note
+## Building on macOS / Linux
 
-This repo's tracked source tree is still Windows-first. If you're using a
-separately-packaged `feedback-macos-arm64` binary, note that the current
-macOS artifact is **not self-contained** on a fresh machine: it links against
-Homebrew's `glfw` and `glew` dylibs at runtime.
+The `macOS/` and `linux/` subdirectories each hold a Python prep script
+and a platform-specific camera backend that transform the Windows source
+tree into a native build — no forked `main.cpp`. Full build steps in the
+README inside each directory.
 
-On a new Apple Silicon Mac, install:
+TL;DR:
 
 ```bash
+# macOS (Apple Silicon)
 brew install glfw glew
+cd macOS && make                    # → feedback.app
+
+# Linux (Ubuntu/Debian)
+sudo apt install build-essential python3 pkg-config libglfw3-dev \
+                 libglew-dev libgl1-mesa-dev libasound2-dev \
+                 zlib1g-dev ffmpeg
+cd linux && make                    # → build/bin/feedback
 ```
 
-`pkg-config` is only needed for building a macOS binary from source. It is
-not required just to run an already-built `feedback` executable.
-
-If the app aborts at launch with a `dyld: Library not loaded` error pointing
-at `/opt/homebrew/opt/glfw/...` or `/opt/homebrew/opt/glew/...`, that's the
-missing first-run prerequisite.
+The macOS `.app` bundle relocates Homebrew's `libglfw`/`libGLEW` into
+`Contents/Frameworks/` at build time, so a user running the bundle on a
+fresh Mac does not need Homebrew installed.
 
 ## Two ways to build
 
@@ -405,8 +410,12 @@ runbook, and prioritized todo list — see
 [`development/`](development/README.md). That's the primary pickup
 point for any agent (human or AI) continuing this work.
 
-Linux and macOS ports exist in `linux/` and `macOS/` but are early and
-not feature-parity with the Windows build — see the README in each.
+Linux and macOS ports live in `linux/` and `macOS/`. They are build-time
+transforms over this same Windows source tree — no forked `main.cpp`,
+no duplicated shaders. Each port applies a small set of targeted patches
+via Python scripts, plus a platform-specific camera backend. See
+[ADR-0014](development/ADR/0014-platform-transforms-for-mac-and-linux.md)
+for the rationale and the README in each platform dir for build steps.
 
 ## Background
 
