@@ -2918,13 +2918,14 @@ int main(int argc, char** argv) {
                         e.sample.empty() ? "-" : e.sample.c_str(),
                         e.note.empty()   ? "-" : e.note.c_str());
         }
-        // Default pattern — a simple beat plus a pitched synth bass to
-        // exercise both sample and synth paths out of the box. Step 6
-        // lets users swap this for .strudel files from music/.
+        // Default pattern — exercises samples, synth, filters, reverb,
+        // and delay together so a quick launch demonstrates the whole
+        // audio chain. Step 6 lets users swap this for .strudel files.
         Music::setPattern(
             "stack("
-            "  s(\"bd*2, ~ sn, hh*4\"),"
-            "  note(\"c2 ~ eb2 g2\").s(\"saw\").gain(0.25)"
+            "  s(\"bd*2, ~ sn, hh*8\").room(0.2),"
+            "  note(\"c2 ~ eb2 g2\").s(\"saw\").lpf(800).gain(0.25),"
+            "  note(\"<c5 eb5 g5 bb5>\").s(\"tri\").gain(0.15).delay(0.3).room(0.5)"
             ")"
         );
         Music::setPlaying(true);

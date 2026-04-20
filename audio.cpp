@@ -47,27 +47,79 @@ namespace {
     // over one homogenous array.
     enum VoiceMode { VM_SAMPLE, VM_SYNTH };
 
+    // Biquad (RBJ cookbook forms). Direct Form II Transposed keeps two
+    // state variables per channel; cheap, stable enough for our rates.
+    struct Biquad {
+        float b0 = 1.f, b1 = 0.f, b2 = 0.f, a1 = 0.f, a2 = 0.f;
+        float z1 = 0.f, z2 = 0.f;
+        bool  active = false;
+
+        void bypass() {
+            b0 = 1.f; b1 = 0.f; b2 = 0.f; a1 = 0.f; a2 = 0.f;
+            z1 = 0.f; z2 = 0.f; active = false;
+        }
+        void setLPF(float cutoff, float sr, float Q = 0.707f) {
+            if (cutoff <= 20.f || cutoff >= sr * 0.49f) { bypass(); return; }
+            float w = (float)(2.0 * M_PI) * cutoff / sr;
+            float cw = std::cos(w), sw = std::sin(w);
+            float alpha = sw / (2.f * Q);
+            float a0 = 1.f + alpha;
+            b0 = (1.f - cw) * 0.5f / a0;
+            b1 = (1.f - cw)        / a0;
+            b2 = b0;
+            a1 = -2.f * cw         / a0;
+            a2 = (1.f - alpha)     / a0;
+            active = true;
+        }
+        void setHPF(float cutoff, float sr, float Q = 0.707f) {
+            if (cutoff <= 20.f || cutoff >= sr * 0.49f) { bypass(); return; }
+            float w = (float)(2.0 * M_PI) * cutoff / sr;
+            float cw = std::cos(w), sw = std::sin(w);
+            float alpha = sw / (2.f * Q);
+            float a0 = 1.f + alpha;
+            b0 = (1.f + cw) * 0.5f / a0;
+            b1 = -(1.f + cw)       / a0;
+            b2 = b0;
+            a1 = -2.f * cw         / a0;
+            a2 = (1.f - alpha)     / a0;
+            active = true;
+        }
+        float process(float x) {
+            float y = b0 * x + z1;
+            z1 = b1 * x - a1 * y + z2;
+            z2 = b2 * x - a2 * y;
+            return y;
+        }
+    };
+
     struct Voice {
         VoiceMode mode = VM_SAMPLE;
 
         // Sample mode
         const Sample* sample = nullptr;
-        double        pos    = 0.0;   // fractional frame position
+        double        pos    = 0.0;
         float         speed  = 1.0f;
 
         // Synth mode
         float         freq    = 440.f;
-        float         phase   = 0.f;  // 0..1
+        float         phase   = 0.f;
         Audio::Waveform wave  = Audio::WAVE_SAW;
-        // ADSR time constants (seconds) + sustain level.
         float         attack  = 0.005f;
         float         decay   = 0.080f;
         float         sustain = 0.70f;
         float         release = 0.150f;
         float         durSec  = 0.25f;
-        float         envPos  = 0.f;  // seconds since note-on
+        float         envPos  = 0.f;
         bool          released = false;
-        float         envVal   = 0.f; // latched on release so decay is smooth
+        float         envVal   = 0.f;
+
+        // Per-voice filters (stereo pair of biquads each).
+        Biquad   lpfL, lpfR;
+        Biquad   hpfL, hpfR;
+
+        // Send amounts to global busses (0..1). 0 = dry only.
+        float    delaySend = 0.f;
+        float    roomSend  = 0.f;
 
         // Shared
         float    gain        = 1.0f;
@@ -91,7 +143,7 @@ namespace {
     // Pending triggers queued by the main thread. Drained at the start
     // of each audio callback into the voice pool.
     struct PendingTrigger {
-        VoiceMode     mode;           // sample vs synth
+        VoiceMode     mode;
 
         // Sample mode
         const Sample* sample = nullptr;
@@ -102,6 +154,12 @@ namespace {
         Audio::Waveform wave = Audio::WAVE_SAW;
         float         attack = 0.005f, decay = 0.080f, sustain = 0.7f, release = 0.15f;
         float         durSec = 0.25f;
+
+        // Effects
+        float         lpfCutoff = 0.f;    // 0 = bypass
+        float         hpfCutoff = 0.f;
+        float         delaySend = 0.f;
+        float         roomSend  = 0.f;
 
         // Shared
         uint64_t      startFrame = 0;
@@ -177,7 +235,113 @@ namespace {
             v.released = false;
             v.envVal   = 0.f;
         }
+
+        // Program per-voice filters + send amounts.
+        if (t.lpfCutoff > 0.f) {
+            v.lpfL.setLPF(t.lpfCutoff, (float)g_sampleRate);
+            v.lpfR.setLPF(t.lpfCutoff, (float)g_sampleRate);
+        } else {
+            v.lpfL.bypass(); v.lpfR.bypass();
+        }
+        if (t.hpfCutoff > 0.f) {
+            v.hpfL.setHPF(t.hpfCutoff, (float)g_sampleRate);
+            v.hpfR.setHPF(t.hpfCutoff, (float)g_sampleRate);
+        } else {
+            v.hpfL.bypass(); v.hpfR.bypass();
+        }
+        v.delaySend = t.delaySend < 0.f ? 0.f : (t.delaySend > 1.f ? 1.f : t.delaySend);
+        v.roomSend  = t.roomSend  < 0.f ? 0.f : (t.roomSend  > 1.f ? 1.f : t.roomSend);
     }
+
+    // ── Global delay bus ────────────────────────────────────────────
+    // Fixed-time stereo delay with feedback. Time is set by the music
+    // scheduler via Audio::setDelayTime (step 6); default ~0.375s (a
+    // dotted eighth at 120 BPM).
+    struct DelayBus {
+        std::vector<float> bufL, bufR;
+        size_t pos = 0;
+        float  feedback = 0.45f;
+        uint32_t delaySamps = 0;
+
+        void init(float delaySec, uint32_t sr) {
+            uint32_t maxSamps = sr * 4;  // up to 4s
+            bufL.assign(maxSamps, 0.f);
+            bufR.assign(maxSamps, 0.f);
+            delaySamps = (uint32_t)(delaySec * sr);
+            if (delaySamps < 1) delaySamps = 1;
+            if (delaySamps >= maxSamps) delaySamps = maxSamps - 1;
+        }
+        void process(float inL, float inR, float& outL, float& outR) {
+            if (bufL.empty()) { outL = outR = 0.f; return; }
+            size_t readPos = (pos + bufL.size() - delaySamps) % bufL.size();
+            outL = bufL[readPos];
+            outR = bufR[readPos];
+            bufL[pos] = inL + outL * feedback;
+            bufR[pos] = inR + outR * feedback;
+            pos = (pos + 1) % bufL.size();
+        }
+    };
+    DelayBus g_delay;
+
+    // ── Global reverb (Freeverb-style lite) ─────────────────────────
+    // 4 comb filters per channel + 3 allpass series. Shorter than the
+    // original 8+4 but still makes a decent room sound. Delay lengths
+    // rescaled for 48 kHz.
+    struct Comb {
+        std::vector<float> buf;
+        size_t pos = 0;
+        float  feedback = 0.84f;
+        float  damp = 0.4f;
+        float  lpState = 0.f;
+
+        void init(uint32_t samps) { buf.assign(samps, 0.f); pos = 0; }
+        float process(float in) {
+            if (buf.empty()) return 0.f;
+            float out = buf[pos];
+            lpState = out * (1.f - damp) + lpState * damp;
+            buf[pos] = in + lpState * feedback;
+            pos = (pos + 1) % buf.size();
+            return out;
+        }
+    };
+    struct Allpass {
+        std::vector<float> buf;
+        size_t pos = 0;
+        float  feedback = 0.5f;
+        void init(uint32_t samps) { buf.assign(samps, 0.f); pos = 0; }
+        float process(float in) {
+            if (buf.empty()) return 0.f;
+            float buffered = buf[pos];
+            float out = -in + buffered;
+            buf[pos] = in + buffered * feedback;
+            pos = (pos + 1) % buf.size();
+            return out;
+        }
+    };
+    struct ReverbBus {
+        Comb    combsL[4], combsR[4];
+        Allpass apL[3], apR[3];
+
+        void init(uint32_t sr) {
+            // 44.1k Freeverb delays rescaled to current sample rate.
+            const uint32_t combL[4] = {1557, 1617, 1491, 1422};
+            const uint32_t combR[4] = {1277, 1356, 1188, 1116};
+            const uint32_t ap[3]    = {556,  441,  341};
+            const float scale = (float)sr / 44100.f;
+            for (int i = 0; i < 4; i++) combsL[i].init((uint32_t)(combL[i] * scale));
+            for (int i = 0; i < 4; i++) combsR[i].init((uint32_t)(combR[i] * scale));
+            for (int i = 0; i < 3; i++) apL[i].init((uint32_t)(ap[i] * scale));
+            for (int i = 0; i < 3; i++) apR[i].init((uint32_t)(ap[i] * scale + 23));  // slight stagger
+        }
+        void process(float inL, float inR, float& outL, float& outR) {
+            float sumL = 0.f, sumR = 0.f;
+            for (int i = 0; i < 4; i++) { sumL += combsL[i].process(inL); sumR += combsR[i].process(inR); }
+            sumL *= 0.25f; sumR *= 0.25f;
+            for (int i = 0; i < 3; i++) { sumL = apL[i].process(sumL); sumR = apR[i].process(sumR); }
+            outL = sumL; outR = sumR;
+        }
+    };
+    ReverbBus g_reverb;
 
     // Current envelope value (0..1) for a synth voice, given dt advancement.
     // Steps through A → D → S, then into R once voice.released flips true.
@@ -235,12 +399,40 @@ namespace {
 
         const float dt = 1.f / (float)g_sampleRate;
 
+        // Scratch buffers for the global bus sends. Reset per block.
+        // Sized for the worst case (128 or 256 frames typically); a
+        // thread-local static avoids allocation.
+        static thread_local std::vector<float> sDelayL, sDelayR, sRoomL, sRoomR;
+        if (sDelayL.size() < frameCount) {
+            sDelayL.assign(frameCount, 0.f); sDelayR.assign(frameCount, 0.f);
+            sRoomL .assign(frameCount, 0.f); sRoomR .assign(frameCount, 0.f);
+        } else {
+            std::fill(sDelayL.begin(), sDelayL.begin() + frameCount, 0.f);
+            std::fill(sDelayR.begin(), sDelayR.begin() + frameCount, 0.f);
+            std::fill(sRoomL .begin(), sRoomL .begin() + frameCount, 0.f);
+            std::fill(sRoomR .begin(), sRoomR .begin() + frameCount, 0.f);
+        }
+
         for (Voice& v : g_voices) {
             if (!v.active) continue;
             if (v.startFrame >= blockEnd) continue;
 
             uint64_t frameOffset = (v.startFrame > blockStart)
                                  ? (v.startFrame - blockStart) : 0;
+
+            auto emit = [&](ma_uint32 i, float lIn, float rIn) {
+                // Filter chain: HPF → LPF per channel.
+                float l = v.hpfL.active ? v.hpfL.process(lIn) : lIn;
+                float r = v.hpfR.active ? v.hpfR.process(rIn) : rIn;
+                l       = v.lpfL.active ? v.lpfL.process(l)   : l;
+                r       = v.lpfR.active ? v.lpfR.process(r)   : r;
+                float outL = l * v.gain * v.panL;
+                float outR = r * v.gain * v.panR;
+                out[i * 2]     += outL;
+                out[i * 2 + 1] += outR;
+                if (v.delaySend > 0.f) { sDelayL[i] += outL * v.delaySend; sDelayR[i] += outR * v.delaySend; }
+                if (v.roomSend  > 0.f) { sRoomL [i] += outL * v.roomSend;  sRoomR [i] += outR * v.roomSend;  }
+            };
 
             if (v.mode == VM_SAMPLE) {
                 if (!v.sample) { v.active = false; continue; }
@@ -252,13 +444,11 @@ namespace {
                     }
                     float lIn, rIn;
                     read_stereo(s, pos, lIn, rIn);
-                    out[i * 2]     += lIn * v.gain * v.panL;
-                    out[i * 2 + 1] += rIn * v.gain * v.panR;
+                    emit(i, lIn, rIn);
                     pos += v.speed;
                 }
                 v.pos = pos;
             } else {
-                // Synth mode: oscillator + ADSR.
                 const float phaseInc = v.freq * dt;
                 for (ma_uint32 i = frameOffset; i < frameCount; i++) {
                     if (!v.active) break;
@@ -278,12 +468,20 @@ namespace {
                     }
                     float env = tick_envelope(v, dt);
                     float s = sgn * env;
-                    out[i * 2]     += s * v.gain * v.panL;
-                    out[i * 2 + 1] += s * v.gain * v.panR;
+                    emit(i, s, s);
                     v.phase += phaseInc;
                     if (v.phase >= 1.f) v.phase -= 1.f;
                 }
             }
+        }
+
+        // Process the bus sends and mix back onto the master output.
+        for (ma_uint32 i = 0; i < frameCount; i++) {
+            float dL = 0.f, dR = 0.f, rL = 0.f, rR = 0.f;
+            g_delay.process(sDelayL[i], sDelayR[i], dL, dR);
+            g_reverb.process(sRoomL[i], sRoomR[i], rL, rR);
+            out[i * 2]     += dL + rL * 0.6f;
+            out[i * 2 + 1] += dR + rR * 0.6f;
         }
 
         g_deviceFrame.store(blockEnd, std::memory_order_relaxed);
@@ -450,7 +648,13 @@ bool init(uint32_t sampleRate, int polyphony) {
         return false;
     }
     g_deviceOk = true;
-    std::fprintf(stdout, "[audio] %s @ %u Hz, %d voice pool\n",
+
+    // Effects init — delay defaults to a dotted-eighth at 120 BPM (0.375s),
+    // reverb uses Freeverb-style comb/allpass lengths for the current rate.
+    g_delay.init(0.375f, sampleRate);
+    g_reverb.init(sampleRate);
+
+    std::fprintf(stdout, "[audio] %s @ %u Hz, %d voice pool, fx online\n",
                  ma_get_format_name(ma_format_f32), sampleRate, polyphony);
     return true;
 }
@@ -528,6 +732,10 @@ bool trigger(const std::string& sampleName, const TriggerOpts& opts) {
     t.gain        = opts.gain;
     pan_to_gains(opts.pan, t.panL, t.panR);
     t.speed       = opts.speed <= 0 ? 1.0f : opts.speed;
+    t.lpfCutoff   = opts.lpf;
+    t.hpfCutoff   = opts.hpf;
+    t.delaySend   = opts.delay;
+    t.roomSend    = opts.room;
     {
         std::lock_guard<std::mutex> lk(g_pendingMu);
         g_pending.push_back(t);
@@ -551,6 +759,10 @@ bool trigger_note(const NoteOpts& opts) {
     t.sustain     = opts.sustain;
     t.release     = opts.release;
     t.durSec      = opts.durationSec > 0 ? opts.durationSec : 0.25f;
+    t.lpfCutoff   = opts.lpf;
+    t.hpfCutoff   = opts.hpf;
+    t.delaySend   = opts.delaySend;
+    t.roomSend    = opts.roomSend;
     {
         std::lock_guard<std::mutex> lk(g_pendingMu);
         g_pending.push_back(t);

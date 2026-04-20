@@ -61,16 +61,21 @@ enum Waveform {
 
 struct NoteOpts {
     double delaySec    = 0.0;
-    float  durationSec = 0.25f;   // sustain window before release
+    float  durationSec = 0.25f;
     float  freqHz      = 440.0f;
     Waveform wave      = WAVE_SAW;
-    float  gain        = 0.35f;   // synths are loud; conservative default
+    float  gain        = 0.35f;
     float  pan         = 0.5f;
-    // ADSR in seconds / sustain level.
+    // ADSR
     float  attack      = 0.005f;
     float  decay       = 0.080f;
     float  sustain     = 0.70f;
     float  release     = 0.150f;
+    // Effects
+    float  lpf         = 0.0f;     // cutoff Hz; 0 = bypass
+    float  hpf         = 0.0f;
+    float  delaySend   = 0.0f;     // 0..1
+    float  roomSend    = 0.0f;     // 0..1
 };
 
 // Queue a pitched synth voice.

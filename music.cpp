@@ -310,16 +310,18 @@ void update(double now, float bpm) {
                           ? Audio::waveform_from_name(e.sample)
                           : Audio::WAVE_SAW;
             n.durationSec = (float)((e.end - e.begin) * cs);
-            n.gain        = (float)e.gain * 0.35f;   // conservative headroom
+            n.gain        = (float)e.gain * 0.35f;
             n.pan         = (float)e.pan;
+            n.lpf         = (float)e.lpf;
+            n.hpf         = (float)e.hpf;
+            n.delaySend   = (float)e.delay;
+            n.roomSend    = (float)e.room;
             Audio::trigger_note(n);
             continue;
         }
 
         if (e.sample.empty()) continue;
 
-        // `s("saw")` without a note still makes noise at A4, useful for
-        // testing synth voices from mini notation alone.
         if (Audio::is_synth_name(e.sample)) {
             Audio::NoteOpts n;
             n.delaySec    = delaySec;
@@ -327,6 +329,10 @@ void update(double now, float bpm) {
             n.durationSec = (float)((e.end - e.begin) * cs);
             n.gain        = (float)e.gain * 0.35f;
             n.pan         = (float)e.pan;
+            n.lpf         = (float)e.lpf;
+            n.hpf         = (float)e.hpf;
+            n.delaySend   = (float)e.delay;
+            n.roomSend    = (float)e.room;
             Audio::trigger_note(n);
             continue;
         }
