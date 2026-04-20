@@ -52,6 +52,11 @@ public:
     }
     bool inSectionView() const { return view_ == VIEW_SECTION; }
 
+    // Small always-visible bottom-right tag telling the user which
+    // section the controller is driving and how to open help. Host
+    // toggles this based on whether a gamepad is connected.
+    void setShowGamepadHint(bool b) { showGamepadHint_ = b; }
+
     // Navigation. Meant to be wired to UI actions — host dispatches these
     // when the help panel is visible.
     void toggleHelp();
@@ -85,6 +90,7 @@ private:
     LegendProvider legend_;
     std::string  cachedBody_;          // last snapshot from provider (debug)
     int          activeSection_ = -1;
+    bool         showGamepadHint_ = false;
 
     // GL resources for text rendering
     GLuint prog_ = 0, vbo_ = 0, vao_ = 0;

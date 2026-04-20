@@ -2536,6 +2536,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (glfwJoystickPresent(GLFW_JOYSTICK_1)) {
+        const char* name = glfwGetGamepadName(GLFW_JOYSTICK_1);
+        printf("[gamepad] %s connected — press Back (View) button or H to open help panel\n",
+               name ? name : "controller");
+    }
+
     glfwSetKeyCallback(win, key_cb);
     glfwSetFramebufferSizeCallback(win, size_cb);
 
@@ -2595,6 +2601,10 @@ int main(int argc, char** argv) {
         prevFrameStart = frameStart;
 
         glfwPollEvents();
+
+        // Toggle the bottom-right gamepad hint based on whether a pad is
+        // plugged in. Keeps its state fresh so plugging/unplugging works.
+        S.ov.setShowGamepadHint(glfwJoystickPresent(GLFW_JOYSTICK_1) != 0);
 
         // Gamepad + MIDI polling. Keyboard already came in via the key
         // callback inside glfwPollEvents. Gamepad context depends on the

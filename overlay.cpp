@@ -304,6 +304,26 @@ void Overlay::draw() {
     // ---- Help panel (top-left, no dim) ----
     if (helpVisible_) drawHelpPanel();
 
+    // ---- Bottom-right gamepad hint (only when help is closed) ----
+    if (!helpVisible_ && showGamepadHint_ && activeSection_ >= 0
+        && activeSection_ < (int)sections_.size())
+    {
+        const float s = 1.4f;
+        const float pad = 10.0f;
+        char buf[128];
+        snprintf(buf, sizeof buf, "%s  \x10  Back: help",
+                 sections_[activeSection_].c_str());
+        int txtW = stb_easy_font_width(buf);
+        float w = txtW * s + pad * 2.0f;
+        float h = 12.0f * s + pad;
+        float x = (float)winW_ - w - 10.0f;
+        float y = (float)winH_ - h - 10.0f;
+        unsigned char bg[4]  = { 10, 12, 16, 170 };
+        unsigned char fg[4]  = { 180, 190, 210, 255 };
+        drawFilledRect(x, y, w, h, bg, 0.85f);
+        drawTextLine(x + pad, y + pad * 0.5f, buf, fg, 1.0f, s);
+    }
+
     glDisable(GL_BLEND);
 }
 
