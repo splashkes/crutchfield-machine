@@ -282,6 +282,11 @@ layer — the `shaders/layers/*.glsl` system is designed for it. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the layer-authoring walkthrough and
 a list of shader / feature ideas looking for implementers.
 
+For deeper context — design principles, architecture, decision log,
+runbook, and prioritized todo list — see
+[`development/`](development/README.md). That's the primary pickup
+point for any agent (human or AI) continuing this work.
+
 Linux and macOS ports exist in `linux/` and `macOS/` but are early and
 not feature-parity with the Windows build — see the README in each.
 

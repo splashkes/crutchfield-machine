@@ -3,6 +3,10 @@
 This is a small project. PRs and issues are welcome. Nothing formal — read
 this page, look at existing code, match the style.
 
+For the deeper picture — design philosophy, architecture, decision log,
+runbook, and the prioritized TODO list — see [`development/`](development/README.md).
+That's the primary pickup point for any non-trivial work.
+
 ## Ways to contribute
 
 - **Add a new shader layer** (see below — the easiest entry point).
