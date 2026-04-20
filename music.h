@@ -51,4 +51,24 @@ struct Event {
 // be a single expression producing a Pattern — e.g. `s("bd sn hh*2")`.
 std::vector<Event> query(const std::string& code, double begin, double end);
 
+// ── Scheduler ────────────────────────────────────────────────────────
+// Sets the active pattern (as a JS expression). Passing "" stops
+// playback. Safe to call any time.
+void setPattern(const std::string& code);
+const std::string& pattern();
+
+// Play / pause toggle. When paused, update() still advances the BPM
+// clock internally so the scheduler picks up where it left off.
+void setPlaying(bool on);
+bool playing();
+
+// Called once per frame from the main loop. `now` is the wall clock
+// reading used for cycle-time computation. BPM is read fresh each frame
+// so external tempo changes (MIDI clock, tap tempo) take effect live.
+// Triggers audio events via the Audio module.
+void update(double now, float bpm);
+
+// Read-only state for the help UI.
+double currentCycle();   // fractional cycle position (e.g. 3.75)
+
 } // namespace Music

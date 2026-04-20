@@ -41,6 +41,7 @@
 #include "overlay.h"
 #include "input.h"
 #include "music.h"
+#include "audio.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO_WARNING
@@ -2902,12 +2903,12 @@ int main(int argc, char** argv) {
     // setup pointer so CLI users know Strudel sync is a flip away.
     music_startup_hint();
 
-    // Embedded JS runtime + pattern engine. Later steps layer audio +
-    // effects + file-based presets on top.
+    // Embedded JS runtime + pattern engine + audio output.
+    Audio::init();
+    // Try samples/ folder first so real WAVs win over the synth fallbacks.
+    Audio::loadSamplesFromDir("samples");
+
     if (Music::init()) {
-        // Quick pattern engine smoketest: query one cycle of a simple
-        // Strudel-syntax snippet and print the events. Proves the whole
-        // parse → evaluate → queryArc → C++ marshalling pipeline works.
         auto evs = Music::query("s(\"bd sn hh*2 [cp cp]\")", 0.0, 1.0);
         std::printf("[music] pattern test: %zu event(s) in cycle [0,1):\n",
                     evs.size());
@@ -2917,6 +2918,11 @@ int main(int argc, char** argv) {
                         e.sample.empty() ? "-" : e.sample.c_str(),
                         e.note.empty()   ? "-" : e.note.c_str());
         }
+        // Default pattern — start playing a simple beat at launch so
+        // the app has sound out of the box. Step 6 lets users load
+        // .strudel files from music/ to replace it.
+        Music::setPattern("s(\"bd*2, ~ sn, hh*4\")");
+        Music::setPlaying(true);
     }
 
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
@@ -3114,6 +3120,10 @@ int main(int argc, char** argv) {
         // BPM clock — advances beat phase, fires beat events.
         update_bpm(frameStart, dt);
 
+        // Music scheduler — advance cycle clock, query pattern, trigger
+        // audio events in the ~250ms lookahead window.
+        Music::update(frameStart, S.p.bpm);
+
         glBindVertexArray(mainVAO);
 
         if (S.needClear) {
@@ -3227,6 +3237,7 @@ int main(int argc, char** argv) {
 #endif
 
     Music::shutdown();
+    Audio::shutdown();
 
     // Post-session encode prompt — offer to convert each EXR sequence
     // captured this session to MP4 via ffmpeg.

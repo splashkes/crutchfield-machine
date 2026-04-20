@@ -5,6 +5,7 @@
 // top of this module in subsequent steps.
 
 #include "music.h"
+#include "audio.h"
 
 extern "C" {
 #include "quickjs.h"
@@ -221,5 +222,98 @@ std::vector<Event> query(const std::string& code, double begin, double end) {
     JS_FreeValue(g_ctx, arr);
     return out;
 }
+
+// ── Scheduler ────────────────────────────────────────────────────────
+// One cycle = 4 beats at the current BPM, matching Strudel's default
+// cps of 0.5 at 120 BPM. update() runs on the main thread; it queries
+// the active pattern over a small look-ahead window and pushes any
+// events that haven't been triggered yet into the audio module.
+
+namespace {
+    std::string g_pattern;        // active pattern expression ("" = stopped)
+    bool        g_playing    = false;
+    // Wall time when cycle 0 was "anchored". When BPM changes we
+    // re-anchor so the cycle rate is continuous.
+    double      g_wallOrigin  = 0.0;
+    double      g_cycleAnchor = 0.0;
+    double      g_lastQueryTo = 0.0;   // cycle-time up to which we've fired
+    double      g_lastBpm     = 120.0;
+    double      g_curCycle    = 0.0;   // updated by update() each frame
+    const double kLookahead   = 0.125; // cycles — ~250ms at 120 BPM
+
+    double cycle_seconds(float bpm) {
+        if (bpm < 1.0f) bpm = 1.0f;
+        return 240.0 / (double)bpm;    // 4 beats per cycle
+    }
+}
+
+void setPattern(const std::string& code) {
+    g_pattern = code;
+    if (!code.empty()) {
+        std::fprintf(stdout, "[music] pattern set: %s\n", code.c_str());
+        g_lastQueryTo = g_cycleAnchor;   // re-fire from the anchor
+    } else {
+        std::fprintf(stdout, "[music] pattern cleared\n");
+    }
+}
+
+const std::string& pattern() { return g_pattern; }
+
+void setPlaying(bool on) {
+    if (on == g_playing) return;
+    g_playing = on;
+    std::fprintf(stdout, "[music] %s\n", on ? "playing" : "paused");
+}
+
+bool playing() { return g_playing; }
+
+void update(double now, float bpm) {
+    if (!g_up) return;
+    if (g_wallOrigin == 0.0) { g_wallOrigin = now; g_lastBpm = bpm; }
+
+    const double cs = cycle_seconds(bpm);
+    // Advance the cycle clock from the current anchor.
+    g_curCycle = g_cycleAnchor + (now - g_wallOrigin) / cs;
+
+    // BPM change: re-anchor at the current cycle so the cycle rate is
+    // continuous across tempo edits.
+    if (std::fabs((double)bpm - g_lastBpm) > 0.01) {
+        g_cycleAnchor = g_curCycle;
+        g_wallOrigin  = now;
+        g_lastBpm     = bpm;
+        g_lastQueryTo = g_curCycle;
+    }
+
+    if (!g_playing || g_pattern.empty()) return;
+
+    // Query window: from last-fired up to now + lookahead.
+    double qStart = g_lastQueryTo;
+    double qEnd   = g_curCycle + kLookahead;
+    if (qEnd <= qStart) return;
+
+    auto evs = query(g_pattern, qStart, qEnd);
+    for (const auto& e : evs) {
+        if (e.sample.empty()) continue;        // step 4 will handle notes
+        // First-use sample fallback: synthesize if no WAV has been
+        // loaded under that name yet. No-op if already registered.
+        Audio::synthesizeDrum(e.sample);
+        Audio::TriggerOpts t;
+        double delaySec = (e.begin - g_curCycle) * cs;
+        if (delaySec < 0.0) delaySec = 0.0;
+        t.delaySec = delaySec;
+        t.gain     = (float)e.gain;
+        t.pan      = (float)e.pan;
+        t.speed    = (float)e.speed;
+        t.lpf      = (float)e.lpf;
+        t.hpf      = (float)e.hpf;
+        t.room     = (float)e.room;
+        t.delay    = (float)e.delay;
+        Audio::trigger(e.sample, t);
+    }
+
+    g_lastQueryTo = qEnd;
+}
+
+double currentCycle() { return g_curCycle; }
 
 } // namespace Music
