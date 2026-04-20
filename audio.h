@@ -47,9 +47,46 @@ struct TriggerOpts {
     float  delay    = 0.0f;
 };
 
-// Queue a voice trigger. Returns true on success. Drops silently if
+// Queue a sample voice. Returns true on success; drops silently if
 // the sample name is unknown or the pool is saturated.
 bool trigger(const std::string& sampleName, const TriggerOpts& opts);
+
+// Synth waveforms for trigger_note().
+enum Waveform {
+    WAVE_SINE = 0,
+    WAVE_SAW,
+    WAVE_SQUARE,
+    WAVE_TRI,
+};
+
+struct NoteOpts {
+    double delaySec    = 0.0;
+    float  durationSec = 0.25f;   // sustain window before release
+    float  freqHz      = 440.0f;
+    Waveform wave      = WAVE_SAW;
+    float  gain        = 0.35f;   // synths are loud; conservative default
+    float  pan         = 0.5f;
+    // ADSR in seconds / sustain level.
+    float  attack      = 0.005f;
+    float  decay       = 0.080f;
+    float  sustain     = 0.70f;
+    float  release     = 0.150f;
+};
+
+// Queue a pitched synth voice.
+bool trigger_note(const NoteOpts& opts);
+
+// "c4" → 60, "c#4" / "db4" → 61, "60" → 60. Returns -1 on parse error.
+int note_to_midi(const std::string& note);
+
+// MIDI note number → frequency in Hz. 69 = A4 = 440.
+float midi_to_freq(int midi);
+
+// "saw" / "square" / "sine" / "tri" (or Strudel's "triangle"). Default SAW.
+Waveform waveform_from_name(const std::string& name);
+
+// True if `name` is a synth waveform rather than a sample slot.
+bool is_synth_name(const std::string& name);
 
 // Runtime stats (for HUD).
 int  activeVoices();

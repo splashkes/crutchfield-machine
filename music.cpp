@@ -293,13 +293,47 @@ void update(double now, float bpm) {
 
     auto evs = query(g_pattern, qStart, qEnd);
     for (const auto& e : evs) {
-        if (e.sample.empty()) continue;        // step 4 will handle notes
-        // First-use sample fallback: synthesize if no WAV has been
-        // loaded under that name yet. No-op if already registered.
-        Audio::synthesizeDrum(e.sample);
-        Audio::TriggerOpts t;
         double delaySec = (e.begin - g_curCycle) * cs;
         if (delaySec < 0.0) delaySec = 0.0;
+
+        // Branch on what's attached to the hap:
+        //   • note set (with or without s=saw/square/…) → synth voice
+        //   • s set to a sample name → sample trigger
+        //   • nothing → ignore
+        if (!e.note.empty()) {
+            int midi = Audio::note_to_midi(e.note);
+            if (midi < 0) continue;
+            Audio::NoteOpts n;
+            n.delaySec    = delaySec;
+            n.freqHz      = Audio::midi_to_freq(midi);
+            n.wave        = Audio::is_synth_name(e.sample)
+                          ? Audio::waveform_from_name(e.sample)
+                          : Audio::WAVE_SAW;
+            n.durationSec = (float)((e.end - e.begin) * cs);
+            n.gain        = (float)e.gain * 0.35f;   // conservative headroom
+            n.pan         = (float)e.pan;
+            Audio::trigger_note(n);
+            continue;
+        }
+
+        if (e.sample.empty()) continue;
+
+        // `s("saw")` without a note still makes noise at A4, useful for
+        // testing synth voices from mini notation alone.
+        if (Audio::is_synth_name(e.sample)) {
+            Audio::NoteOpts n;
+            n.delaySec    = delaySec;
+            n.wave        = Audio::waveform_from_name(e.sample);
+            n.durationSec = (float)((e.end - e.begin) * cs);
+            n.gain        = (float)e.gain * 0.35f;
+            n.pan         = (float)e.pan;
+            Audio::trigger_note(n);
+            continue;
+        }
+
+        // Drum-style sample path.
+        Audio::synthesizeDrum(e.sample);           // no-op if already loaded
+        Audio::TriggerOpts t;
         t.delaySec = delaySec;
         t.gain     = (float)e.gain;
         t.pan      = (float)e.pan;

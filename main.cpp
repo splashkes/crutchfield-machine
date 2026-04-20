@@ -2918,10 +2918,15 @@ int main(int argc, char** argv) {
                         e.sample.empty() ? "-" : e.sample.c_str(),
                         e.note.empty()   ? "-" : e.note.c_str());
         }
-        // Default pattern — start playing a simple beat at launch so
-        // the app has sound out of the box. Step 6 lets users load
-        // .strudel files from music/ to replace it.
-        Music::setPattern("s(\"bd*2, ~ sn, hh*4\")");
+        // Default pattern — a simple beat plus a pitched synth bass to
+        // exercise both sample and synth paths out of the box. Step 6
+        // lets users swap this for .strudel files from music/.
+        Music::setPattern(
+            "stack("
+            "  s(\"bd*2, ~ sn, hh*4\"),"
+            "  note(\"c2 ~ eb2 g2\").s(\"saw\").gain(0.25)"
+            ")"
+        );
         Music::setPlaying(true);
     }
 

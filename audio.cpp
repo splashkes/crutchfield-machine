@@ -41,15 +41,38 @@ namespace {
                                      // audio thread holds a shared-lock path below
 
     // ── Voice pool ──────────────────────────────────────────────────
+    // A single voice can run in one of two modes: playing a preloaded
+    // sample, or running a synth oscillator + ADSR. All other state
+    // (gain, pan, start frame) is shared so the audio callback can loop
+    // over one homogenous array.
+    enum VoiceMode { VM_SAMPLE, VM_SYNTH };
+
     struct Voice {
-        const Sample* sample  = nullptr;
-        double   pos         = 0.0;   // fractional frame position (for speed != 1)
+        VoiceMode mode = VM_SAMPLE;
+
+        // Sample mode
+        const Sample* sample = nullptr;
+        double        pos    = 0.0;   // fractional frame position
+        float         speed  = 1.0f;
+
+        // Synth mode
+        float         freq    = 440.f;
+        float         phase   = 0.f;  // 0..1
+        Audio::Waveform wave  = Audio::WAVE_SAW;
+        // ADSR time constants (seconds) + sustain level.
+        float         attack  = 0.005f;
+        float         decay   = 0.080f;
+        float         sustain = 0.70f;
+        float         release = 0.150f;
+        float         durSec  = 0.25f;
+        float         envPos  = 0.f;  // seconds since note-on
+        bool          released = false;
+        float         envVal   = 0.f; // latched on release so decay is smooth
+
+        // Shared
         float    gain        = 1.0f;
         float    panL        = 0.707f;
         float    panR        = 0.707f;
-        float    speed       = 1.0f;
-        // Firing time: absolute frame count. When g_deviceFrame reaches it,
-        // the voice activates.
         uint64_t startFrame  = 0;
         bool     active      = false;
     };
@@ -68,11 +91,22 @@ namespace {
     // Pending triggers queued by the main thread. Drained at the start
     // of each audio callback into the voice pool.
     struct PendingTrigger {
-        const Sample* sample;
-        uint64_t      startFrame;
-        float         gain;
-        float         panL, panR;
-        float         speed;
+        VoiceMode     mode;           // sample vs synth
+
+        // Sample mode
+        const Sample* sample = nullptr;
+        float         speed  = 1.f;
+
+        // Synth mode
+        float         freq = 440.f;
+        Audio::Waveform wave = Audio::WAVE_SAW;
+        float         attack = 0.005f, decay = 0.080f, sustain = 0.7f, release = 0.15f;
+        float         durSec = 0.25f;
+
+        // Shared
+        uint64_t      startFrame = 0;
+        float         gain = 1.f;
+        float         panL = 0.707f, panR = 0.707f;
     };
     std::mutex                  g_pendingMu;
     std::vector<PendingTrigger> g_pending;
@@ -119,14 +153,63 @@ namespace {
         }
         if (chosen < 0) return;
         Voice& v = g_voices[chosen];
-        v.sample     = t.sample;
-        v.pos        = 0.0;
+        v.mode       = t.mode;
         v.gain       = t.gain;
         v.panL       = t.panL;
         v.panR       = t.panR;
-        v.speed      = t.speed;
         v.startFrame = t.startFrame;
         v.active     = true;
+
+        if (t.mode == VM_SAMPLE) {
+            v.sample = t.sample;
+            v.pos    = 0.0;
+            v.speed  = t.speed;
+        } else {
+            v.freq     = t.freq;
+            v.phase    = 0.f;
+            v.wave     = t.wave;
+            v.attack   = t.attack;
+            v.decay    = t.decay;
+            v.sustain  = t.sustain;
+            v.release  = t.release;
+            v.durSec   = t.durSec;
+            v.envPos   = 0.f;
+            v.released = false;
+            v.envVal   = 0.f;
+        }
+    }
+
+    // Current envelope value (0..1) for a synth voice, given dt advancement.
+    // Steps through A → D → S, then into R once voice.released flips true.
+    inline float tick_envelope(Voice& v, float dt) {
+        float e = 0.f;
+        if (!v.released) {
+            float t = v.envPos;
+            if (t < v.attack) {
+                e = (v.attack > 0) ? (t / v.attack) : 1.f;
+            } else if (t < v.attack + v.decay) {
+                float dt2 = t - v.attack;
+                float f = (v.decay > 0) ? (dt2 / v.decay) : 1.f;
+                e = 1.f + (v.sustain - 1.f) * f;
+            } else {
+                e = v.sustain;
+            }
+            v.envVal = e;
+            v.envPos += dt;
+            if (v.envPos >= v.durSec) {
+                v.released = true;
+                v.envPos   = 0.f;
+            }
+        } else {
+            float t = v.envPos;
+            if (t >= v.release) { e = 0.f; v.active = false; }
+            else {
+                float f = (v.release > 0) ? (t / v.release) : 1.f;
+                e = v.envVal * (1.f - f);
+            }
+            v.envPos += dt;
+        }
+        return e;
     }
 
     // Audio callback — miniaudio invokes this on a dedicated high-priority
@@ -150,30 +233,57 @@ namespace {
         const uint64_t blockStart = g_deviceFrame.load(std::memory_order_relaxed);
         const uint64_t blockEnd   = blockStart + frameCount;
 
-        for (Voice& v : g_voices) {
-            if (!v.active || !v.sample) continue;
+        const float dt = 1.f / (float)g_sampleRate;
 
-            // If firing time is after this block, skip for now.
+        for (Voice& v : g_voices) {
+            if (!v.active) continue;
             if (v.startFrame >= blockEnd) continue;
 
-            // Compute offset into this block where playback begins.
             uint64_t frameOffset = (v.startFrame > blockStart)
                                  ? (v.startFrame - blockStart) : 0;
 
-            double pos   = v.pos;
-            const Sample& s = *v.sample;
-            for (ma_uint32 i = frameOffset; i < frameCount; i++) {
-                if (pos >= (double)(s.frames - 1)) {
-                    v.active = false; v.sample = nullptr;
-                    break;
+            if (v.mode == VM_SAMPLE) {
+                if (!v.sample) { v.active = false; continue; }
+                double pos = v.pos;
+                const Sample& s = *v.sample;
+                for (ma_uint32 i = frameOffset; i < frameCount; i++) {
+                    if (pos >= (double)(s.frames - 1)) {
+                        v.active = false; v.sample = nullptr; break;
+                    }
+                    float lIn, rIn;
+                    read_stereo(s, pos, lIn, rIn);
+                    out[i * 2]     += lIn * v.gain * v.panL;
+                    out[i * 2 + 1] += rIn * v.gain * v.panR;
+                    pos += v.speed;
                 }
-                float lIn, rIn;
-                read_stereo(s, pos, lIn, rIn);
-                out[i * 2]     += lIn * v.gain * v.panL;
-                out[i * 2 + 1] += rIn * v.gain * v.panR;
-                pos += v.speed;
+                v.pos = pos;
+            } else {
+                // Synth mode: oscillator + ADSR.
+                const float phaseInc = v.freq * dt;
+                for (ma_uint32 i = frameOffset; i < frameCount; i++) {
+                    if (!v.active) break;
+                    float sgn = 0.f;
+                    switch (v.wave) {
+                    case Audio::WAVE_SINE:
+                        sgn = std::sin((float)(2.0 * M_PI) * v.phase); break;
+                    case Audio::WAVE_SAW:
+                        sgn = 2.f * v.phase - 1.f; break;
+                    case Audio::WAVE_SQUARE:
+                        sgn = (v.phase < 0.5f) ? 1.f : -1.f; break;
+                    case Audio::WAVE_TRI:
+                        sgn = (v.phase < 0.5f)
+                            ? (4.f * v.phase - 1.f)
+                            : (3.f - 4.f * v.phase);
+                        break;
+                    }
+                    float env = tick_envelope(v, dt);
+                    float s = sgn * env;
+                    out[i * 2]     += s * v.gain * v.panL;
+                    out[i * 2 + 1] += s * v.gain * v.panR;
+                    v.phase += phaseInc;
+                    if (v.phase >= 1.f) v.phase -= 1.f;
+                }
             }
-            v.pos = pos;
         }
 
         g_deviceFrame.store(blockEnd, std::memory_order_relaxed);
@@ -410,6 +520,7 @@ bool trigger(const std::string& sampleName, const TriggerOpts& opts) {
         sp = &it->second;
     }
     PendingTrigger t;
+    t.mode        = VM_SAMPLE;
     t.sample      = sp;
     uint64_t nowF = g_deviceFrame.load(std::memory_order_relaxed);
     double   dly  = opts.delaySec < 0 ? 0 : opts.delaySec;
@@ -422,6 +533,82 @@ bool trigger(const std::string& sampleName, const TriggerOpts& opts) {
         g_pending.push_back(t);
     }
     return true;
+}
+
+bool trigger_note(const NoteOpts& opts) {
+    if (!g_deviceOk) return false;
+    PendingTrigger t;
+    t.mode        = VM_SYNTH;
+    uint64_t nowF = g_deviceFrame.load(std::memory_order_relaxed);
+    double   dly  = opts.delaySec < 0 ? 0 : opts.delaySec;
+    t.startFrame  = nowF + (uint64_t)(dly * g_sampleRate);
+    t.gain        = opts.gain;
+    pan_to_gains(opts.pan, t.panL, t.panR);
+    t.freq        = opts.freqHz > 0 ? opts.freqHz : 440.f;
+    t.wave        = opts.wave;
+    t.attack      = opts.attack;
+    t.decay       = opts.decay;
+    t.sustain     = opts.sustain;
+    t.release     = opts.release;
+    t.durSec      = opts.durationSec > 0 ? opts.durationSec : 0.25f;
+    {
+        std::lock_guard<std::mutex> lk(g_pendingMu);
+        g_pending.push_back(t);
+    }
+    return true;
+}
+
+// ── Note + waveform helpers ──────────────────────────────────────────
+int note_to_midi(const std::string& note) {
+    if (note.empty()) return -1;
+    // Pure-number form: "60" → MIDI 60.
+    bool numeric = true;
+    for (char c : note) if (!(c == '-' || c == '.' || (c >= '0' && c <= '9'))) { numeric = false; break; }
+    if (numeric) return std::atoi(note.c_str());
+
+    // Letter form: "c4", "c#4", "db4".
+    char letter = (char)std::tolower((unsigned char)note[0]);
+    int semis;
+    switch (letter) {
+    case 'c': semis = 0;  break;
+    case 'd': semis = 2;  break;
+    case 'e': semis = 4;  break;
+    case 'f': semis = 5;  break;
+    case 'g': semis = 7;  break;
+    case 'a': semis = 9;  break;
+    case 'b': semis = 11; break;
+    default:  return -1;
+    }
+    size_t idx = 1;
+    if (idx < note.size() && note[idx] == '#') { semis++; idx++; }
+    else if (idx < note.size() && note[idx] == 'b') { semis--; idx++; }
+    int octave = 4;        // default octave = 4 (c4 = middle C = MIDI 60)
+    if (idx < note.size()) {
+        // parse (possibly negative) octave
+        char* endp = nullptr;
+        octave = (int)std::strtol(note.c_str() + idx, &endp, 10);
+    }
+    return 12 * (octave + 1) + semis;
+}
+
+float midi_to_freq(int midi) {
+    return 440.f * std::pow(2.f, (midi - 69) / 12.f);
+}
+
+Waveform waveform_from_name(const std::string& name) {
+    std::string n = name;
+    for (auto& c : n) c = (char)std::tolower((unsigned char)c);
+    if (n == "sine" || n == "sin")                return WAVE_SINE;
+    if (n == "square" || n == "sq")               return WAVE_SQUARE;
+    if (n == "tri" || n == "triangle")            return WAVE_TRI;
+    return WAVE_SAW;   // default
+}
+
+bool is_synth_name(const std::string& name) {
+    std::string n = name;
+    for (auto& c : n) c = (char)std::tolower((unsigned char)c);
+    return n == "sine" || n == "sin" || n == "saw" || n == "sawtooth"
+        || n == "square" || n == "sq" || n == "tri" || n == "triangle";
 }
 
 int activeVoices() {
