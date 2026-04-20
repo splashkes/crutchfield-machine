@@ -1,26 +1,26 @@
-# macOS port — very early work in progress
+# macOS / Apple Silicon status
 
-This subdirectory holds notes and shaders toward a macOS port. There is
-**no runnable app here yet** — just documents and the shared shader tree.
+The runnable macOS path now lives at the repo root:
 
-## What's here
+```bash
+brew install glfw glew pkg-config
+make -f Makefile.macos
+./feedback --fullscreen
+```
 
-- `shaders/` — same shader source as the Windows build.
-- `NOTES.md`, `PHILOSOPHY.md`, `CREDITS.md` — context material.
+What works today:
 
-## What's missing
+- Native `arm64` build on Apple Silicon.
+- GLFW + GLEW + Apple's OpenGL 4.1 core profile.
+- Shared renderer, presets, screenshots, overlay, and EXR recorder code.
+- AVFoundation webcam capture for the `external` layer.
 
-Everything else. No `main.cpp`, no build system, no camera capture code.
+Camera note:
 
-## Planned approach
+- On first launch, macOS should ask for camera permission.
+- If access was denied, re-enable it for the app launching `./feedback`
+  under System Settings -> Privacy & Security -> Camera.
 
-- GL 4.1 core profile (the highest Apple ships; no compute shaders).
-- AVFoundation for camera capture instead of Media Foundation / V4L2.
-- GLFW for window + input — same as Windows.
-- Recorder pipeline ported with minor changes (same EXR code should work;
-  PBO behavior identical on desktop GL).
-
-## Status
-
-Port is **not started**. If you want to help, see `../CONTRIBUTING.md`.
-The Windows build at the repo root is the reference.
+This directory remains notes/reference material for a deeper native macOS
+port. The root app is now the practical starting point for getting the
+instrument running on Apple Silicon.

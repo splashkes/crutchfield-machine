@@ -1,4 +1,4 @@
-#version 460 core
+#version 410 core
 // main.frag — orchestrator. Each layer lives in its own file under layers/
 // and is included at build time by the host (simple #include resolution).
 // Layer calls are guarded by bits in uEnable so any layer can be toggled.

@@ -1,6 +1,10 @@
 # Build artifacts
 *.o
 feedback.exe
+feedback
+*.dSYM/
+feedback-core-macos-arm64/
+feedback-core-macos-arm64.zip
 
 # Recorded output (EXR sequences + encoded MP4s are large)
 recordings/
