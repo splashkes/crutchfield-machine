@@ -200,6 +200,72 @@ static void K(Input& in, ActionId a, int key, int mods = 0, float scale = 1.0f) 
     in.bind(b);
 }
 
+#ifdef __APPLE__
+static bool has_key_binding(const Input& in, ActionId action, int key, int mods,
+                            BindContext ctx = CTX_ANY) {
+    for (const Binding& b : in.bindings()) {
+        if (b.action != action) continue;
+        if (b.source != SRC_KEY) continue;
+        if (b.context != ctx) continue;
+        if (b.code != key) continue;
+        if (b.modmask != mods) continue;
+        return true;
+    }
+    return false;
+}
+
+static bool has_super_binding(const Input& in, ActionId action,
+                              BindContext ctx = CTX_ANY) {
+    for (const Binding& b : in.bindings()) {
+        if (b.action != action) continue;
+        if (b.source != SRC_KEY) continue;
+        if (b.context != ctx) continue;
+        if (b.modmask & GLFW_MOD_SUPER) return true;
+    }
+    return false;
+}
+
+static int add_mac_alias(Input& in, ActionId action, int key, int mods,
+                         bool onlyIfMissing) {
+    if (has_key_binding(in, action, key, mods)) return 0;
+    if (onlyIfMissing && has_super_binding(in, action)) return 0;
+    K(in, action, key, mods);
+    return 1;
+}
+
+static int install_mac_keyboard_aliases(Input& in, bool onlyIfMissing) {
+    int added = 0;
+
+    // These are additive aliases for keys that are awkward or absent on
+    // Apple keyboards. They do not replace the existing cross-platform map.
+    added += add_mac_alias(in, ACT_FULLSCREEN,    GLFW_KEY_ENTER,     GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_SCREENSHOT,    GLFW_KEY_BACKSLASH, GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_PRESET_SAVE,   GLFW_KEY_S,         GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_PRESET_NEXT,   GLFW_KEY_N,         GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_PRESET_PREV,   GLFW_KEY_P,         GLFW_MOD_SUPER, onlyIfMissing);
+
+    added += add_mac_alias(in, ACT_LAYER_PHYSICS, GLFW_KEY_P,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_LAYER_THERMAL, GLFW_KEY_T,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_BLURQ_CYCLE,   GLFW_KEY_B,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_CAQ_CYCLE,     GLFW_KEY_C,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_NOISEQ_CYCLE,  GLFW_KEY_N,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_FIELDS_CYCLE,  GLFW_KEY_F,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+
+    added += add_mac_alias(in, ACT_THERMAMP_DN,   GLFW_KEY_1,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMAMP_UP,   GLFW_KEY_2,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSCALE_DN, GLFW_KEY_3,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSCALE_UP, GLFW_KEY_4,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSPEED_DN, GLFW_KEY_5,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSPEED_UP, GLFW_KEY_6,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMRISE_DN,  GLFW_KEY_7,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMRISE_UP,  GLFW_KEY_8,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSWIRL_DN, GLFW_KEY_9,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSWIRL_UP, GLFW_KEY_0,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+
+    return added;
+}
+#endif
+
 void Input::installDefaults() {
     clear();
     Input& in = *this;
@@ -304,6 +370,10 @@ void Input::installDefaults() {
     K(in, ACT_NOISEQ_CYCLE,      GLFW_KEY_HOME);
     K(in, ACT_FIELDS_CYCLE,      GLFW_KEY_END);
     K(in, ACT_PRINT_HELP_STDOUT, GLFW_KEY_SLASH);  // '?' / shifted slash
+
+#ifdef __APPLE__
+    install_mac_keyboard_aliases(in, /*onlyIfMissing=*/false);
+#endif
 
     // Help navigation (also consumes the main-panel arrow keys when the
     // help panel is open — we dispatch both from the same bindings and let
@@ -571,9 +641,9 @@ void Input::onKey(int key, int /*scancode*/, int action, int mods) {
     if (!handler_) return;
 
     // Shift is always used as the coarse-step multiplier, not as a binding
-    // modifier. Match on Ctrl and Alt only; drop Super because Windows
-    // intercepts it anyway.
-    const int matchMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    // modifier. Match on Ctrl / Alt / Super so macOS can use Command-based
+    // aliases without changing the other platforms.
+    const int matchMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
     const float coarse  = (mods & GLFW_MOD_SHIFT) ? 20.0f : 1.0f;
 
     for (const Binding& b : bindings_) {
@@ -655,8 +725,10 @@ static bool parse_key_spec(const std::string& spec, int& outKey, int& outMods) {
     for (size_t k = 0; k + 1 < parts.size(); k++) {
         const std::string& m = parts[k];
         if      (ieq(m, "Ctrl") || ieq(m, "Control")) outMods |= GLFW_MOD_CONTROL;
-        else if (ieq(m, "Alt"))                        outMods |= GLFW_MOD_ALT;
+        else if (ieq(m, "Alt") || ieq(m, "Option"))   outMods |= GLFW_MOD_ALT;
         else if (ieq(m, "Shift"))                      outMods |= GLFW_MOD_SHIFT;
+        else if (ieq(m, "Cmd") || ieq(m, "Command") || ieq(m, "Super"))
+                                                         outMods |= GLFW_MOD_SUPER;
         else return false;
     }
     const std::string& key = parts.back();
@@ -724,6 +796,11 @@ static std::string key_spec_string(int key, int mods) {
     if (mods & GLFW_MOD_CONTROL) s += "Ctrl+";
     if (mods & GLFW_MOD_ALT)     s += "Alt+";
     if (mods & GLFW_MOD_SHIFT)   s += "Shift+";
+#ifdef __APPLE__
+    if (mods & GLFW_MOD_SUPER)   s += "Cmd+";
+#else
+    if (mods & GLFW_MOD_SUPER)   s += "Super+";
+#endif
     // Reverse lookup.
     if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) { s += (char)('A' + (key - GLFW_KEY_A)); return s; }
     if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) { s += (char)('0' + (key - GLFW_KEY_0)); return s; }
@@ -901,6 +978,13 @@ bool Input::loadIni(const std::string& path) {
         bindings_.push_back(b);
     }
     std::fclose(f);
+#ifdef __APPLE__
+    const int added = install_mac_keyboard_aliases(*this, /*onlyIfMissing=*/true);
+    if (added > 0) {
+        std::printf("[bindings] added %d macOS keyboard aliases on top of %s\n",
+                    added, path.c_str());
+    }
+#endif
     return true;
 }
 
@@ -1038,7 +1122,7 @@ bool Input::saveIni(const std::string& path) const {
 "#              Natural for 'the stick IS the knob' mappings. Sticks\n"
 "#              self-center, so letting go returns the parameter to 0.\n"
 "#\n"
-"# Modifier prefixes: Ctrl+ / Alt+ / Shift+\n"
+"# Modifier prefixes: Ctrl+ / Alt+ / Shift+ / Cmd+ (or Super+)\n"
 "# (Shift is reserved as the coarse-step multiplier — using it as a modifier\n"
 "#  is accepted but it only matters if you want to create a distinct binding\n"
 "#  from the bare key.)\n"

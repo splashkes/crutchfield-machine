@@ -137,7 +137,7 @@ enum ActionKind : int { AK_STEP, AK_RATE, AK_DISCRETE, AK_TRIGGER };
 // Binding sources. GAMEPAD_* are populated in C2, MIDI_CC in a later pass.
 enum BindSource : int {
     SRC_NONE = 0,
-    SRC_KEY,           // code = GLFW_KEY_*, modmask = GLFW_MOD_*
+    SRC_KEY,           // code = GLFW_KEY_*, modmask = GLFW_MOD_* (Shift usually stripped)
     SRC_GAMEPAD_BTN,   // code = GLFW_GAMEPAD_BUTTON_*
     SRC_GAMEPAD_AXIS,  // code = GLFW_GAMEPAD_AXIS_* (bipolar/rate)
     SRC_MIDI_CC,       // code = CC number
@@ -175,7 +175,7 @@ struct Binding {
     ActionId  action   = ACT_NONE;
     BindSource source  = SRC_NONE;
     int       code     = 0;
-    int       modmask  = 0;        // for KEY: exact match on Ctrl/Alt/Shift
+    int       modmask  = 0;        // for KEY: exact match on Ctrl/Alt/Super
     float     scale    = 1.0f;     // multiplier applied to step/axis value
     bool      invert   = false;    // negate value
     float     deadzone = 0.0f;     // axis deadzone (ignored for keys)
@@ -219,9 +219,11 @@ public:
     void clear() { bindings_.clear(); }
 
     // Read bindings.ini if present (merged over defaults — file entries
-    // override defaults that target the same action). Returns true if file
-    // was present & parsed without error; returns false (and leaves the
-    // current map intact) if the file wasn't there.
+    // override defaults that target the same action). On macOS, missing
+    // Command-key aliases are backfilled after load so legacy configs stay
+    // usable on Apple keyboards. Returns true if file was present & parsed
+    // without error; returns false (and leaves the current map intact) if
+    // the file wasn't there.
     bool loadIni(const std::string& path);
 
     // Write current bindings.ini (commented, grouped by action group).

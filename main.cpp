@@ -510,7 +510,15 @@ static void print_help() {
       " K/I   couple amt     O/L   external amt\n"
       " V     invert (toggle)  Z/X  sensor-gamma  7/8 sat-knee  9/0 color-xtalk\n"
       " Ins   toggle physics layer   PgDn  toggle thermal layer\n"
-      " Numpad thermal: 1/4 amp   2/5 scale   3/6 speed   7/8 rise   9/0 swirl\n\n");
+      " Numpad thermal: 1/4 amp   2/5 scale   3/6 speed   7/8 rise   9/0 swirl\n\n"
+#ifdef __APPLE__
+      " --- macOS aliases ---\n"
+      " Cmd+Enter fullscreen   Cmd+\\\\ screenshot   Cmd+S/N/P presets\n"
+      " Cmd+Opt+P physics      Cmd+Opt+T thermal\n"
+      " Cmd+Opt+B blur-q       Cmd+Opt+C CA-q   Cmd+Opt+N noise-q   Cmd+Opt+F fields\n"
+      " Cmd+Opt+1/2 amp  3/4 scale  5/6 speed  7/8 rise  9/0 swirl\n\n"
+#endif
+      );
     fflush(stdout);
 }
 
@@ -1069,6 +1077,11 @@ static std::string fmt_key(int key, int mods) {
     if (mods & GLFW_MOD_CONTROL) s += "Ctrl+";
     if (mods & GLFW_MOD_ALT)     s += "Alt+";
     if (mods & GLFW_MOD_SHIFT)   s += "Shift+";
+#ifdef __APPLE__
+    if (mods & GLFW_MOD_SUPER)   s += "Cmd+";
+#else
+    if (mods & GLFW_MOD_SUPER)   s += "Super+";
+#endif
     if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) { s += (char)('A' + (key - GLFW_KEY_A)); return s; }
     if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) { s += (char)('0' + (key - GLFW_KEY_0)); return s; }
     if (key >= GLFW_KEY_F1 && key <= GLFW_KEY_F12) {
@@ -1112,6 +1125,12 @@ static std::string fmt_key(int key, int mods) {
 // Return the keyboard binding for an action as "Q" or "Ctrl+S". Only the
 // first matching keyboard binding is returned (bindings.ini can add more).
 static std::string keys_for(ActionId a) {
+#ifdef __APPLE__
+    for (const Binding& b : g_input.bindings()) {
+        if (b.action == a && b.source == SRC_KEY && (b.modmask & GLFW_MOD_SUPER))
+            return fmt_key(b.code, b.modmask);
+    }
+#endif
     for (const Binding& b : g_input.bindings()) {
         if (b.action == a && b.source == SRC_KEY)
             return fmt_key(b.code, b.modmask);

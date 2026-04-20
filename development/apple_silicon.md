@@ -78,6 +78,23 @@ The most common failure is not a build failure but macOS privacy:
 Because we currently launch a bare binary, camera permission behavior is
 less polished than a signed `.app` bundle.
 
+### Keyboard defaults
+
+Apple builds carry an additive macOS keyboard layer on top of the
+cross-platform defaults. The PC-oriented bindings still exist, but the
+important missing-key actions also get Command-based aliases:
+
+- `Cmd+Enter` fullscreen
+- `Cmd+\` screenshot
+- `Cmd+S` / `Cmd+N` / `Cmd+P` presets
+- `Cmd+Opt+P` physics, `Cmd+Opt+T` thermal
+- `Cmd+Opt+B/C/N/F` for blur / CA / noise / fields quality
+- `Cmd+Opt+1..0` thermal parameter nudges
+
+Legacy `bindings.ini` files created before these aliases existed do not
+need to be deleted. On macOS, startup backfills the missing Command-key
+aliases after the file is loaded.
+
 ## Known rough edges
 
 - The app is still a bare executable, not a packaged `.app`.
