@@ -8,8 +8,8 @@
 //     COUPLE layer is on, both fields update and each samples the other.
 //   • Camera (V4L2) is uploaded to a texture that the EXTERNAL layer mixes in.
 //
-// Build: see Makefile.  Run: ./feedback from the linux/ directory (so the
-// shader paths resolve).
+// Build: see the platform makefiles. Run from the repo root so the shader
+// paths resolve.
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
@@ -67,9 +67,29 @@ struct Cfg {
     float demoInjectSec = 0.0f;     // >0 = fire an injection every N seconds
 };
 
+static std::string g_program_name = "feedback";
+
+static void set_program_name(const char* argv0) {
+    if (!argv0 || !argv0[0]) return;
+    std::string p = argv0;
+    size_t slash = p.find_last_of("\\/");
+    g_program_name = (slash == std::string::npos) ? p : p.substr(slash + 1);
+}
+
+static void configure_gl_context_hints() {
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#else
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
+#endif
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+}
+
 static void print_cli_help() {
     printf(
-      "Usage: feedback.exe [options]\n"
+      "Usage: %s [options]\n"
       "  --sim-res WxH       internal simulation resolution (default: match display)\n"
       "  --display-res WxH   window size in windowed mode (default: 1280x720)\n"
       "  --fullscreen        borderless fullscreen at monitor's native resolution\n"
@@ -91,12 +111,13 @@ static void print_cli_help() {
       "  --demo-inject S     auto-fire a random injection every S seconds (0 = off)\n"
       "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
       "  -h, --help          show this help\n\n"
-      "Launch with NO arguments to get an interactive mode picker — handy for\n"
-      "non-CLI use and for double-clicking the exe from Explorer.\n\n"
+      "On Windows only: launch with NO arguments to get an interactive mode\n"
+      "picker for double-click / non-CLI use.\n\n"
       "Examples:\n"
       "  feedback --fullscreen\n"
       "  feedback --fullscreen --sim-res 3840x2160 --precision 32\n"
-      "  feedback --fields 4 --blur-q 2 --ca-q 2  (all quality maxed)\n");
+      "  feedback --fields 4 --blur-q 2 --ca-q 2  (all quality maxed)\n",
+      g_program_name.c_str());
 }
 
 static Cfg parse_cli(int argc, char** argv) {
@@ -971,13 +992,8 @@ static bool save_screenshot(GLuint fbo, int w, int h) {
 }
 
 // ── startup mode picker ──────────────────────────────────────────────────
-// Shown only when the app is launched with no CLI args — i.e. double-clicked
-// from Explorer. Gives non-CLI users a one-keystroke way to pick a common
-// mode. Any CLI arg at all skips this path so existing workflows stay intact.
-//
-// Implementation: console prompt. On Windows, double-clicking a console-
-// subsystem .exe pops a terminal window automatically; the menu lives there.
-// It's not pretty, but it's zero deps and works identically on every machine.
+// Windows-only convenience path for double-click launches.
+#ifdef _WIN32
 static void run_mode_picker(Cfg& c) {
     preset_rescan();
 
@@ -1039,6 +1055,7 @@ static void run_mode_picker(Cfg& c) {
         }
     }
 }
+#endif
 
 // Track frame timing for FPS readout in the help overlay.
 static double g_lastFrameTime = 0.0;
@@ -2673,6 +2690,7 @@ static void encode_prompt(const std::vector<std::string>& dirs) {
 
 // ──────────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {
+    set_program_name((argc > 0) ? argv[0] : nullptr);
     g_cfg = parse_cli(argc, argv);
 
 #ifdef _WIN32
@@ -2690,15 +2708,14 @@ int main(int argc, char** argv) {
     timeBeginPeriod(1);
 #endif
 
-    // No CLI args → user double-clicked the exe from Explorer. Show a mode
-    // picker on the console. Any flag (even --help) skips this path.
+    // Windows console builds can be double-clicked; offer the picker there.
+#ifdef _WIN32
     if (argc == 1) run_mode_picker(g_cfg);
+#endif
 
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    configure_gl_context_hints();
 
     GLFWwindow* win = nullptr;
     if (g_cfg.fullscreen) {
@@ -2735,6 +2752,10 @@ int main(int argc, char** argv) {
 
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) { fprintf(stderr, "glew failed\n"); return 1; }
+    glGetError(); // GLEW can leave a benign GL_INVALID_ENUM on core-profile init.
+    printf("[gl] %s / GLSL %s\n",
+           (const char*)glGetString(GL_VERSION),
+           (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION));
 
     // Default sim resolution: match display if user didn't override.
     if (g_cfg.simW == 0 || g_cfg.simH == 0) {

@@ -29,7 +29,7 @@
 //
 // The RAM pool is the main capacity knob. Buffer count = ramBudget / frameBytes.
 
-class GLFWwindow;
+struct GLFWwindow;
 
 class Recorder {
 public:
