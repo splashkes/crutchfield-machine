@@ -65,6 +65,34 @@ This runs:
    the Makefile's LDFLAGS/LDLIBS comments. Fix before shipping.
 4. PowerShell `Compress-Archive` → `feedback-windows-x64.zip`.
 
+### If you ship a macOS binary
+
+Do not assume a `feedback-macos-arm64` zip is self-contained just because it
+launches on the build machine. Before attaching any macOS artifact to a
+release, inspect it:
+
+```bash
+otool -L ./feedback
+```
+
+If the output includes Homebrew paths such as:
+
+```text
+/opt/homebrew/opt/glfw/lib/libglfw.3.dylib
+/opt/homebrew/opt/glew/lib/libGLEW.2.3.dylib
+```
+
+then a fresh Apple Silicon machine will fail on first launch unless the user
+installs:
+
+```bash
+brew install glfw glew
+```
+
+Release rule: either bundle/relocate those dylibs into the macOS artifact, or
+state the Homebrew runtime prerequisite explicitly in the release notes and
+README. Do not ship an undocumented dynamic dependency.
+
 ## Cut a release
 
 ```bash
