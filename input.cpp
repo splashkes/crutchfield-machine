@@ -30,6 +30,9 @@ static const ActionInfo ACTIONS[] = {
     { ACT_LAYER_INJECT,    "layer.inject",    AK_DISCRETE, "Layers", "toggle inject" },
     { ACT_LAYER_PHYSICS,   "layer.physics",   AK_DISCRETE, "Layers", "toggle physics" },
     { ACT_LAYER_THERMAL,   "layer.thermal",   AK_DISCRETE, "Layers", "toggle thermal" },
+    { ACT_LAYER_CURSOR_UP, "layer.cursor.up", AK_DISCRETE, "Layers", "cursor prev" },
+    { ACT_LAYER_CURSOR_DN, "layer.cursor.dn", AK_DISCRETE, "Layers", "cursor next" },
+    { ACT_LAYER_TOGGLE_ARMED, "layer.toggleArmed", AK_DISCRETE, "Layers", "toggle armed layer" },
 
     // warp
     { ACT_ZOOM_UP,   "warp.zoom+",      AK_STEP, "Warp", "zoom +" },
@@ -118,6 +121,11 @@ static const ActionInfo ACTIONS[] = {
     { ACT_CAQ_CYCLE,        "q.ca",               AK_DISCRETE, "Quality", "cycle CA sampler" },
     { ACT_NOISEQ_CYCLE,     "q.noise",            AK_DISCRETE, "Quality", "cycle noise type" },
     { ACT_FIELDS_CYCLE,     "q.fields",           AK_DISCRETE, "Quality", "cycle coupled fields" },
+    { ACT_QUALITY_CURSOR_UP,"q.cursor.up",        AK_DISCRETE, "Quality", "cursor prev" },
+    { ACT_QUALITY_CURSOR_DN,"q.cursor.dn",        AK_DISCRETE, "Quality", "cursor next" },
+    { ACT_QUALITY_FIRE_ARMED,"q.cycleArmed",      AK_DISCRETE, "Quality", "cycle armed quality" },
+    { ACT_PATTERN_CURSOR_UP,"pattern.cursor.up",  AK_DISCRETE, "Inject", "pattern prev" },
+    { ACT_PATTERN_CURSOR_DN,"pattern.cursor.dn",  AK_DISCRETE, "Inject", "pattern next" },
     { ACT_PRINT_HELP_STDOUT,"app.helpStdout",     AK_DISCRETE, "App", "print help to stdout" },
     { ACT_QUIT,             "app.quit",           AK_DISCRETE, "App", "quit" },
 
@@ -446,26 +454,38 @@ void Input::installDefaults() {
     GA(CTX_SEC_THERMAL, ACT_THERMSWIRL_DN, GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  2.0f, /*inv=*/false, /*dz=*/-0.08f);
     GA(CTX_SEC_THERMAL, ACT_THERMSWIRL_UP, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 2.0f, /*inv=*/false, /*dz=*/-0.08f);
 
-    // Inject — LB/RB cycle pattern, LT inject-hold, Y cycle pattern.
+    // Inject — D-pad L/R steps through the 5 patterns (cursor = p.pattern),
+    // triggers hold inject, X/Y/LB/RB give direct shortcuts to the common
+    // patterns. A fires inject as a tap (press only) — useful for short
+    // jabs without reaching for a trigger.
+    GB(CTX_SEC_INJECT, ACT_PATTERN_CURSOR_UP, GLFW_GAMEPAD_BUTTON_DPAD_LEFT);
+    GB(CTX_SEC_INJECT, ACT_PATTERN_CURSOR_DN, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT);
     GB(CTX_SEC_INJECT, ACT_PATTERN_HBARS,   GLFW_GAMEPAD_BUTTON_X);
     GB(CTX_SEC_INJECT, ACT_PATTERN_DOT,     GLFW_GAMEPAD_BUTTON_Y);
     GB(CTX_SEC_INJECT, ACT_PATTERN_CHECKER, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
     GB(CTX_SEC_INJECT, ACT_PATTERN_GRAD,    GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_INJECT, ACT_INJECT_HOLD,     GLFW_GAMEPAD_BUTTON_A);
     GA(CTX_SEC_INJECT, ACT_INJECT_HOLD,     GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  1.0f, /*inv=*/false, /*dz=*/-0.3f);
     GA(CTX_SEC_INJECT, ACT_INJECT_HOLD,     GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 1.0f, /*inv=*/false, /*dz=*/-0.3f);
 
-    // VFX-1 — LB/RB cycle effect, LT/RT param -/+, Y B-source cycle, X off.
+    // VFX-1 — LB/RB and D-pad L/R both cycle the effect (D-pad doubles
+    // for finer stepping through the 19-entry list); LT/RT param -/+;
+    // X off; Y cycle B-source; LS-X as an alternate param axis.
     GB(CTX_SEC_VFX1, ACT_VFX1_CYCLE_BACK, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
     GB(CTX_SEC_VFX1, ACT_VFX1_CYCLE_FWD,  GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_VFX1, ACT_VFX1_CYCLE_BACK, GLFW_GAMEPAD_BUTTON_DPAD_LEFT);
+    GB(CTX_SEC_VFX1, ACT_VFX1_CYCLE_FWD,  GLFW_GAMEPAD_BUTTON_DPAD_RIGHT);
     GB(CTX_SEC_VFX1, ACT_VFX1_OFF,        GLFW_GAMEPAD_BUTTON_X);
     GB(CTX_SEC_VFX1, ACT_VFX1_BSRC_CYCLE, GLFW_GAMEPAD_BUTTON_Y);
     GA(CTX_SEC_VFX1, ACT_VFX1_PARAM_DN, GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  2.0f, /*inv=*/false, /*dz=*/-0.08f);
     GA(CTX_SEC_VFX1, ACT_VFX1_PARAM_UP, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 2.0f, /*inv=*/false, /*dz=*/-0.08f);
-    GA(CTX_SEC_VFX1, ACT_VFX1_PARAM_UP, GLFW_GAMEPAD_AXIS_LEFT_X, 1.0f);  // also LS-X
+    GA(CTX_SEC_VFX1, ACT_VFX1_PARAM_UP, GLFW_GAMEPAD_AXIS_LEFT_X, 1.0f);
 
-    // VFX-2 — same shape as VFX-1.
+    // VFX-2 — mirror of VFX-1.
     GB(CTX_SEC_VFX2, ACT_VFX2_CYCLE_BACK, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
     GB(CTX_SEC_VFX2, ACT_VFX2_CYCLE_FWD,  GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_VFX2, ACT_VFX2_CYCLE_BACK, GLFW_GAMEPAD_BUTTON_DPAD_LEFT);
+    GB(CTX_SEC_VFX2, ACT_VFX2_CYCLE_FWD,  GLFW_GAMEPAD_BUTTON_DPAD_RIGHT);
     GB(CTX_SEC_VFX2, ACT_VFX2_OFF,        GLFW_GAMEPAD_BUTTON_X);
     GB(CTX_SEC_VFX2, ACT_VFX2_BSRC_CYCLE, GLFW_GAMEPAD_BUTTON_Y);
     GA(CTX_SEC_VFX2, ACT_VFX2_PARAM_DN, GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  2.0f, /*inv=*/false, /*dz=*/-0.08f);
@@ -492,20 +512,26 @@ void Input::installDefaults() {
     GB(CTX_SEC_BPM, ACT_BPM_FLASH_TOGGLE,    GLFW_GAMEPAD_BUTTON_LEFT_THUMB);
     GB(CTX_SEC_BPM, ACT_BPM_DECAYDIP_TOGGLE, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB);
 
-    // Layers — LB/RB cycle which layer is "armed" in context; A toggles it.
-    // To keep it simple, expose the 12 layer toggles via face+shoulder chord
-    // positions — Y + each shoulder covers the most important ones. The
-    // help section will spell out the mapping. For now: three face
-    // buttons each toggle a layer, bumpers cycle-armed.
-    GB(CTX_SEC_LAYERS, ACT_LAYER_WARP,     GLFW_GAMEPAD_BUTTON_X);
-    GB(CTX_SEC_LAYERS, ACT_LAYER_OPTICS,   GLFW_GAMEPAD_BUTTON_Y);
-    GB(CTX_SEC_LAYERS, ACT_LAYER_DECAY,    GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
-    GB(CTX_SEC_LAYERS, ACT_LAYER_NOISE,    GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
-    GB(CTX_SEC_LAYERS, ACT_LAYER_COUPLE,   GLFW_GAMEPAD_BUTTON_LEFT_THUMB);
-    GB(CTX_SEC_LAYERS, ACT_LAYER_EXTERNAL, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB);
-    GB(CTX_SEC_LAYERS, ACT_LAYER_INJECT,   GLFW_GAMEPAD_BUTTON_START);
+    // Layers — cursor-based navigation. D-pad L/R moves the armed layer
+    // cursor across all 12; A toggles whichever is armed. Plus a few
+    // direct shortcuts for the workhorses so live performance doesn't
+    // have to step through a menu every time. X/Y = warp/optics (the
+    // most frequently nudged), LB/RB = external/inject for live pulls.
+    GB(CTX_SEC_LAYERS, ACT_LAYER_CURSOR_UP,    GLFW_GAMEPAD_BUTTON_DPAD_LEFT);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_CURSOR_DN,    GLFW_GAMEPAD_BUTTON_DPAD_RIGHT);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_TOGGLE_ARMED, GLFW_GAMEPAD_BUTTON_A);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_WARP,         GLFW_GAMEPAD_BUTTON_X);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_OPTICS,       GLFW_GAMEPAD_BUTTON_Y);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_EXTERNAL,     GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_INJECT,       GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_COUPLE,       GLFW_GAMEPAD_BUTTON_LEFT_THUMB);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_PHYSICS,      GLFW_GAMEPAD_BUTTON_RIGHT_THUMB);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_THERMAL,      GLFW_GAMEPAD_BUTTON_START);
 
-    // Quality — bumpers + face buttons each cycle one quality setting.
+    // Quality — cursor pattern over the 4 items plus direct shortcuts.
+    GB(CTX_SEC_QUALITY, ACT_QUALITY_CURSOR_UP,  GLFW_GAMEPAD_BUTTON_DPAD_LEFT);
+    GB(CTX_SEC_QUALITY, ACT_QUALITY_CURSOR_DN,  GLFW_GAMEPAD_BUTTON_DPAD_RIGHT);
+    GB(CTX_SEC_QUALITY, ACT_QUALITY_FIRE_ARMED, GLFW_GAMEPAD_BUTTON_A);
     GB(CTX_SEC_QUALITY, ACT_BLURQ_CYCLE,  GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
     GB(CTX_SEC_QUALITY, ACT_CAQ_CYCLE,    GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
     GB(CTX_SEC_QUALITY, ACT_NOISEQ_CYCLE, GLFW_GAMEPAD_BUTTON_X);

@@ -34,6 +34,9 @@ enum ActionId : int {
     ACT_LAYER_WARP, ACT_LAYER_OPTICS, ACT_LAYER_GAMMA, ACT_LAYER_COLOR,
     ACT_LAYER_CONTRAST, ACT_LAYER_DECAY, ACT_LAYER_NOISE, ACT_LAYER_COUPLE,
     ACT_LAYER_EXTERNAL, ACT_LAYER_INJECT, ACT_LAYER_PHYSICS, ACT_LAYER_THERMAL,
+    // Cursor-based layer navigation for gamepad (D-pad L/R in Layers section)
+    ACT_LAYER_CURSOR_UP, ACT_LAYER_CURSOR_DN,
+    ACT_LAYER_TOGGLE_ARMED,
 
     // ── Warp (STEP; Rate variants map to same ActionId when C2 lands) ─
     ACT_ZOOM_UP, ACT_ZOOM_DN,
@@ -86,6 +89,10 @@ enum ActionId : int {
     ACT_REC_TOGGLE,
     ACT_PRESET_SAVE, ACT_PRESET_NEXT, ACT_PRESET_PREV,
     ACT_BLURQ_CYCLE, ACT_CAQ_CYCLE, ACT_NOISEQ_CYCLE, ACT_FIELDS_CYCLE,
+    // Cursor-based quality navigation (D-pad L/R + A in Quality section)
+    ACT_QUALITY_CURSOR_UP, ACT_QUALITY_CURSOR_DN, ACT_QUALITY_FIRE_ARMED,
+    // Cursor-based pattern navigation (D-pad L/R in Inject section)
+    ACT_PATTERN_CURSOR_UP, ACT_PATTERN_CURSOR_DN,
     ACT_PRINT_HELP_STDOUT,
     ACT_QUIT,
 

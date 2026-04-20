@@ -412,6 +412,11 @@ struct State {
     GLFWwindow* win = nullptr;
     bool isFullscreen = false;
     int  savedX = 100, savedY = 100, savedW = 1280, savedH = 720;
+
+    // Armed-layer cursor for the Layers section. Indexes into LAYERS[].
+    int  armedLayer = 0;
+    // Armed-quality cursor for the Quality section. 0..3.
+    int  armedQuality = 0;
 };
 static State S;
 
@@ -948,8 +953,6 @@ static constexpr int N_HELP_SECTIONS =
     (int)(sizeof(HELP_SECTIONS) / sizeof(HELP_SECTIONS[0]));
 
 // Helpers used inside section builders
-static std::string onoff_s(bool b) { return b ? "ON " : "off"; }
-
 static std::string section_status() {
     const auto& p = S.p;
     double now = glfwGetTime();
@@ -994,27 +997,25 @@ static std::string section_status() {
 }
 
 static std::string section_layers() {
-    char b[1024];
-    snprintf(b, sizeof b,
-        "F1  warp     %s\n"
-        "F2  optics   %s\n"
-        "F3  gamma    %s\n"
-        "F4  color    %s\n"
-        "F5  contrast %s\n"
-        "F6  decay    %s\n"
-        "F7  noise    %s\n"
-        "F8  couple   %s\n"
-        "F9  external %s\n"
-        "F10 inject   %s\n"
-        "Ins physics  %s\n"
-        "PgDn thermal %s\n",
-        onoff_s(S.enable & L_WARP).c_str(),     onoff_s(S.enable & L_OPTICS).c_str(),
-        onoff_s(S.enable & L_GAMMA).c_str(),    onoff_s(S.enable & L_COLOR).c_str(),
-        onoff_s(S.enable & L_CONTRAST).c_str(), onoff_s(S.enable & L_DECAY).c_str(),
-        onoff_s(S.enable & L_NOISE).c_str(),    onoff_s(S.enable & L_COUPLE).c_str(),
-        onoff_s(S.enable & L_EXTERNAL).c_str(), onoff_s(S.enable & L_INJECT).c_str(),
-        onoff_s(S.enable & L_PHYSICS).c_str(),  onoff_s(S.enable & L_THERMAL).c_str());
-    return b;
+    // Iterate LAYERS[] so the cursor-armed row matches the index used by
+    // the gamepad navigation handlers. Also list the keyboard Fn/Ins/PgDn
+    // bindings next to each layer for quick reference.
+    static const char* kbdMap[] = {
+        "F1 ", "F2 ", "F3 ", "F4 ", "F5 ", "F6 ", "F7 ", "F8 ",
+        "F9 ", "F10", "Ins", "PgD"
+    };
+    const int N = sizeof(LAYERS) / sizeof(LAYERS[0]);
+    std::string out;
+    char row[96];
+    for (int i = 0; i < N; i++) {
+        const LayerInfo& li = LAYERS[i];
+        bool on = (S.enable & li.bit) != 0;
+        const char* cursor = (i == S.armedLayer) ? "\x10" : " ";
+        snprintf(row, sizeof row, "%s  %s  %-9s  %s\n",
+                 cursor, kbdMap[i], li.name, on ? "ON " : "off");
+        out += row;
+    }
+    return out;
 }
 
 static std::string section_warp() {
@@ -1117,13 +1118,20 @@ static std::string section_thermal() {
 static std::string section_inject() {
     const auto& p = S.p;
     const char* patNames[] = { "H-bars", "V-bars", "dot", "checker", "gradient" };
-    char b[512];
+    auto cur = [&](int i) { return i == p.pattern ? "\x10" : " "; };
+    char b[1024];
     snprintf(b, sizeof b,
-        "1..5    pick pattern (now: %s)\n"
-        "%-5s   inject (hold)\n"
-        "F10     toggle inject layer",
-        patNames[(unsigned)p.pattern % 5],
+        "%s  1  H-bars\n"
+        "%s  2  V-bars\n"
+        "%s  3  dot\n"
+        "%s  4  checker\n"
+        "%s  5  gradient\n"
+        "\n"
+        "DP-L/R cursor   A tap-inject   LT/RT hold\n"
+        "%-5s  inject (hold)     F10  toggle inject layer",
+        cur(0), cur(1), cur(2), cur(3), cur(4),
         keys_for(ACT_INJECT_HOLD).c_str());
+    (void)patNames;
     return b;
 }
 
@@ -1131,16 +1139,19 @@ static std::string section_quality() {
     const char* blur[] = {"5-tap cross","9-gauss","25-gauss"};
     const char* ca[]   = {"3-sample","5-ramp","8-wavelen"};
     const char* ns[]   = {"white","pink 1/f"};
-    char b[512];
+    auto cur = [&](int i) { return i == S.armedQuality ? "\x10" : " "; };
+    char b[1024];
     snprintf(b, sizeof b,
-        "%-5s  blur kernel : %s\n"
-        "%-5s  CA sampler  : %s\n"
-        "%-5s  noise type  : %s\n"
-        "%-5s  fields      : %d",
-        keys_for(ACT_BLURQ_CYCLE).c_str(),  blur[S.blurQ],
-        keys_for(ACT_CAQ_CYCLE  ).c_str(),  ca[S.caQ],
-        keys_for(ACT_NOISEQ_CYCLE).c_str(), ns[S.noiseQ],
-        keys_for(ACT_FIELDS_CYCLE).c_str(), S.activeFields);
+        "%s  %-5s  blur kernel : %s\n"
+        "%s  %-5s  CA sampler  : %s\n"
+        "%s  %-5s  noise type  : %s\n"
+        "%s  %-5s  fields      : %d\n"
+        "\n"
+        "DP-L/R move cursor   A cycle armed",
+        cur(0), keys_for(ACT_BLURQ_CYCLE).c_str(),  blur[S.blurQ],
+        cur(1), keys_for(ACT_CAQ_CYCLE  ).c_str(),  ca[S.caQ],
+        cur(2), keys_for(ACT_NOISEQ_CYCLE).c_str(), ns[S.noiseQ],
+        cur(3), keys_for(ACT_FIELDS_CYCLE).c_str(), S.activeFields);
     return b;
 }
 
@@ -1181,30 +1192,29 @@ static std::string section_vfx(int slot) {
     ActionId pdn   = (slot == 0) ? ACT_VFX1_PARAM_DN   : ACT_VFX2_PARAM_DN;
     ActionId bsrc  = (slot == 0) ? ACT_VFX1_BSRC_CYCLE : ACT_VFX2_BSRC_CYCLE;
 
-    char buf[1024];
-    snprintf(buf, sizeof buf,
-        "Slot %d — current: %s\n"
-        "control param  : %.2f   (0..1)\n"
-        "B-source       : %s\n"
-        "\n"
-        "%-10s next effect\n"
-        "%-10s prev effect\n"
-        "%-10s off\n"
-        "%-10s param %s\n"
-        "%-10s cycle B-source\n"
-        "\n"
-        "-- 18 effects available --\n"
-        "Strobe  Still  Shake  Negative  Colorize  Monochrome\n"
-        "Posterize  ColorPass  Mirror-H/V/HV  Multi-H/V/HV\n"
-        "W-LumiKey  B-LumiKey  ChromaKey  PinP",
-        slot + 1, VFX_NAMES[e],
-        pv, VFX_BSRC_NAMES[b],
+    std::string out;
+    char row[128];
+    snprintf(row, sizeof row, "Slot %d  param=%.2f  B=%s\n\n",
+             slot + 1, pv, VFX_BSRC_NAMES[b]);
+    out += row;
+
+    // Full 19-entry effect list, current marked with a cursor arrow.
+    for (int i = 0; i < VFX_COUNT; i++) {
+        const char* cursor = (i == e) ? "\x10" : " ";
+        snprintf(row, sizeof row, "%s  %2d  %s\n", cursor, i, VFX_NAMES[i]);
+        out += row;
+    }
+    out += "\n";
+    snprintf(row, sizeof row,
+        "%-7s next    %-7s prev    %-7s off\n"
+        "%-7s param +/-   %-7s B-source",
         keys_for(next).c_str(),
         keys_for(prev).c_str(),
         keys_for(off).c_str(),
-        keys_pair(pup, pdn).c_str(), "+/-",
+        keys_pair(pup, pdn).c_str(),
         keys_for(bsrc).c_str());
-    return buf;
+    out += row;
+    return out;
 }
 static std::string section_output() {
     char b[512];
@@ -1304,14 +1314,14 @@ static std::string legend_for_section(int i) {
             return "LS-X scale   LS-Y amp   RS-X speed   RS-Y rise\n"
                    "LT/RT swirl (-/+)";
         case 8:  // Inject
-            return "LT/RT inject (hold)   X H-bars   Y dot\n"
-                   "LB checker   RB gradient";
+            return "DP-L/R cursor   A tap-inject   LT/RT hold\n"
+                   "X H-bars   Y dot   LB checker   RB gradient";
         case 9:  // VFX-1
-            return "LB/RB cycle effect   LT/RT param (-/+)   LS-X param\n"
-                   "X off   Y cycle B-source";
+            return "DP-L/R or LB/RB cycle   LT/RT param (-/+)\n"
+                   "LS-X param   X off   Y B-source";
         case 10: // VFX-2
-            return "LB/RB cycle effect   LT/RT param (-/+)   LS-X param\n"
-                   "X off   Y cycle B-source";
+            return "DP-L/R or LB/RB cycle   LT/RT param (-/+)\n"
+                   "LS-X param   X off   Y B-source";
         case 11: // Output
             return "RS-Y fade (absolute, self-centering)\n"
                    "LS-Y fade (rate)   LB fade- / RB fade+";
@@ -1320,13 +1330,15 @@ static std::string legend_for_section(int i) {
                    "LB inject-on-beat   RB strobe-lock\n"
                    "LSC flash   RSC decay-dip";
         case 13: // Quality
-            return "LB blur   RB CA   X noise   Y fields";
+            return "DP-L/R cursor   A cycle armed\n"
+                   "LB blur   RB CA   X noise   Y fields";
         case 14: // App
             return "X clear   Y pause   LB/RB preset prev/next\n"
                    "Start save preset   LSC record   RSC fullscreen";
         case 1:  // Layers
-            return "X warp   Y optics   LB decay   RB noise\n"
-                   "LSC couple   RSC external   Start inject";
+            return "DP-L/R  cursor   A  toggle armed\n"
+                   "X warp   Y optics   LB ext   RB inject\n"
+                   "LSC couple   RSC physics   Start thermal";
         default:
             // Status / Bindings: no contextual gamepad.
             return "";
@@ -1587,6 +1599,63 @@ static void apply_action(ActionId id, float mag) {
         case ACT_LAYER_INJECT:   toggle_layer(L_INJECT,   "inject");   return;
         case ACT_LAYER_PHYSICS:  toggle_layer(L_PHYSICS,  "physics");  return;
         case ACT_LAYER_THERMAL:  toggle_layer(L_THERMAL,  "thermal");  return;
+
+        // Layer cursor — gamepad-driven navigation across the 12 layers.
+        // Wraps at both ends. Pairs with ACT_LAYER_TOGGLE_ARMED (A).
+        case ACT_LAYER_CURSOR_UP: {
+            const int N = sizeof(LAYERS) / sizeof(LAYERS[0]);
+            S.armedLayer = (S.armedLayer - 1 + N) % N;
+            char b[64]; snprintf(b, sizeof b, "layer armed: %s", LAYERS[S.armedLayer].name);
+            S.ov.logEvent(b); return;
+        }
+        case ACT_LAYER_CURSOR_DN: {
+            const int N = sizeof(LAYERS) / sizeof(LAYERS[0]);
+            S.armedLayer = (S.armedLayer + 1) % N;
+            char b[64]; snprintf(b, sizeof b, "layer armed: %s", LAYERS[S.armedLayer].name);
+            S.ov.logEvent(b); return;
+        }
+        case ACT_LAYER_TOGGLE_ARMED: {
+            const LayerInfo& li = LAYERS[S.armedLayer];
+            toggle_layer(li.bit, li.name);
+            return;
+        }
+
+        // Quality cursor — 4 entries: blur, ca, noise, fields.
+        case ACT_QUALITY_CURSOR_UP:
+            S.armedQuality = (S.armedQuality - 1 + 4) % 4;
+            { static const char* N[] = {"blur","CA","noise","fields"};
+              char b[64]; snprintf(b, sizeof b, "quality armed: %s", N[S.armedQuality]);
+              S.ov.logEvent(b); }
+            return;
+        case ACT_QUALITY_CURSOR_DN:
+            S.armedQuality = (S.armedQuality + 1) % 4;
+            { static const char* N[] = {"blur","CA","noise","fields"};
+              char b[64]; snprintf(b, sizeof b, "quality armed: %s", N[S.armedQuality]);
+              S.ov.logEvent(b); }
+            return;
+        case ACT_QUALITY_FIRE_ARMED:
+            switch (S.armedQuality) {
+                case 0: apply_action(ACT_BLURQ_CYCLE,  1.0f); break;
+                case 1: apply_action(ACT_CAQ_CYCLE,    1.0f); break;
+                case 2: apply_action(ACT_NOISEQ_CYCLE, 1.0f); break;
+                case 3: apply_action(ACT_FIELDS_CYCLE, 1.0f); break;
+            }
+            return;
+
+        // Pattern cursor — 5 entries. Modifies p.pattern directly; the
+        // Inject section's body highlights whichever p.pattern points at.
+        case ACT_PATTERN_CURSOR_UP:
+            p.pattern = (p.pattern - 1 + 5) % 5;
+            { static const char* N[] = {"H-bars","V-bars","dot","checker","gradient"};
+              char b[64]; snprintf(b, sizeof b, "pattern: %s", N[p.pattern]);
+              S.ov.logEvent(b); }
+            return;
+        case ACT_PATTERN_CURSOR_DN:
+            p.pattern = (p.pattern + 1) % 5;
+            { static const char* N[] = {"H-bars","V-bars","dot","checker","gradient"};
+              char b[64]; snprintf(b, sizeof b, "pattern: %s", N[p.pattern]);
+              S.ov.logEvent(b); }
+            return;
 
         // ── warp ──────────────────────────────────────────────────
         case ACT_ZOOM_UP:   { float d = step::zoom * mag; p.zoom += d;

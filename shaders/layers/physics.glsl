@@ -25,9 +25,10 @@
 
 vec4 physics_apply(vec4 c) {
     vec3 rgb = c.rgb;
-
-    // 1. Luminance inversion.
-    if (uInvert == 1) rgb = vec3(1.0) - rgb;
+    // Invert used to live at the top of this function, but that meant
+    // enabling "V" (invert) silently did nothing whenever the Physics
+    // layer was off — a very confusing UX. It now runs unconditionally
+    // in main.frag (see the invert stage near the start of the pipeline).
 
     // 2. Sensor gamma (input curve, distinct from display gamma).
     rgb = pow(max(rgb, vec3(0.0)), vec3(uSensorGamma));

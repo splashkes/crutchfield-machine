@@ -105,11 +105,18 @@ void main() {
     if ((uEnable & L_OPTICS) != 0) col = optics_sample(uPrev, src_uv);
     else                            col = texture(uPrev, src_uv);
 
-    //  2.5 physics: Crutchfield's camera-side knobs (luminance inversion,
-    //  sensor gamma, soft saturation knee, RGB cross-coupling). Placed
-    //  here because these all model the photoconductor's *response* to
-    //  the incoming light — i.e. they belong inside the camera before
-    //  any electronic processing happens (gamma_in, color, contrast).
+    //  2.4 invert: always-on (toggled by uInvert itself). Sits outside
+    //  the physics layer gate because users turning on "V" in the UI
+    //  expect it to work regardless of what else is enabled. Crutchfield's
+    //  's' parameter still semantically lives in the physics block; the
+    //  inversion is just lifted out so it's always visible.
+    if (uInvert == 1) col.rgb = vec3(1.0) - col.rgb;
+
+    //  2.5 physics: Crutchfield's camera-side knobs (sensor gamma, soft
+    //  saturation knee, RGB cross-coupling). Placed here because these
+    //  all model the photoconductor's *response* to the incoming light —
+    //  i.e. they belong inside the camera before any electronic
+    //  processing happens (gamma_in, color, contrast).
     if ((uEnable & L_PHYSICS) != 0) col = physics_apply(col);
 
     //  3a. gamma in — linearise for the "analog" stages
