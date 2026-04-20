@@ -11,6 +11,11 @@ Grab `feedback-windows-x64.zip` from [GitHub Releases](../../releases),
 unzip, double-click `feedback.exe`. No DLLs, no toolchain, nothing to
 install. The binary statically links GLFW and GLEW.
 
+Launching with no arguments (the double-click path) drops you into a
+short console mode picker — pick default / fullscreen / gallery / 4K /
+8-bit study / load preset, press Enter, go. Any CLI flag skips the
+picker so scripted launches still work.
+
 If you want to build from source, read on.
 
 ## Two ways to build

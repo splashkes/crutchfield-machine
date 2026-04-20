@@ -32,6 +32,7 @@
 #include <map>
 #include <chrono>
 #include <thread>
+#include <iostream>
 
 #include "camera.h"
 #include "recorder.h"
@@ -89,6 +90,8 @@ static void print_cli_help() {
       "  --demo-inject S     auto-fire a random injection every S seconds (0 = off)\n"
       "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
       "  -h, --help          show this help\n\n"
+      "Launch with NO arguments to get an interactive mode picker — handy for\n"
+      "non-CLI use and for double-clicking the exe from Explorer.\n\n"
       "Examples:\n"
       "  feedback --fullscreen\n"
       "  feedback --fullscreen --sim-res 3840x2160 --precision 32\n"
@@ -850,6 +853,76 @@ static bool save_screenshot(GLuint fbo, int w, int h) {
     if (ok) printf("[shot] %s\n", full.string().c_str());
     else    fprintf(stderr, "[shot] failed to write %s\n", full.string().c_str());
     return ok != 0;
+}
+
+// ── startup mode picker ──────────────────────────────────────────────────
+// Shown only when the app is launched with no CLI args — i.e. double-clicked
+// from Explorer. Gives non-CLI users a one-keystroke way to pick a common
+// mode. Any CLI arg at all skips this path so existing workflows stay intact.
+//
+// Implementation: console prompt. On Windows, double-clicking a console-
+// subsystem .exe pops a terminal window automatically; the menu lives there.
+// It's not pretty, but it's zero deps and works identically on every machine.
+static void run_mode_picker(Cfg& c) {
+    preset_rescan();
+
+    while (true) {
+        printf("\n");
+        printf("========================================================\n");
+        printf("    Crutchfield Machine  —  video feedback, pure and simple\n");
+        printf("========================================================\n\n");
+        printf("  1  Default        windowed, moderate quality\n");
+        printf("  2  Fullscreen     borderless at native resolution\n");
+        printf("  3  Gallery mode   fullscreen + auto-cycle presets + inject\n");
+        printf("  4  4K Fullscreen  full float 3840x2160 sim\n");
+        printf("  5  8-bit study    RGBA8 feedback loop (quantization demo)\n");
+        printf("  6  Load preset... pick from the %zu preset(s) shipped\n",
+               g_presetFiles.size());
+        printf("\n  Q  Quit\n\n");
+        printf("  Tip: run with --help for the full list of flags.\n\n");
+        printf("Choice [1]: ");
+        fflush(stdout);
+
+        std::string line;
+        if (!std::getline(std::cin, line)) return;              // EOF → defaults
+        char ch = line.empty() ? '1' : (char)tolower((unsigned char)line[0]);
+
+        switch (ch) {
+            case '1': return;
+            case '2': c.fullscreen = true; return;
+            case '3': c.fullscreen = true;
+                      c.demoPresetSec = 30.0f;
+                      c.demoInjectSec = 8.0f; return;
+            case '4': c.fullscreen = true;
+                      c.simW = 3840; c.simH = 2160; return;
+            case '5': c.precision = 8; return;
+            case '6': {
+                if (g_presetFiles.empty()) {
+                    printf("\n  No presets found in %s/\n", preset_dir().c_str());
+                    continue;
+                }
+                printf("\n");
+                for (size_t i = 0; i < g_presetFiles.size(); i++) {
+                    fs::path p = g_presetFiles[i];
+                    printf("  %2zu  %s\n", i + 1, p.stem().string().c_str());
+                }
+                printf("\nPreset number [1]: ");
+                fflush(stdout);
+                std::getline(std::cin, line);
+                int idx = line.empty() ? 1 : atoi(line.c_str());
+                if (idx >= 1 && idx <= (int)g_presetFiles.size()) {
+                    c.preset = g_presetFiles[idx - 1];
+                    return;
+                }
+                printf("  (invalid — showing menu again)\n");
+                continue;
+            }
+            case 'q': exit(0);
+            default:
+                printf("  (unrecognised — try 1-6 or Q)\n");
+                continue;
+        }
+    }
 }
 
 // Track frame timing for FPS readout in the help overlay.
@@ -1829,6 +1902,10 @@ int main(int argc, char** argv) {
     timeBeginPeriod(1);
 #endif
 
+    // No CLI args → user double-clicked the exe from Explorer. Show a mode
+    // picker on the console. Any flag (even --help) skips this path.
+    if (argc == 1) run_mode_picker(g_cfg);
+
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -1979,6 +2056,15 @@ int main(int argc, char** argv) {
             if (!n.empty()) {
                 printf("[demo] preset: %s\n", n.c_str());
                 S.ov.logEvent(std::string("demo preset: ") + n);
+                // Also fire an injection so the new preset has visible content
+                // to chew on immediately — otherwise presets that rely on a
+                // seeded image (low decay, high contrast) can sit black/stale
+                // until the inject timer happens to fire. Reset the inject
+                // timer so the next scheduled inject is a full interval away
+                // and we don't double-fire.
+                S.p.pattern = (int)(frameStart * 1000.0) % 5;
+                S.p.inject = 1.0f;
+                S.demoLastInject = frameStart;
             }
             S.demoLastPreset = frameStart;
         }
