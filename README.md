@@ -1,5 +1,16 @@
 # Video feedback — Windows build (RTX 3090)
 
+<table>
+  <tr>
+    <td><img src="gallery/01_shot.png" alt="feedback screenshot 1"></td>
+    <td><img src="gallery/02_shot.png" alt="feedback screenshot 2"></td>
+  </tr>
+  <tr>
+    <td><img src="gallery/03_shot.png" alt="feedback screenshot 3"></td>
+    <td><img src="gallery/04_shot.png" alt="feedback screenshot 4"></td>
+  </tr>
+</table>
+
 Same dynamical system as the Linux/Mac versions. 12 toggleable layers, each
 in its own .glsl file under `shaders/layers/`.
 
