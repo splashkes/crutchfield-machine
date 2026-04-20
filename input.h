@@ -101,6 +101,16 @@ enum ActionId : int {
     ACT_OUTFADE_UP, ACT_OUTFADE_DN,
     ACT_OUTFADE_AXIS,   // RATE/AXIS: absolute value in [-1, +1]
 
+    // ── Bipolar axis variants (signed magnitude; gamepad sticks) ─────
+    // For sticks, mag is -1..+1 each frame. apply_action scales by the
+    // same step::X as keyboard so a full-deflection axis drifts the
+    // parameter roughly at the same rate as holding the corresponding
+    // key. "None" in the middle (deadzone applied in Input::pollGamepad).
+    ACT_ZOOM_AXIS, ACT_THETA_AXIS,
+    ACT_TRANS_X_AXIS, ACT_TRANS_Y_AXIS,
+    ACT_HUE_AXIS,
+    ACT_DECAY_AXIS,
+
     // ── BPM (C7) ─────────────────────────────────────────────────────
     ACT_BPM_TAP,
     ACT_BPM_SYNC_TOGGLE,
@@ -177,6 +187,17 @@ public:
 
     // GLFW key callback. Translates raw key presses to ActionId dispatches.
     void onKey(int key, int scancode, int action, int mods);
+
+    // Poll connected gamepad once per frame. jid is a GLFW joystick id
+    // (typically GLFW_JOYSTICK_1). axisScale is an extra global multiplier
+    // applied to RATE dispatches — the frame dt in effect, so at 60fps a
+    // scale of 1.0 + dt=1/60 yields roughly keyboard-repeat-equivalent
+    // rates. Pass dt as received from glfwGetTime delta.
+    void pollGamepad(int jid, float dt);
+
+    // MIDI stub — populated by a future commit (RtMidi / winmm). Kept here
+    // so apply_action consumers never have to care where events originate.
+    void pollMidi(float dt);
 
     // Low-level insert (used by installDefaults and loadIni).
     void bind(const Binding& b) { bindings_.push_back(b); }

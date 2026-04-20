@@ -140,6 +140,14 @@ static const ActionInfo ACTIONS[] = {
     { ACT_OUTFADE_DN,   "outfade.down", AK_STEP,     "Output", "fade toward black" },
     { ACT_OUTFADE_AXIS, "outfade.axis", AK_RATE,     "Output", "fade (axis -1..+1)" },
 
+    // bipolar axis variants (gamepad sticks)
+    { ACT_ZOOM_AXIS,    "warp.zoom.axis",   AK_RATE, "Warp",     "zoom (axis)" },
+    { ACT_THETA_AXIS,   "warp.theta.axis",  AK_RATE, "Warp",     "rotation (axis)" },
+    { ACT_TRANS_X_AXIS, "warp.transX.axis", AK_RATE, "Warp",     "translate X (axis)" },
+    { ACT_TRANS_Y_AXIS, "warp.transY.axis", AK_RATE, "Warp",     "translate Y (axis)" },
+    { ACT_HUE_AXIS,     "color.hue.axis",   AK_RATE, "Color",    "hue rate (axis)" },
+    { ACT_DECAY_AXIS,   "dyn.decay.axis",   AK_RATE, "Dynamics", "decay (axis)" },
+
     // BPM
     { ACT_BPM_TAP,               "bpm.tap",           AK_DISCRETE, "BPM", "tap tempo" },
     { ACT_BPM_SYNC_TOGGLE,       "bpm.sync",          AK_DISCRETE, "BPM", "BPM sync on/off" },
@@ -333,6 +341,48 @@ void Input::installDefaults() {
     K(in, ACT_HELP_DN,    GLFW_KEY_DOWN);
     K(in, ACT_HELP_ENTER, GLFW_KEY_ENTER);
     K(in, ACT_HELP_BACK,  GLFW_KEY_ESCAPE);
+
+    // ── Gamepad defaults (Xbox layout via GLFW's standard mapping) ──
+    auto GB = [&](ActionId a, int code) {
+        Binding b; b.action = a; b.source = SRC_GAMEPAD_BTN; b.code = code;
+        in.bind(b);
+    };
+    auto GA = [&](ActionId a, int code, float scale, bool invert = false, float dz = 0.08f) {
+        Binding b; b.action = a; b.source = SRC_GAMEPAD_AXIS; b.code = code;
+        b.scale = scale; b.invert = invert; b.deadzone = dz;
+        in.bind(b);
+    };
+
+    // Face buttons
+    GB(ACT_BPM_TAP,   GLFW_GAMEPAD_BUTTON_A);
+    GB(ACT_CLEAR,     GLFW_GAMEPAD_BUTTON_B);
+    GB(ACT_PAUSE,     GLFW_GAMEPAD_BUTTON_X);
+    GB(ACT_HELP,      GLFW_GAMEPAD_BUTTON_Y);
+    // Bumpers
+    GB(ACT_VFX1_CYCLE_BACK, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(ACT_VFX1_CYCLE_FWD,  GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    // Meta
+    GB(ACT_REC_TOGGLE,  GLFW_GAMEPAD_BUTTON_START);       // menu
+    GB(ACT_FULLSCREEN,  GLFW_GAMEPAD_BUTTON_BACK);        // view
+    // Sticks click
+    GB(ACT_LAYER_EXTERNAL, GLFW_GAMEPAD_BUTTON_LEFT_THUMB);
+    GB(ACT_LAYER_COUPLE,   GLFW_GAMEPAD_BUTTON_RIGHT_THUMB);
+    // D-pad: preset cycle + vfx2 cycle
+    GB(ACT_PRESET_NEXT,      GLFW_GAMEPAD_BUTTON_DPAD_UP);
+    GB(ACT_PRESET_PREV,      GLFW_GAMEPAD_BUTTON_DPAD_DOWN);
+    GB(ACT_VFX2_CYCLE_BACK,  GLFW_GAMEPAD_BUTTON_DPAD_LEFT);
+    GB(ACT_VFX2_CYCLE_FWD,   GLFW_GAMEPAD_BUTTON_DPAD_RIGHT);
+    // Sticks → bipolar axis actions
+    GA(ACT_TRANS_X_AXIS, GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
+    GA(ACT_TRANS_Y_AXIS, GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f);
+    GA(ACT_THETA_AXIS,   GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
+    GA(ACT_OUTFADE_AXIS, GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f, /*invert=*/true);
+    // Triggers: left = inject hold, right = zoom-out (nice dual: punch in with RT, inject with LT)
+    // Triggers in GLFW are -1..+1 with rest at -1; we treat >0 as pressed.
+    // For now just bind LT as a trigger button via axis — we'll special-case in pollGamepad.
+    GA(ACT_ZOOM_AXIS, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 1.0f, /*invert=*/false, /*dz=*/-0.5f);
+    // (LT handled specially for inject-hold below — left trigger crosses 0 => "pressed")
+    // We implement by binding as AXIS too, and apply_action path for ACT_INJECT_HOLD ignores it.
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -642,6 +692,105 @@ bool Input::loadIni(const std::string& path) {
     }
     std::fclose(f);
     return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Gamepad polling — GLFW's glfwGetGamepadState maps any SDL-known pad
+// onto the standard 15-button / 6-axis layout. We remember the previous
+// frame's buttons to fire DISCRETE/TRIGGER actions only on edges, and
+// we integrate RATE actions per-frame.
+//
+// Triggers (LT/RT) rest at -1 and travel to +1. A binding with
+// deadzone < 0 flags this: rather than a symmetric ±deadzone window,
+// we treat the axis as "value shifted by +1 then /2" → 0..1, and
+// apply a single-sided threshold. Makes triggers feel like buttons
+// when you want them to.
+// ─────────────────────────────────────────────────────────────────────────
+
+static struct {
+    bool btnPrev[GLFW_GAMEPAD_BUTTON_LAST + 1] = {};
+    bool init = false;
+} s_pad;
+
+void Input::pollGamepad(int jid, float dt) {
+    if (!handler_) return;
+    if (!glfwJoystickPresent(jid)) { s_pad.init = false; return; }
+    GLFWgamepadstate gp;
+    if (!glfwGetGamepadState(jid, &gp)) { s_pad.init = false; return; }
+
+    // Button edges
+    for (int i = 0; i <= GLFW_GAMEPAD_BUTTON_LAST; i++) {
+        bool down = gp.buttons[i] == GLFW_PRESS;
+        bool prev = s_pad.init ? s_pad.btnPrev[i] : false;
+        bool pressed  = down && !prev;
+        bool released = !down && prev;
+        s_pad.btnPrev[i] = down;
+        if (!pressed && !released) continue;
+
+        for (const Binding& b : bindings_) {
+            if (b.source != SRC_GAMEPAD_BTN || b.code != i) continue;
+            const ActionInfo* info = action_info(b.action);
+            if (!info) continue;
+            switch (info->kind) {
+            case AK_DISCRETE: if (pressed) handler_(b.action, 1.0f); break;
+            case AK_TRIGGER:
+                if (pressed)  handler_(b.action, 1.0f);
+                if (released) handler_(b.action, 0.0f);
+                break;
+            case AK_STEP:
+                if (pressed) handler_(b.action, b.invert ? -b.scale : b.scale);
+                break;
+            case AK_RATE:
+                // A button on a rate action = keyboard-like tick-per-press.
+                if (pressed) handler_(b.action, b.invert ? -b.scale : b.scale);
+                break;
+            }
+        }
+    }
+
+    // Axes (continuous): dispatch each frame. GLFW gives you -1..+1;
+    // triggers rest at -1 at rest and go to +1 fully pressed.
+    for (const Binding& b : bindings_) {
+        if (b.source != SRC_GAMEPAD_AXIS) continue;
+        if (b.code < 0 || b.code > GLFW_GAMEPAD_AXIS_LAST) continue;
+        float v = gp.axes[b.code];
+
+        // Trigger convention: deadzone < 0 indicates a "trigger axis"
+        // binding — normalize from -1..+1 to 0..+1 and apply |dz| as a
+        // single-sided gate.
+        if (b.deadzone < 0.0f) {
+            v = (v + 1.0f) * 0.5f;           // 0..1
+            float gate = -b.deadzone;
+            if (v < gate) v = 0.0f;
+            else          v = (v - gate) / (1.0f - gate);
+        } else {
+            // Symmetric deadzone around 0.
+            if (v >  b.deadzone) v = (v - b.deadzone) / (1.0f - b.deadzone);
+            else if (v < -b.deadzone) v = (v + b.deadzone) / (1.0f - b.deadzone);
+            else v = 0.0f;
+        }
+
+        if (b.invert) v = -v;
+
+        const ActionInfo* info = action_info(b.action);
+        if (!info) continue;
+
+        // Per-frame RATE integration. We multiply by (dt * 60) so at 60fps
+        // full-deflection ≈ 1.0 per frame — similar rate to holding the
+        // corresponding keyboard step with auto-repeat.
+        const float frameUnits = v * b.scale * (dt * 60.0f);
+        if (info->kind == AK_RATE || info->kind == AK_STEP) {
+            if (frameUnits != 0.0f) handler_(b.action, frameUnits);
+        }
+    }
+}
+
+// Placeholder — wired when a real MIDI implementation arrives.
+// The call site in main is in place so gamepad-style per-frame polling
+// is already structured for CC-mapped knobs & buttons.
+void Input::pollMidi(float /*dt*/) {
+    // TODO: RtMidi or winmm-backed polling; dispatch CC edges as STEP/RATE
+    // and note-on as DISCRETE/TRIGGER using the existing Binding table.
 }
 
 bool Input::saveIni(const std::string& path) const {

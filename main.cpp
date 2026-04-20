@@ -1303,6 +1303,16 @@ static void apply_action(ActionId id, float mag) {
         }
         case ACT_PRINT_HELP_STDOUT: print_help(); return;
 
+        // ── bipolar axes (RATE; mag already scaled per frame) ─────
+        case ACT_ZOOM_AXIS:    p.zoom   += step::zoom  * mag; return;
+        case ACT_THETA_AXIS:   p.theta  += step::theta * mag; return;
+        case ACT_TRANS_X_AXIS: p.transX += step::trans * mag; return;
+        case ACT_TRANS_Y_AXIS: p.transY += step::trans * mag; return;
+        case ACT_HUE_AXIS:     p.hueRate+= step::hue   * mag; return;
+        case ACT_DECAY_AXIS:
+            p.decay = fmaxf(0.9f, fminf(1.0f, p.decay + step::decay * mag));
+            return;
+
         // ── actions not yet implemented — land in C3/C4/C6/C7 ─────
         case ACT_HELP_UP: case ACT_HELP_DN:
         case ACT_HELP_ENTER: case ACT_HELP_BACK:
@@ -1894,9 +1904,18 @@ int main(int argc, char** argv) {
     else
         printf("[fps] vsync %s, uncapped\n", g_cfg.vsync ? "on" : "off");
 
+    double prevFrameStart = glfwGetTime();
     while (!glfwWindowShouldClose(win)) {
         const double frameStart = glfwGetTime();
+        const float dt = (float)(frameStart - prevFrameStart);
+        prevFrameStart = frameStart;
+
         glfwPollEvents();
+
+        // Gamepad + MIDI polling. Keyboard already came in via the key
+        // callback inside glfwPollEvents.
+        g_input.pollGamepad(GLFW_JOYSTICK_1, dt);
+        g_input.pollMidi(dt);
 
         glBindVertexArray(mainVAO);
 
