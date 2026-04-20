@@ -1154,9 +1154,26 @@ static std::string section_vfx(int slot) {
     return buf;
 }
 static std::string section_output() {
-    return "(Output fade — wired in C6)\n"
-           "Bipolar fade: left=black, right=white.\n"
-           "Keyboard: Ctrl+Up/Dn.  Gamepad: right-stick Y.";
+    char b[512];
+    const char* bar = (S.p.outFade <= -0.75f) ? "BLACK"
+                    : (S.p.outFade <= -0.25f) ? "dark"
+                    : (S.p.outFade <   0.25f) ? "through"
+                    : (S.p.outFade <   0.75f) ? "bright"
+                    :                             "WHITE";
+    snprintf(b, sizeof b,
+        "Output fade (bipolar).\n"
+        "\n"
+        "current : %+.2f   (%s)\n"
+        "\n"
+        "%-10s toward white (+)\n"
+        "%-10s toward black (-)\n"
+        "\n"
+        "Gamepad right-stick Y maps absolute: the stick IS the fade.\n"
+        "Self-centering when released.",
+        S.p.outFade, bar,
+        keys_for(ACT_OUTFADE_UP).c_str(),
+        keys_for(ACT_OUTFADE_DN).c_str());
+    return b;
 }
 static std::string section_bpm() {
     return "(BPM sync — wired in C7)\n"
@@ -1677,8 +1694,26 @@ static void apply_action(ActionId id, float mag) {
 
         #undef VFX_LOG_SLOT
 
-        // ── actions not yet implemented — land in C6/C7 ─────
-        case ACT_OUTFADE_UP: case ACT_OUTFADE_DN: case ACT_OUTFADE_AXIS:
+        // ── output fade ───────────────────────────────────────────
+        case ACT_OUTFADE_UP: {
+            float d = 0.02f * mag;
+            p.outFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + d));
+            hud_post("ofa","out-fade", d, p.outFade, 100.f,"%", 100.f,"%");
+            break;
+        }
+        case ACT_OUTFADE_DN: {
+            float d = -0.02f * mag;
+            p.outFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + d));
+            hud_post("ofa","out-fade", d, p.outFade, 100.f,"%", 100.f,"%");
+            break;
+        }
+        case ACT_OUTFADE_AXIS:
+            // Absolute axis: stick position is the fade directly. Self-
+            // centers when the stick is released.
+            p.outFade = fmaxf(-1.0f, fminf(1.0f, mag));
+            return;
+
+        // ── BPM (wired in C7) ─────────────────────────────────────
         case ACT_BPM_TAP: case ACT_BPM_SYNC_TOGGLE: case ACT_BPM_DIV_CYCLE:
         case ACT_BPM_INJECT_TOGGLE: case ACT_BPM_STROBE_TOGGLE:
         case ACT_BPM_VFXCYCLE_TOGGLE: case ACT_BPM_FLASH_TOGGLE:
@@ -1767,6 +1802,7 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
         if (lPar >= 0) glUniform1fv(lPar, 2, p.vfxParam);
         if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
     }
+    U1f("uOutFade", p.outFade);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }

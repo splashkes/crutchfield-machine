@@ -68,6 +68,7 @@ uniform int   uPattern;
 #include "layers/external.glsl"
 #include "layers/inject.glsl"
 #include "layers/vfx_slot.glsl"
+#include "layers/output_fade.glsl"
 
 // ── layer enable bits (mirror the host enum) ────────────────
 const int L_WARP     = 1<<0;
@@ -143,6 +144,9 @@ void main() {
     //     the finished composition and the result is what feeds back.
     col = vfx_apply(col, uv, 0);
     col = vfx_apply(col, uv, 1);
+
+    // 12. Output fade — bipolar to black / white. The V-4's Output Fade dial.
+    col = output_fade_apply(col);
 
     oCol = vec4(col.rgb, 1.0);
 }

@@ -347,9 +347,11 @@ void Input::installDefaults() {
         Binding b; b.action = a; b.source = SRC_GAMEPAD_BTN; b.code = code;
         in.bind(b);
     };
-    auto GA = [&](ActionId a, int code, float scale, bool invert = false, float dz = 0.08f) {
+    auto GA = [&](ActionId a, int code, float scale, bool invert = false,
+                  float dz = 0.08f, bool absolute = false) {
         Binding b; b.action = a; b.source = SRC_GAMEPAD_AXIS; b.code = code;
         b.scale = scale; b.invert = invert; b.deadzone = dz;
+        b.absolute = absolute;
         in.bind(b);
     };
 
@@ -376,7 +378,8 @@ void Input::installDefaults() {
     GA(ACT_TRANS_X_AXIS, GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
     GA(ACT_TRANS_Y_AXIS, GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f);
     GA(ACT_THETA_AXIS,   GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
-    GA(ACT_OUTFADE_AXIS, GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f, /*invert=*/true);
+    GA(ACT_OUTFADE_AXIS, GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f,
+       /*invert=*/true, /*dz=*/0.08f, /*absolute=*/true);
     // Triggers: left = inject hold, right = zoom-out (nice dual: punch in with RT, inject with LT)
     // Triggers in GLFW are -1..+1 with rest at -1; we treat >0 as pressed.
     // For now just bind LT as a trigger button via axis — we'll special-case in pollGamepad.
@@ -637,18 +640,21 @@ bool Input::loadIni(const std::string& path) {
         }
         if (toks.empty()) continue;
         keyPart = toks[0];
+        bool absolute = false;
         for (size_t t = 1; t < toks.size(); t++) {
             const std::string& opt = toks[t];
             if (opt.rfind("scale=", 0) == 0)      scale = (float)std::atof(opt.c_str() + 6);
             else if (opt == "invert")              invert = true;
+            else if (opt == "abs" || opt == "absolute") absolute = true;
             else if (opt.rfind("deadzone=", 0) == 0) deadzone = (float)std::atof(opt.c_str() + 9);
         }
 
         Binding b;
-        b.action = info->id;
-        b.scale  = scale;
-        b.invert = invert;
+        b.action   = info->id;
+        b.scale    = scale;
+        b.invert   = invert;
         b.deadzone = deadzone;
+        b.absolute = absolute;
 
         if (section == "keyboard" || section.empty()) {
             int code = 0, mods = 0;
@@ -775,12 +781,18 @@ void Input::pollGamepad(int jid, float dt) {
         const ActionInfo* info = action_info(b.action);
         if (!info) continue;
 
-        // Per-frame RATE integration. We multiply by (dt * 60) so at 60fps
-        // full-deflection ≈ 1.0 per frame — similar rate to holding the
-        // corresponding keyboard step with auto-repeat.
-        const float frameUnits = v * b.scale * (dt * 60.0f);
+        // Two flavours of axis dispatch:
+        //  absolute = true  → "the stick IS the knob". Dispatch `v * scale`
+        //                     as-is. Self-centering. Good for output fade.
+        //  absolute = false → integrating. Dispatch `v * scale * (dt*60)`
+        //                     so full deflection ≈ 1 unit/frame at 60fps,
+        //                     similar to a held keyboard key's auto-repeat.
+        float out = b.absolute ? (v * b.scale)
+                               : (v * b.scale * dt * 60.0f);
         if (info->kind == AK_RATE || info->kind == AK_STEP) {
-            if (frameUnits != 0.0f) handler_(b.action, frameUnits);
+            // absolute dispatches even when 0 so the parameter tracks the
+            // stick all the way back to rest; integrating skips the zeros.
+            if (b.absolute || out != 0.0f) handler_(b.action, out);
         }
     }
 }
@@ -805,7 +817,15 @@ bool Input::saveIni(const std::string& path) const {
 "# Examples: warp.zoom+ = Q\n"
 "#           warp.zoom+ = Q scale=0.5\n"
 "#           preset.save = Ctrl+S\n"
-"#           outfade.axis = axis:4 scale=1.0 deadzone=0.08\n"
+"#           outfade.axis = axis:4 scale=1.0 deadzone=0.08 abs\n"
+"#\n"
+"# Options:\n"
+"#   scale=X    multiplier applied before dispatch\n"
+"#   invert     negate value before dispatch\n"
+"#   deadzone=X axis deadzone (symmetric). Negative = trigger mode.\n"
+"#   abs        dispatch axis position directly (no dt integration).\n"
+"#              Natural for 'the stick IS the knob' mappings. Sticks\n"
+"#              self-center, so letting go returns the parameter to 0.\n"
 "#\n"
 "# Modifier prefixes: Ctrl+ / Alt+ / Shift+\n"
 "# (Shift is reserved as the coarse-step multiplier — using it as a modifier\n"
@@ -835,6 +855,7 @@ bool Input::saveIni(const std::string& path) const {
                 if (b.scale != 1.0f)  std::fprintf(f, " scale=%.3f", b.scale);
                 if (b.invert)         std::fprintf(f, " invert");
                 if (b.deadzone != 0.0f) std::fprintf(f, " deadzone=%.3f", b.deadzone);
+                if (b.absolute)       std::fprintf(f, " abs");
                 std::fprintf(f, "\n");
             }
         }

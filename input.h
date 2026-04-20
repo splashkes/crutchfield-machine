@@ -143,6 +143,10 @@ struct Binding {
     float     scale    = 1.0f;     // multiplier applied to step/axis value
     bool      invert   = false;    // negate value
     float     deadzone = 0.0f;     // axis deadzone (ignored for keys)
+    bool      absolute = false;    // axis: dispatch position directly (no
+                                   //   dt integration). Natural for
+                                   //   "the stick IS the knob" mappings
+                                   //   like output fade. Self-centers.
 };
 
 struct ActionInfo {
