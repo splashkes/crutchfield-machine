@@ -1,4 +1,4 @@
-# Video feedback — Windows build (RTX 3090)
+# Video feedback — Windows build (RTX 3090), with an experimental Apple Silicon path
 
 <table>
   <tr>
@@ -15,6 +15,29 @@ Same dynamical system as the Linux/Mac versions. 12 toggleable layers, each
 in its own .glsl file under `shaders/layers/`.
 
 Camera is via Media Foundation (not V4L2 like the Linux version).
+
+## Apple Silicon quick start
+
+The root app now has a native `arm64` macOS build path that uses Homebrew
+`glfw` + `glew` and Apple's OpenGL 4.1 core profile:
+
+1. Install deps:
+
+       brew install glfw glew pkg-config
+
+2. Build:
+
+       make -f Makefile.macos
+       make -f Makefile.macos dist
+
+3. Run from the repo root:
+
+       ./feedback --fullscreen
+
+The macOS build now includes an AVFoundation camera backend. On first
+launch, macOS should prompt for camera access; if it does not, enable
+camera access for the app launching `./feedback` in
+System Settings -> Privacy & Security -> Camera.
 
 ## Quick start — prebuilt binary
 

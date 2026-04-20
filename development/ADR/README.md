@@ -86,3 +86,4 @@ Use git commits for those — the history is their ADR.
 | [0007](0007-action-registry-and-bindings-ini.md) | Action registry + `bindings.ini` as the unified input layer | Accepted | 2026-04-19 |
 | [0008](0008-edirol-v4-single-bus-integration.md) | Edirol V-4 as single-bus effect slots, not a full A/B mixer port | Accepted | 2026-04-19 |
 | [0009](0009-contextual-gamepad-per-help-section.md) | Gamepad controls rebind per help section; menu navigation is the only reserved surface | Accepted | 2026-04-19 |
+| [0010](0010-root-app-on-apple-silicon-via-opengl41-and-avfoundation.md) | Keep the root app on Apple Silicon via OpenGL 4.1 + AVFoundation | Accepted | 2026-04-20 |

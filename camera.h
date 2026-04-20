@@ -2,8 +2,8 @@
 #include <cstdint>
 #include <cstddef>
 
-// Minimal Media Foundation webcam → RGB buffer for use as a GL texture source.
-// Same interface as the Linux V4L2 camera so main.cpp is portable.
+// Platform webcam → RGB buffer for use as a GL texture source.
+// The interface stays fixed so main.cpp is portable across backends.
 
 class Camera {
 public:
@@ -21,12 +21,23 @@ public:
 
     int width()  const { return w_; }
     int height() const { return h_; }
-    bool active() const { return reader_ != nullptr; }
+    bool active() const {
+#ifdef _WIN32
+        return reader_ != nullptr;
+#else
+        return impl_ != nullptr;
+#endif
+    }
 
 private:
-    // Opaque pointers (avoid pulling Media Foundation headers into this file).
+    // Windows Media Foundation state. Other platforms currently use a stub.
+#ifdef _WIN32
     void* reader_ = nullptr;   // IMFSourceReader*
     int   w_ = 0, h_ = 0;
     uint32_t pixfmt_ = 0;      // fourcc of the negotiated format
     bool     mf_started_ = false;
+#else
+    void* impl_ = nullptr;     // platform-specific backend object
+    int   w_ = 0, h_ = 0;
+#endif
 };
