@@ -13,6 +13,12 @@ pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw \
                    mingw-w64-x86_64-glew make
 ```
 
+**Homebrew on Apple Silicon macOS:**
+
+```bash
+brew install glfw glew pkg-config
+```
+
 **Optional for releases:**
 
 - GitHub CLI (`gh`) authenticated to the repo. Check with `gh auth status`.
@@ -26,6 +32,13 @@ make                   # incremental
 make clean && make     # full rebuild
 ```
 
+**Apple Silicon macOS:**
+
+```bash
+make -f Makefile.macos                   # incremental
+make -f Makefile.macos clean && make -f Makefile.macos
+```
+
 Expected output includes one warning from `stb_easy_font.h` about an
 unused function — harmless. Any other warning is worth investigating.
 
@@ -36,6 +49,14 @@ unused function — harmless. Any other warning is worth investigating.
 ./feedback.exe --fullscreen         # picker skipped
 ./feedback.exe --demo               # gallery mode
 ./feedback.exe --help               # flag reference
+```
+
+**Apple Silicon macOS:**
+
+```bash
+./feedback --fullscreen
+./feedback --demo
+./feedback --help
 ```
 
 See README.md for the full flag cookbook.
@@ -64,6 +85,20 @@ This runs:
    `glew32.dll`, or `zlib1.dll` appears — static linking broke. See
    the Makefile's LDFLAGS/LDLIBS comments. Fix before shipping.
 4. PowerShell `Compress-Archive` → `feedback-windows-x64.zip`.
+
+## Package on macOS (`make -f Makefile.macos dist`)
+
+Produces `feedback-macos-arm64.zip`.
+
+```bash
+make -f Makefile.macos clean && make -f Makefile.macos dist
+```
+
+This runs:
+1. Clean + rebuild via the macOS makefile.
+2. Stage `feedback + shaders/ + presets/ + README + LICENSE + CREDITS`
+   into `feedback-macos-arm64/`.
+3. Zip the directory with `ditto`.
 
 ## Cut a release
 
@@ -94,6 +129,14 @@ EOF
 
 Release notes template lives in the previous release — fetch with
 `gh release view v0.1.0 --json body` if needed.
+
+### macOS release note
+
+If the release includes the native macOS path, mention these explicitly:
+
+- Homebrew runtime dependencies (`glfw`, `glew`)
+- Apple OpenGL 4.1 ceiling
+- camera permission requirement on first launch
 
 ### If you want inline gallery images in the release
 
@@ -173,6 +216,17 @@ What to verify after a change, in order:
     to the exe. Edit a keyboard binding (e.g. change `warp.zoom+ = Q`
     to `warp.zoom+ = Z`), restart, confirm new binding works.
 
+**Also verify on Apple Silicon when touching the macOS path:**
+
+19. **Native build succeeds.** `make -f Makefile.macos clean && make -f Makefile.macos`.
+20. **GL context comes up at Apple limits.** Startup log includes
+    `GL 4.1` and `GLSL 4.10`.
+21. **Camera path reaches AVFoundation.** On a fresh machine, startup
+    either negotiates a camera frame size or clearly reports that camera
+    permission was denied.
+22. **Package builds.** `make -f Makefile.macos dist` creates
+    `feedback-macos-arm64.zip`.
+
 Adding an automated smoke test (headless launch, render one frame,
 exit) is a P0 item.
 
@@ -223,6 +277,20 @@ compile failure.
 Log line: `[camera] couldn't negotiate NV12, YUY2, or RGB24`. Expected
 if no camera attached or the camera only offers MJPG. The `external`
 layer becomes a no-op; app still runs. Not a bug.
+
+### macOS camera denied
+
+Log line: `[camera] access denied by macOS privacy settings` or
+`[camera] access request denied by user`.
+
+Fix:
+
+1. Open `System Settings -> Privacy & Security -> Camera`.
+2. Re-enable camera access for the app or terminal launching `./feedback`.
+3. Relaunch the binary.
+
+If permission behavior is flaky, remember this is currently a bare
+binary, not a signed `.app` bundle.
 
 ### Tried `--preset NAME` but values seem unchanged
 
@@ -294,7 +362,8 @@ If a visual regression appears, the likeliest culprits are
 ## Repo hygiene
 
 - `.o` files, `feedback.exe`, `recordings/`, `screenshots/`,
-  `feedback-windows-x64/`, `feedback-windows-x64.zip` are all
+  `feedback-windows-x64/`, `feedback-windows-x64.zip`,
+  `feedback-macos-arm64/`, `feedback-macos-arm64.zip` are all
   gitignored.
 - `bindings.ini` is auto-written on first run. Users will hand-edit it.
   If you change a default, ship the new default value in
