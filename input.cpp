@@ -342,50 +342,186 @@ void Input::installDefaults() {
     K(in, ACT_HELP_ENTER, GLFW_KEY_ENTER);
     K(in, ACT_HELP_BACK,  GLFW_KEY_ESCAPE);
 
-    // ── Gamepad defaults (Xbox layout via GLFW's standard mapping) ──
-    auto GB = [&](ActionId a, int code) {
+    // ── Gamepad defaults — per-section contextual map ──────────────
+    //
+    // The gamepad is ALWAYS operating in one context: menu (navigation),
+    // or a specific section. Each section owns its own map covering the
+    // free inputs (everything except D-pad U/D, A, B, Back — those are
+    // reserved for navigation). Inputs that a section doesn't bind stay
+    // idle in that context.
+    //
+    // CTX_ANY bindings are always active, regardless of context. We only
+    // use that for the universal help toggle on the Back button.
+
+    auto GB = [&](BindContext ctx, ActionId a, int code) {
         Binding b; b.action = a; b.source = SRC_GAMEPAD_BTN; b.code = code;
+        b.context = ctx;
         in.bind(b);
     };
-    auto GA = [&](ActionId a, int code, float scale, bool invert = false,
-                  float dz = 0.08f, bool absolute = false) {
+    auto GA = [&](BindContext ctx, ActionId a, int code, float scale,
+                  bool invert = false, float dz = 0.08f, bool absolute = false) {
         Binding b; b.action = a; b.source = SRC_GAMEPAD_AXIS; b.code = code;
         b.scale = scale; b.invert = invert; b.deadzone = dz;
-        b.absolute = absolute;
+        b.absolute = absolute; b.context = ctx;
         in.bind(b);
     };
 
-    // Face buttons
-    GB(ACT_BPM_TAP,   GLFW_GAMEPAD_BUTTON_A);
-    GB(ACT_CLEAR,     GLFW_GAMEPAD_BUTTON_B);
-    GB(ACT_PAUSE,     GLFW_GAMEPAD_BUTTON_X);
-    GB(ACT_HELP,      GLFW_GAMEPAD_BUTTON_Y);
-    // Bumpers
-    GB(ACT_VFX1_CYCLE_BACK, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
-    GB(ACT_VFX1_CYCLE_FWD,  GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
-    // Meta
-    GB(ACT_REC_TOGGLE,  GLFW_GAMEPAD_BUTTON_START);       // menu
-    GB(ACT_FULLSCREEN,  GLFW_GAMEPAD_BUTTON_BACK);        // view
-    // Sticks click
-    GB(ACT_LAYER_EXTERNAL, GLFW_GAMEPAD_BUTTON_LEFT_THUMB);
-    GB(ACT_LAYER_COUPLE,   GLFW_GAMEPAD_BUTTON_RIGHT_THUMB);
-    // D-pad: preset cycle + vfx2 cycle
-    GB(ACT_PRESET_NEXT,      GLFW_GAMEPAD_BUTTON_DPAD_UP);
-    GB(ACT_PRESET_PREV,      GLFW_GAMEPAD_BUTTON_DPAD_DOWN);
-    GB(ACT_VFX2_CYCLE_BACK,  GLFW_GAMEPAD_BUTTON_DPAD_LEFT);
-    GB(ACT_VFX2_CYCLE_FWD,   GLFW_GAMEPAD_BUTTON_DPAD_RIGHT);
-    // Sticks → bipolar axis actions
-    GA(ACT_TRANS_X_AXIS, GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
-    GA(ACT_TRANS_Y_AXIS, GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f);
-    GA(ACT_THETA_AXIS,   GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
-    GA(ACT_OUTFADE_AXIS, GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f,
+    // CTX_ANY — always-global: just help toggle. Pressed Back on the
+    // controller opens the help panel when it's closed, closes it when
+    // it's open (via the existing ACT_HELP toggle semantics).
+    GB(CTX_ANY, ACT_HELP, GLFW_GAMEPAD_BUTTON_BACK);
+
+    // CTX_MENU — help visible, menu view. Navigation only.
+    GB(CTX_MENU, ACT_HELP_UP,    GLFW_GAMEPAD_BUTTON_DPAD_UP);
+    GB(CTX_MENU, ACT_HELP_DN,    GLFW_GAMEPAD_BUTTON_DPAD_DOWN);
+    GB(CTX_MENU, ACT_HELP_ENTER, GLFW_GAMEPAD_BUTTON_A);
+    GB(CTX_MENU, ACT_HELP_BACK,  GLFW_GAMEPAD_BUTTON_B);
+
+    // ── Section contexts — the interesting ones ───────────────────
+
+    // While the help is open in a section view we ALSO want D-pad U/D
+    // to scroll the section body and B to go back to menu. We bind
+    // those under each section's context so they fire when that section
+    // is active. (Same binding repeated across contexts is simpler than
+    // a third "section-nav" context.)
+    auto addScrollNav = [&](BindContext ctx) {
+        GB(ctx, ACT_HELP_UP,   GLFW_GAMEPAD_BUTTON_DPAD_UP);
+        GB(ctx, ACT_HELP_DN,   GLFW_GAMEPAD_BUTTON_DPAD_DOWN);
+        GB(ctx, ACT_HELP_BACK, GLFW_GAMEPAD_BUTTON_B);
+    };
+    for (int s = CTX_SEC_STATUS; s < CTX__COUNT; s++)
+        addScrollNav((BindContext)s);
+
+    // Warp — translate on LS, rotation on RS-X, zoom on RS-Y.
+    // Triggers give you an alternate zoom at higher rate for fast punch-ins.
+    GA(CTX_SEC_WARP, ACT_TRANS_X_AXIS, GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
+    GA(CTX_SEC_WARP, ACT_TRANS_Y_AXIS, GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f);
+    GA(CTX_SEC_WARP, ACT_THETA_AXIS,   GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
+    GA(CTX_SEC_WARP, ACT_ZOOM_AXIS,    GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f, /*inv=*/true);
+    GA(CTX_SEC_WARP, ACT_ZOOM_AXIS,    GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  2.5f, /*inv=*/true, /*dz=*/-0.08f);
+    GA(CTX_SEC_WARP, ACT_ZOOM_AXIS,    GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 2.5f, /*inv=*/false, /*dz=*/-0.08f);
+
+    // Optics — blur XY on LS, chroma + angle on RS, LB/RB cycle quality.
+    GA(CTX_SEC_OPTICS, ACT_BLURX_UP, GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
+    GA(CTX_SEC_OPTICS, ACT_BLURY_UP, GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f, /*inv=*/true);
+    GA(CTX_SEC_OPTICS, ACT_BLURANG_UP, GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
+    GA(CTX_SEC_OPTICS, ACT_CHROMA_UP,  GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f, /*inv=*/true);
+    GB(CTX_SEC_OPTICS, ACT_BLURQ_CYCLE, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_OPTICS, ACT_CAQ_CYCLE,   GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+
+    // Color — hue/sat on LS, contrast/gamma on RS, triggers push hueRate
+    // harder for rainbow chase, Y cycles noise quality (tangential but free).
+    GA(CTX_SEC_COLOR, ACT_HUE_UP,      GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
+    GA(CTX_SEC_COLOR, ACT_SAT_UP,      GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f, /*inv=*/true);
+    GA(CTX_SEC_COLOR, ACT_CONTRAST_UP, GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
+    GA(CTX_SEC_COLOR, ACT_GAMMA_UP,    GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f, /*inv=*/true);
+    GA(CTX_SEC_COLOR, ACT_HUE_UP,      GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 3.0f, /*inv=*/false, /*dz=*/-0.08f);
+    GA(CTX_SEC_COLOR, ACT_HUE_DN,      GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  3.0f, /*inv=*/false, /*dz=*/-0.08f);
+
+    // Dynamics — decay on RS-Y (the big knob), noise on RS-X, couple on
+    // LS-X, external on LS-Y. Triggers are momentary-push actions.
+    GA(CTX_SEC_DYN, ACT_COUPLE_UP,   GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
+    GA(CTX_SEC_DYN, ACT_EXTERNAL_UP, GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f, /*inv=*/true);
+    GA(CTX_SEC_DYN, ACT_NOISE_UP,    GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
+    GA(CTX_SEC_DYN, ACT_DECAY_UP,    GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f, /*inv=*/true);
+    GA(CTX_SEC_DYN, ACT_DECAY_DN,    GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  3.0f, /*inv=*/false, /*dz=*/-0.08f);
+    GA(CTX_SEC_DYN, ACT_NOISE_UP,    GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 3.0f, /*inv=*/false, /*dz=*/-0.08f);
+
+    // Physics — sensor gamma on LS-X, sat-knee on LS-Y, color-cross on RS-X.
+    // Y = invert toggle. Triggers adjust sensor gamma at higher sensitivity.
+    GA(CTX_SEC_PHYSICS, ACT_SENSORGAMMA_UP, GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
+    GA(CTX_SEC_PHYSICS, ACT_SATKNEE_UP,     GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f, /*inv=*/true);
+    GA(CTX_SEC_PHYSICS, ACT_COLORCROSS_UP,  GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
+    GB(CTX_SEC_PHYSICS, ACT_INVERT_TOGGLE,  GLFW_GAMEPAD_BUTTON_Y);
+    GA(CTX_SEC_PHYSICS, ACT_SENSORGAMMA_DN, GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  3.0f, /*inv=*/false, /*dz=*/-0.08f);
+    GA(CTX_SEC_PHYSICS, ACT_SENSORGAMMA_UP, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 3.0f, /*inv=*/false, /*dz=*/-0.08f);
+
+    // Thermal — scale on LS-X, amp on LS-Y, speed on RS-X, rise on RS-Y.
+    // Triggers drive swirl (down/up). Plenty of axis surface for the 5
+    // thermal knobs.
+    GA(CTX_SEC_THERMAL, ACT_THERMSCALE_UP, GLFW_GAMEPAD_AXIS_LEFT_X,  1.0f);
+    GA(CTX_SEC_THERMAL, ACT_THERMAMP_UP,   GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f, /*inv=*/true);
+    GA(CTX_SEC_THERMAL, ACT_THERMSPEED_UP, GLFW_GAMEPAD_AXIS_RIGHT_X, 1.0f);
+    GA(CTX_SEC_THERMAL, ACT_THERMRISE_UP,  GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f, /*inv=*/true);
+    GA(CTX_SEC_THERMAL, ACT_THERMSWIRL_DN, GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  2.0f, /*inv=*/false, /*dz=*/-0.08f);
+    GA(CTX_SEC_THERMAL, ACT_THERMSWIRL_UP, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 2.0f, /*inv=*/false, /*dz=*/-0.08f);
+
+    // Inject — LB/RB cycle pattern, LT inject-hold, Y cycle pattern.
+    GB(CTX_SEC_INJECT, ACT_PATTERN_HBARS,   GLFW_GAMEPAD_BUTTON_X);
+    GB(CTX_SEC_INJECT, ACT_PATTERN_DOT,     GLFW_GAMEPAD_BUTTON_Y);
+    GB(CTX_SEC_INJECT, ACT_PATTERN_CHECKER, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_INJECT, ACT_PATTERN_GRAD,    GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GA(CTX_SEC_INJECT, ACT_INJECT_HOLD,     GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  1.0f, /*inv=*/false, /*dz=*/-0.3f);
+    GA(CTX_SEC_INJECT, ACT_INJECT_HOLD,     GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 1.0f, /*inv=*/false, /*dz=*/-0.3f);
+
+    // VFX-1 — LB/RB cycle effect, LT/RT param -/+, Y B-source cycle, X off.
+    GB(CTX_SEC_VFX1, ACT_VFX1_CYCLE_BACK, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_VFX1, ACT_VFX1_CYCLE_FWD,  GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_VFX1, ACT_VFX1_OFF,        GLFW_GAMEPAD_BUTTON_X);
+    GB(CTX_SEC_VFX1, ACT_VFX1_BSRC_CYCLE, GLFW_GAMEPAD_BUTTON_Y);
+    GA(CTX_SEC_VFX1, ACT_VFX1_PARAM_DN, GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  2.0f, /*inv=*/false, /*dz=*/-0.08f);
+    GA(CTX_SEC_VFX1, ACT_VFX1_PARAM_UP, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 2.0f, /*inv=*/false, /*dz=*/-0.08f);
+    GA(CTX_SEC_VFX1, ACT_VFX1_PARAM_UP, GLFW_GAMEPAD_AXIS_LEFT_X, 1.0f);  // also LS-X
+
+    // VFX-2 — same shape as VFX-1.
+    GB(CTX_SEC_VFX2, ACT_VFX2_CYCLE_BACK, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_VFX2, ACT_VFX2_CYCLE_FWD,  GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_VFX2, ACT_VFX2_OFF,        GLFW_GAMEPAD_BUTTON_X);
+    GB(CTX_SEC_VFX2, ACT_VFX2_BSRC_CYCLE, GLFW_GAMEPAD_BUTTON_Y);
+    GA(CTX_SEC_VFX2, ACT_VFX2_PARAM_DN, GLFW_GAMEPAD_AXIS_LEFT_TRIGGER,  2.0f, /*inv=*/false, /*dz=*/-0.08f);
+    GA(CTX_SEC_VFX2, ACT_VFX2_PARAM_UP, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 2.0f, /*inv=*/false, /*dz=*/-0.08f);
+    GA(CTX_SEC_VFX2, ACT_VFX2_PARAM_UP, GLFW_GAMEPAD_AXIS_LEFT_X, 1.0f);
+
+    // Output — RS-Y absolute fade axis; LS-Y coarse rate-integrating
+    // fallback; LB/RB nudge step.
+    GA(CTX_SEC_OUTPUT, ACT_OUTFADE_AXIS, GLFW_GAMEPAD_AXIS_RIGHT_Y, 1.0f,
        /*invert=*/true, /*dz=*/0.08f, /*absolute=*/true);
-    // Triggers: left = inject hold, right = zoom-out (nice dual: punch in with RT, inject with LT)
-    // Triggers in GLFW are -1..+1 with rest at -1; we treat >0 as pressed.
-    // For now just bind LT as a trigger button via axis — we'll special-case in pollGamepad.
-    GA(ACT_ZOOM_AXIS, GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER, 1.0f, /*invert=*/false, /*dz=*/-0.5f);
-    // (LT handled specially for inject-hold below — left trigger crosses 0 => "pressed")
-    // We implement by binding as AXIS too, and apply_action path for ACT_INJECT_HOLD ignores it.
+    GA(CTX_SEC_OUTPUT, ACT_OUTFADE_UP,   GLFW_GAMEPAD_AXIS_LEFT_Y,  1.0f, /*inv=*/true);
+    GB(CTX_SEC_OUTPUT, ACT_OUTFADE_DN,   GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_OUTPUT, ACT_OUTFADE_UP,   GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+
+    // BPM — A = tap (only works when help closed OR in section view, not
+    // in menu view where A is reserved for enter). X = cycle div, Y =
+    // sync toggle. LB/LT shift each modulation toggle.
+    GB(CTX_SEC_BPM, ACT_BPM_TAP,             GLFW_GAMEPAD_BUTTON_A);
+    GB(CTX_SEC_BPM, ACT_BPM_DIV_CYCLE,       GLFW_GAMEPAD_BUTTON_X);
+    GB(CTX_SEC_BPM, ACT_BPM_SYNC_TOGGLE,     GLFW_GAMEPAD_BUTTON_Y);
+    GB(CTX_SEC_BPM, ACT_BPM_INJECT_TOGGLE,   GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_BPM, ACT_BPM_STROBE_TOGGLE,   GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_BPM, ACT_BPM_VFXCYCLE_TOGGLE, GLFW_GAMEPAD_BUTTON_START);
+    GB(CTX_SEC_BPM, ACT_BPM_FLASH_TOGGLE,    GLFW_GAMEPAD_BUTTON_LEFT_THUMB);
+    GB(CTX_SEC_BPM, ACT_BPM_DECAYDIP_TOGGLE, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB);
+
+    // Layers — LB/RB cycle which layer is "armed" in context; A toggles it.
+    // To keep it simple, expose the 12 layer toggles via face+shoulder chord
+    // positions — Y + each shoulder covers the most important ones. The
+    // help section will spell out the mapping. For now: three face
+    // buttons each toggle a layer, bumpers cycle-armed.
+    GB(CTX_SEC_LAYERS, ACT_LAYER_WARP,     GLFW_GAMEPAD_BUTTON_X);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_OPTICS,   GLFW_GAMEPAD_BUTTON_Y);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_DECAY,    GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_NOISE,    GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_COUPLE,   GLFW_GAMEPAD_BUTTON_LEFT_THUMB);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_EXTERNAL, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB);
+    GB(CTX_SEC_LAYERS, ACT_LAYER_INJECT,   GLFW_GAMEPAD_BUTTON_START);
+
+    // Quality — bumpers + face buttons each cycle one quality setting.
+    GB(CTX_SEC_QUALITY, ACT_BLURQ_CYCLE,  GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_QUALITY, ACT_CAQ_CYCLE,    GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_QUALITY, ACT_NOISEQ_CYCLE, GLFW_GAMEPAD_BUTTON_X);
+    GB(CTX_SEC_QUALITY, ACT_FIELDS_CYCLE, GLFW_GAMEPAD_BUTTON_Y);
+
+    // App — preset navigation and common meta actions.
+    GB(CTX_SEC_APP, ACT_CLEAR,       GLFW_GAMEPAD_BUTTON_X);
+    GB(CTX_SEC_APP, ACT_PAUSE,       GLFW_GAMEPAD_BUTTON_Y);
+    GB(CTX_SEC_APP, ACT_PRESET_PREV, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+    GB(CTX_SEC_APP, ACT_PRESET_NEXT, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+    GB(CTX_SEC_APP, ACT_PRESET_SAVE, GLFW_GAMEPAD_BUTTON_START);
+    GB(CTX_SEC_APP, ACT_REC_TOGGLE,  GLFW_GAMEPAD_BUTTON_LEFT_THUMB);
+    GB(CTX_SEC_APP, ACT_FULLSCREEN,  GLFW_GAMEPAD_BUTTON_RIGHT_THUMB);
+
+    // Status / Bindings: info-only, no gamepad beyond the universal
+    // scroll/back binds added above.
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -641,12 +777,39 @@ bool Input::loadIni(const std::string& path) {
         if (toks.empty()) continue;
         keyPart = toks[0];
         bool absolute = false;
+        BindContext ctx = CTX_ANY;
+        auto parse_ctx = [](const std::string& s) -> BindContext {
+            // Lowercase, match section tags. "any", "menu", then the
+            // section short names in HELP_SECTIONS order.
+            std::string lo = s;
+            for (auto& c : lo) c = (char)std::tolower((unsigned char)c);
+            if (lo == "any")      return CTX_ANY;
+            if (lo == "menu")     return CTX_MENU;
+            if (lo == "status")   return CTX_SEC_STATUS;
+            if (lo == "layers")   return CTX_SEC_LAYERS;
+            if (lo == "warp")     return CTX_SEC_WARP;
+            if (lo == "optics")   return CTX_SEC_OPTICS;
+            if (lo == "color")    return CTX_SEC_COLOR;
+            if (lo == "dyn" || lo == "dynamics") return CTX_SEC_DYN;
+            if (lo == "physics")  return CTX_SEC_PHYSICS;
+            if (lo == "thermal")  return CTX_SEC_THERMAL;
+            if (lo == "inject")   return CTX_SEC_INJECT;
+            if (lo == "vfx1")     return CTX_SEC_VFX1;
+            if (lo == "vfx2")     return CTX_SEC_VFX2;
+            if (lo == "output")   return CTX_SEC_OUTPUT;
+            if (lo == "bpm")      return CTX_SEC_BPM;
+            if (lo == "quality")  return CTX_SEC_QUALITY;
+            if (lo == "app")      return CTX_SEC_APP;
+            if (lo == "bindings") return CTX_SEC_BINDINGS;
+            return CTX_ANY;
+        };
         for (size_t t = 1; t < toks.size(); t++) {
             const std::string& opt = toks[t];
             if (opt.rfind("scale=", 0) == 0)      scale = (float)std::atof(opt.c_str() + 6);
             else if (opt == "invert")              invert = true;
             else if (opt == "abs" || opt == "absolute") absolute = true;
             else if (opt.rfind("deadzone=", 0) == 0) deadzone = (float)std::atof(opt.c_str() + 9);
+            else if (opt.rfind("ctx=", 0) == 0)   ctx = parse_ctx(opt.substr(4));
         }
 
         Binding b;
@@ -655,6 +818,7 @@ bool Input::loadIni(const std::string& path) {
         b.invert   = invert;
         b.deadzone = deadzone;
         b.absolute = absolute;
+        b.context  = ctx;
 
         if (section == "keyboard" || section.empty()) {
             int code = 0, mods = 0;
@@ -688,11 +852,14 @@ bool Input::loadIni(const std::string& path) {
             continue;  // unknown section
         }
 
-        // File entries OVERRIDE prior default entries for the same action —
-        // remove any prior binding with matching source.
+        // File entries OVERRIDE prior default entries that share the
+        // same (action, source, context). Different contexts of the same
+        // action coexist so an INI tweak to e.g. ctx=warp doesn't nuke
+        // the ctx=optics binding.
         bindings_.erase(std::remove_if(bindings_.begin(), bindings_.end(),
             [&](const Binding& x) {
-                return x.action == b.action && x.source == b.source;
+                return x.action == b.action && x.source == b.source
+                    && x.context == b.context;
             }), bindings_.end());
         bindings_.push_back(b);
     }
@@ -718,16 +885,21 @@ static struct {
     bool init = false;
 } s_pad;
 
-void Input::pollGamepad(int jid, float dt) {
+void Input::pollGamepad(int jid, float dt, BindContext currentCtx) {
     if (!handler_) return;
     if (!glfwJoystickPresent(jid)) { s_pad.init = false; return; }
     GLFWgamepadstate gp;
     if (!glfwGetGamepadState(jid, &gp)) { s_pad.init = false; return; }
+    s_pad.init = true;
+
+    auto ctxMatches = [&](const Binding& b) {
+        return b.context == CTX_ANY || b.context == currentCtx;
+    };
 
     // Button edges
     for (int i = 0; i <= GLFW_GAMEPAD_BUTTON_LAST; i++) {
         bool down = gp.buttons[i] == GLFW_PRESS;
-        bool prev = s_pad.init ? s_pad.btnPrev[i] : false;
+        bool prev = s_pad.btnPrev[i];
         bool pressed  = down && !prev;
         bool released = !down && prev;
         s_pad.btnPrev[i] = down;
@@ -735,6 +907,7 @@ void Input::pollGamepad(int jid, float dt) {
 
         for (const Binding& b : bindings_) {
             if (b.source != SRC_GAMEPAD_BTN || b.code != i) continue;
+            if (!ctxMatches(b)) continue;
             const ActionInfo* info = action_info(b.action);
             if (!info) continue;
             switch (info->kind) {
@@ -759,6 +932,7 @@ void Input::pollGamepad(int jid, float dt) {
     for (const Binding& b : bindings_) {
         if (b.source != SRC_GAMEPAD_AXIS) continue;
         if (b.code < 0 || b.code > GLFW_GAMEPAD_AXIS_LAST) continue;
+        if (!ctxMatches(b)) continue;
         float v = gp.axes[b.code];
 
         // Trigger convention: deadzone < 0 indicates a "trigger axis"
@@ -856,6 +1030,15 @@ bool Input::saveIni(const std::string& path) const {
                 if (b.invert)         std::fprintf(f, " invert");
                 if (b.deadzone != 0.0f) std::fprintf(f, " deadzone=%.3f", b.deadzone);
                 if (b.absolute)       std::fprintf(f, " abs");
+                if (b.context != CTX_ANY) {
+                    static const char* CTXN[] = {
+                        "any","menu","status","layers","warp","optics",
+                        "color","dyn","physics","thermal","inject",
+                        "vfx1","vfx2","output","bpm","quality","app","bindings"
+                    };
+                    if (b.context >= 0 && b.context < CTX__COUNT)
+                        std::fprintf(f, " ctx=%s", CTXN[b.context]);
+                }
                 std::fprintf(f, "\n");
             }
         }

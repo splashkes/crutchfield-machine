@@ -37,9 +37,20 @@ public:
     // the up-to-date body for a given section index. The overlay calls
     // the provider every frame while a section is viewed — values stay
     // live without the host having to push them.
-    using BodyProvider = std::function<std::string(int section)>;
+    using BodyProvider   = std::function<std::string(int section)>;
+    using LegendProvider = std::function<std::string(int section)>;
     void setHelpSections(std::vector<std::string> names);
-    void setHelpProvider(BodyProvider p) { provider_ = std::move(p); }
+    void setHelpProvider(BodyProvider p)   { provider_ = std::move(p); }
+    void setLegendProvider(LegendProvider p){ legend_   = std::move(p); }
+
+    // Index of the section the user has drilled into (or is hovering in
+    // menu view). -1 if help closed and no section has ever been entered.
+    int  activeSection() const { return activeSection_; }
+    void setActiveSection(int idx) {
+        activeSection_ = idx;
+        if (idx >= 0 && idx < (int)sections_.size()) menuSel_ = idx;
+    }
+    bool inSectionView() const { return view_ == VIEW_SECTION; }
 
     // Navigation. Meant to be wired to UI actions — host dispatches these
     // when the help panel is visible.
@@ -70,8 +81,10 @@ private:
     int    menuSel_ = 0;
     int    sectionScroll_ = 0;
     std::vector<std::string> sections_;
-    BodyProvider provider_;
+    BodyProvider   provider_;
+    LegendProvider legend_;
     std::string  cachedBody_;          // last snapshot from provider (debug)
+    int          activeSection_ = -1;
 
     // GL resources for text rendering
     GLuint prog_ = 0, vbo_ = 0, vao_ = 0;

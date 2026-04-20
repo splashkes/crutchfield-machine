@@ -135,6 +135,34 @@ enum BindSource : int {
     SRC_MIDI_CC,       // code = CC number
 };
 
+// Gamepad binding context — what "mode" the controller is in. Keyboard
+// always uses CTX_ANY (keyboard is never contextually remapped).
+//
+// The numeric layout is load-bearing: CTX_SEC_STATUS + N == section index
+// N. So adding a new help section only needs a new enum entry and a
+// matching HELP_SECTIONS[] entry on the main.cpp side.
+enum BindContext : int {
+    CTX_ANY = 0,          // always active (e.g. Back = help toggle)
+    CTX_MENU,             // only in help menu view
+    CTX_SEC_STATUS,       // section indices follow the HELP_SECTIONS order
+    CTX_SEC_LAYERS,
+    CTX_SEC_WARP,
+    CTX_SEC_OPTICS,
+    CTX_SEC_COLOR,
+    CTX_SEC_DYN,
+    CTX_SEC_PHYSICS,
+    CTX_SEC_THERMAL,
+    CTX_SEC_INJECT,
+    CTX_SEC_VFX1,
+    CTX_SEC_VFX2,
+    CTX_SEC_OUTPUT,
+    CTX_SEC_BPM,
+    CTX_SEC_QUALITY,
+    CTX_SEC_APP,
+    CTX_SEC_BINDINGS,
+    CTX__COUNT
+};
+
 struct Binding {
     ActionId  action   = ACT_NONE;
     BindSource source  = SRC_NONE;
@@ -147,7 +175,9 @@ struct Binding {
                                    //   dt integration). Natural for
                                    //   "the stick IS the knob" mappings
                                    //   like output fade. Self-centers.
+    BindContext context = CTX_ANY; // gamepad only; keyboard ignores this
 };
+
 
 struct ActionInfo {
     ActionId   id;
@@ -193,11 +223,11 @@ public:
     void onKey(int key, int scancode, int action, int mods);
 
     // Poll connected gamepad once per frame. jid is a GLFW joystick id
-    // (typically GLFW_JOYSTICK_1). axisScale is an extra global multiplier
-    // applied to RATE dispatches — the frame dt in effect, so at 60fps a
-    // scale of 1.0 + dt=1/60 yields roughly keyboard-repeat-equivalent
-    // rates. Pass dt as received from glfwGetTime delta.
-    void pollGamepad(int jid, float dt);
+    // (typically GLFW_JOYSTICK_1). `currentCtx` is the gamepad context
+    // the caller is in — pollGamepad filters bindings to those whose
+    // context is either CTX_ANY or `currentCtx`. Pass dt as received
+    // from glfwGetTime delta.
+    void pollGamepad(int jid, float dt, BindContext currentCtx);
 
     // MIDI stub — populated by a future commit (RtMidi / winmm). Kept here
     // so apply_action consumers never have to care where events originate.

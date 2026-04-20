@@ -1278,6 +1278,61 @@ static std::string section_bindings() {
     return s;
 }
 
+// ── legend text per section ─────────────────────────────────────────────
+// Each section's gamepad map hints to the player what's live. Kept
+// human-curated rather than auto-generated from bindings because the
+// layout information ("LS translate, RS rotate/zoom, LT/RT fast zoom")
+// reads better than a raw list of binding entries.
+static std::string legend_for_section(int i) {
+    switch (i) {
+        case 2:  // Warp
+            return "LS translate   RS-X rotate   RS-Y zoom\n"
+                   "LT/RT fast zoom (-/+)";
+        case 3:  // Optics
+            return "LS blur X/Y   RS-X blur angle   RS-Y chroma\n"
+                   "LB/RB cycle blur/CA quality";
+        case 4:  // Color
+            return "LS hue / sat   RS-X contrast   RS-Y gamma\n"
+                   "LT/RT hue slew (-/+)";
+        case 5:  // Dynamics
+            return "LS-X couple   LS-Y ext-cam   RS-X noise   RS-Y decay\n"
+                   "LT decay dip     RT noise boost";
+        case 6:  // Physics
+            return "LS-X sensor-gamma   LS-Y sat-knee   RS-X color-cross\n"
+                   "Y invert toggle   LT/RT sensor-gamma fast (-/+)";
+        case 7:  // Thermal
+            return "LS-X scale   LS-Y amp   RS-X speed   RS-Y rise\n"
+                   "LT/RT swirl (-/+)";
+        case 8:  // Inject
+            return "LT/RT inject (hold)   X H-bars   Y dot\n"
+                   "LB checker   RB gradient";
+        case 9:  // VFX-1
+            return "LB/RB cycle effect   LT/RT param (-/+)   LS-X param\n"
+                   "X off   Y cycle B-source";
+        case 10: // VFX-2
+            return "LB/RB cycle effect   LT/RT param (-/+)   LS-X param\n"
+                   "X off   Y cycle B-source";
+        case 11: // Output
+            return "RS-Y fade (absolute, self-centering)\n"
+                   "LS-Y fade (rate)   LB fade- / RB fade+";
+        case 12: // BPM
+            return "A tap   Y sync   X div   Start vfx-cycle\n"
+                   "LB inject-on-beat   RB strobe-lock\n"
+                   "LSC flash   RSC decay-dip";
+        case 13: // Quality
+            return "LB blur   RB CA   X noise   Y fields";
+        case 14: // App
+            return "X clear   Y pause   LB/RB preset prev/next\n"
+                   "Start save preset   LSC record   RSC fullscreen";
+        case 1:  // Layers
+            return "X warp   Y optics   LB decay   RB noise\n"
+                   "LSC couple   RSC external   Start inject";
+        default:
+            // Status / Bindings: no contextual gamepad.
+            return "";
+    }
+}
+
 // Master dispatcher — maps overlay section index to the builder above.
 static std::string help_section_body(int i) {
     switch (i) {
@@ -2466,6 +2521,8 @@ int main(int argc, char** argv) {
         for (int i = 0; i < N_HELP_SECTIONS; i++) names.emplace_back(HELP_SECTIONS[i]);
         S.ov.setHelpSections(std::move(names));
         S.ov.setHelpProvider(help_section_body);
+        S.ov.setLegendProvider(legend_for_section);
+        S.ov.setActiveSection(2);    // default: Warp until the user drills in
     }
     {
         std::string bindingsPath = g_shader_base.empty()
@@ -2540,8 +2597,18 @@ int main(int argc, char** argv) {
         glfwPollEvents();
 
         // Gamepad + MIDI polling. Keyboard already came in via the key
-        // callback inside glfwPollEvents.
-        g_input.pollGamepad(GLFW_JOYSTICK_1, dt);
+        // callback inside glfwPollEvents. Gamepad context depends on the
+        // help panel's state: menu view → nav bindings; section view or
+        // help closed → active section drives the controller.
+        BindContext gpCtx;
+        if (S.ov.helpVisible() && !S.ov.inSectionView()) {
+            gpCtx = CTX_MENU;
+        } else {
+            int idx = S.ov.activeSection();
+            if (idx < 0) idx = 2;                 // default Warp
+            gpCtx = (BindContext)(CTX_SEC_STATUS + idx);
+        }
+        g_input.pollGamepad(GLFW_JOYSTICK_1, dt, gpCtx);
         g_input.pollMidi(dt);
 
         // BPM clock — advances beat phase, fires beat events.

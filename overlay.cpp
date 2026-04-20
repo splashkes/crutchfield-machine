@@ -241,6 +241,7 @@ void Overlay::helpEnter() {
     if (view_ == VIEW_MENU && !sections_.empty()) {
         view_ = VIEW_SECTION;
         sectionScroll_ = 0;
+        activeSection_ = menuSel_;   // controller now drives this section
     }
 }
 
@@ -408,6 +409,24 @@ void Overlay::drawHelpSection(float x, float y, float w, float h) {
         bool isHead = (lines[i].size() >= 3 && lines[i].compare(0, 3, "-- ") == 0);
         drawTextLine(colX, lineY, lines[i], isHead ? title : fg, 1.0f, bodyS);
         lineY += lineH;
+    }
+
+    // Legend: one block at the bottom showing current gamepad map.
+    // Drawn above the scroll indicator. Styled with the hint colour.
+    if (legend_) {
+        std::string leg = legend_(menuSel_);
+        if (!leg.empty()) {
+            // Count legend lines to position above the bottom scroll hint.
+            int nLegendLines = 1;
+            for (char c : leg) if (c == '\n') nLegendLines++;
+            const float legS = 1.2f;
+            const float legH = 12.0f * legS + 2.0f;
+            float legY = y + h - nLegendLines * legH - 12.0f * hintS - 6.0f;
+            // Soft separator.
+            unsigned char sep[4] = { 70, 75, 90, 255 };
+            drawFilledRect(x, legY - 6.0f, w, 1.0f, sep, 0.6f);
+            drawTextLine(x, legY, leg, hint, 1.0f, legS);
+        }
     }
 
     // Scroll indicator.
