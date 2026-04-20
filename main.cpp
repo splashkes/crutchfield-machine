@@ -1005,6 +1005,46 @@ static std::string music_find_loopmidi_path() {
     return "";
 }
 
+// Silent (well — UAC-prompted) winget install. Returns true if the package
+// was installed or was already present. Blocks up to ~3 minutes.
+static bool winget_install(const char* packageId) {
+    std::printf("[music] invoking winget to install %s (accept the UAC prompt)…\n",
+                packageId);
+    char cmdline[512];
+    std::snprintf(cmdline, sizeof cmdline,
+        "install --id %s --silent "
+        "--accept-package-agreements --accept-source-agreements",
+        packageId);
+    SHELLEXECUTEINFOA sei = {};
+    sei.cbSize       = sizeof sei;
+    sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb       = "open";
+    sei.lpFile       = "winget";
+    sei.lpParameters = cmdline;
+    sei.nShow        = SW_SHOWNORMAL;
+    if (!ShellExecuteExA(&sei) || !sei.hProcess) {
+        std::fprintf(stderr, "[music] winget not available on this system\n");
+        return false;
+    }
+    DWORD wait = WaitForSingleObject(sei.hProcess, 180000);  // 3 min
+    DWORD exitCode = 1;
+    GetExitCodeProcess(sei.hProcess, &exitCode);
+    CloseHandle(sei.hProcess);
+    if (wait != WAIT_OBJECT_0) {
+        std::fprintf(stderr, "[music] winget install timed out\n");
+        return false;
+    }
+    // winget returns 0 for success, 0x8A15002B when already installed.
+    if (exitCode == 0 || exitCode == 0x8A15002B) {
+        std::printf("[music] winget install succeeded (exit 0x%lx)\n",
+                    (unsigned long)exitCode);
+        return true;
+    }
+    std::fprintf(stderr, "[music] winget install failed (exit 0x%lx)\n",
+                 (unsigned long)exitCode);
+    return false;
+}
+
 // Returns true if a port was already live or we successfully launched
 // something that brought one online.
 static bool music_launch_loopmidi() {
@@ -1013,13 +1053,27 @@ static bool music_launch_loopmidi() {
         return true;
     }
     std::string path = music_find_loopmidi_path();
+
+    // If loopMIDI isn't installed, offer to winget-install it. The UAC
+    // prompt makes this explicit to the user; no silent install.
+    if (path.empty()) {
+        std::printf("[music] loopMIDI not found — attempting winget install…\n");
+        if (winget_install("TobiasErichsen.loopMIDI")) {
+            path = music_find_loopmidi_path();
+        }
+    }
+
     if (path.empty()) {
         std::fprintf(stderr,
-            "[music] loopMIDI not found. Install it (free) from:\n"
+            "[music] loopMIDI still not found. Install manually from:\n"
             "        https://www.tobias-erichsen.de/software/loopmidi.html\n"
-            "        Or drop loopMIDI.exe next to feedback.exe.\n");
+            "        (opening the page in your browser)\n");
+        ShellExecuteA(nullptr, "open",
+            "https://www.tobias-erichsen.de/software/loopmidi.html",
+            nullptr, nullptr, SW_SHOWNORMAL);
         return false;
     }
+
     HINSTANCE r = ShellExecuteA(nullptr, "open", path.c_str(),
                                 nullptr, nullptr, SW_SHOWMINIMIZED);
     if ((INT_PTR)r <= 32) {
@@ -1030,7 +1084,7 @@ static bool music_launch_loopmidi() {
     std::printf("[music] launched %s — waiting for it to open a port…\n",
                 path.c_str());
     // loopMIDI restores its saved ports automatically, but needs a moment.
-    for (int i = 0; i < 30; i++) {   // up to ~3s
+    for (int i = 0; i < 50; i++) {   // up to ~5s (fresh install is slower)
         Sleep(100);
         if (midiInGetNumDevs() > 0) {
             std::printf("[music] port online after %d ms\n", (i + 1) * 100);
@@ -1061,11 +1115,11 @@ static void music_startup_hint() {
     std::printf(
         "\n[music] No MIDI input detected.\n"
         "        To drive BPM + visual hits from Strudel (https://strudel.cc):\n"
-        "          1. Install loopMIDI (free): tobias-erichsen.de/software/loopmidi.html\n"
-        "          2. Open loopMIDI, click + to create a port (e.g. 'loopMIDI Port').\n"
-        "          3. Route Strudel: .midi(\"loopMIDI Port\")\n"
-        "        Or in-app: Ctrl+M to auto-launch loopMIDI.\n"
-        "        Startup picker has a 'Music mode' option that does all of this.\n\n");
+        "          Press Ctrl+M in-app — it will winget-install loopMIDI\n"
+        "          (free, ~1 MB), launch it, and you're done. First run needs\n"
+        "          you to click + in loopMIDI to create a port.\n"
+        "        Or run the startup picker's 'Music mode' option (#7) to do\n"
+        "        everything — install + launch + open strudel.cc.\n\n");
 }
 #else
 static bool music_launch_loopmidi() { return false; }
