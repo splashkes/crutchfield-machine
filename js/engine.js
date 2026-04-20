@@ -283,21 +283,30 @@ function parseMini(input) {
         }
         return pat;
     }
+    // A comma inside a seq/group makes it a polyrhythm — each
+    // comma-separated run is its own fastcat, and the runs are stacked
+    // in parallel. So "bd*2, hh*4" is stack(fastcat(bd.fast(2)),
+    // fastcat(hh.fast(4))): two tracks running at the same tempo.
     function parseSeq(stop = '') {
-        const items = [];
+        const runs = [[]];                // start with one empty run
         while (i < src.length && src[i] !== stop) {
             skipWs();
             if (i >= src.length || src[i] === stop) break;
+            if (src[i] === ',') { i++; runs.push([]); continue; }
             const el = parseElem();
-            if (el) items.push(el);
+            if (el) runs[runs.length - 1].push(el);
         }
-        return fastcat(...items);
+        const seqs = runs.map(r => fastcat(...r));
+        return (seqs.length === 1) ? seqs[0] : stack(...seqs);
     }
     function parseAlt() {
+        // Alternation doesn't mix with commas in Strudel; treat comma as
+        // a plain element separator inside <...>.
         const items = [];
         while (i < src.length && src[i] !== '>') {
             skipWs();
             if (i >= src.length || src[i] === '>') break;
+            if (src[i] === ',') { i++; continue; }
             const el = parseElem();
             if (el) items.push(el);
         }

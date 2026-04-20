@@ -32,8 +32,10 @@ bool eval(const std::string& code, const std::string& tag);
 // A single pattern event — what falls out of Pattern.queryArc mapped
 // into a POD the rest of the app can consume.
 struct Event {
-    double      begin;     // cycle-time start (inclusive)
-    double      end;       // cycle-time end (exclusive)
+    double      begin;     // part.begin — cycle-time where query overlap starts
+    double      end;       // part.end
+    double      wholeBegin;// whole.begin — the actual event-onset time
+    double      wholeEnd;  // whole.end   — where the event naturally ends
     std::string sample;    // value.s — e.g. "bd", "" if not set
     std::string note;      // value.note — e.g. "c3", "" if not set
     double      gain   = 1.0;
@@ -62,11 +64,14 @@ const std::string& pattern();
 void setPlaying(bool on);
 bool playing();
 
-// Called once per frame from the main loop. `now` is the wall clock
-// reading used for cycle-time computation. BPM is read fresh each frame
-// so external tempo changes (MIDI clock, tap tempo) take effect live.
-// Triggers audio events via the Audio module.
-void update(double now, float bpm);
+// Called once per frame from the main loop. Advances the cycle clock
+// by `dt` seconds rather than reading wall time — which means:
+//   * When the sim slows (alt-tab, heavy load), the music slows with it
+//     so the feedback↔music relationship stays in sync.
+//   * Giant frame-time spikes (app unfocused, debugger pause) don't
+//     cause a flood of back-scheduled events on the next frame.
+// `now` is used only for audio-thread scheduling (absolute trigger times).
+void update(double now, float dt, float bpm);
 
 // Read-only state for the help UI.
 double currentCycle();   // fractional cycle position (e.g. 3.75)

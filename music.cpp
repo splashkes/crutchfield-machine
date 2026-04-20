@@ -210,14 +210,17 @@ std::vector<Event> query(const std::string& code, double begin, double end) {
         JSValue h = JS_GetPropertyUint32(g_ctx, arr, i);
         if (!JS_IsObject(h)) { JS_FreeValue(g_ctx, h); continue; }
 
-        JSValue part = JS_GetPropertyStr(g_ctx, h, "part");
-        JSValue val  = JS_GetPropertyStr(g_ctx, h, "value");
+        JSValue part  = JS_GetPropertyStr(g_ctx, h, "part");
+        JSValue whole = JS_GetPropertyStr(g_ctx, h, "whole");
+        JSValue val   = JS_GetPropertyStr(g_ctx, h, "value");
 
         Event e;
-        e.begin   = get_num(g_ctx, part, "begin", 0.0);
-        e.end     = get_num(g_ctx, part, "end",   0.0);
-        e.sample  = get_str(g_ctx, val,  "s");
-        e.note    = get_str(g_ctx, val,  "note");
+        e.begin      = get_num(g_ctx, part,  "begin", 0.0);
+        e.end        = get_num(g_ctx, part,  "end",   0.0);
+        e.wholeBegin = get_num(g_ctx, whole, "begin", e.begin);
+        e.wholeEnd   = get_num(g_ctx, whole, "end",   e.end);
+        e.sample     = get_str(g_ctx, val,   "s");
+        e.note       = get_str(g_ctx, val,   "note");
         e.gain    = get_num(g_ctx, val,  "gain",   1.0);
         e.pan     = get_num(g_ctx, val,  "pan",    0.5);
         e.speed   = get_num(g_ctx, val,  "speed",  1.0);
@@ -229,6 +232,7 @@ std::vector<Event> query(const std::string& code, double begin, double end) {
         out.push_back(std::move(e));
 
         JS_FreeValue(g_ctx, part);
+        JS_FreeValue(g_ctx, whole);
         JS_FreeValue(g_ctx, val);
         JS_FreeValue(g_ctx, h);
     }
@@ -245,13 +249,9 @@ std::vector<Event> query(const std::string& code, double begin, double end) {
 namespace {
     std::string g_pattern;        // active pattern expression ("" = stopped)
     bool        g_playing    = false;
-    // Wall time when cycle 0 was "anchored". When BPM changes we
-    // re-anchor so the cycle rate is continuous.
-    double      g_wallOrigin  = 0.0;
-    double      g_cycleAnchor = 0.0;
     double      g_lastQueryTo = 0.0;   // cycle-time up to which we've fired
     double      g_lastBpm     = 120.0;
-    double      g_curCycle    = 0.0;   // updated by update() each frame
+    double      g_curCycle    = 0.0;   // advanced by update() each frame
     const double kLookahead   = 0.125; // cycles — ~250ms at 120 BPM
 
     double cycle_seconds(float bpm) {
@@ -264,7 +264,9 @@ void setPattern(const std::string& code) {
     g_pattern = code;
     if (!code.empty()) {
         std::fprintf(stdout, "[music] pattern set: %s\n", code.c_str());
-        g_lastQueryTo = g_cycleAnchor;   // re-fire from the anchor
+        // Pick up at the current cycle time so a reload doesn't trigger
+        // a flood of back-scheduled events from cycle 0 onward.
+        g_lastQueryTo = g_curCycle;
     } else {
         std::fprintf(stdout, "[music] pattern cleared\n");
     }
@@ -280,24 +282,30 @@ void setPlaying(bool on) {
 
 bool playing() { return g_playing; }
 
-void update(double now, float bpm) {
+void update(double now, float dt, float bpm) {
     if (!g_up) return;
-    if (g_wallOrigin == 0.0) { g_wallOrigin = now; g_lastBpm = bpm; }
+    (void)now;
 
     const double cs = cycle_seconds(bpm);
-    // Advance the cycle clock from the current anchor.
-    g_curCycle = g_cycleAnchor + (now - g_wallOrigin) / cs;
-
-    // BPM change: re-anchor at the current cycle so the cycle rate is
-    // continuous across tempo edits.
-    if (std::fabs((double)bpm - g_lastBpm) > 0.01) {
-        g_cycleAnchor = g_curCycle;
-        g_wallOrigin  = now;
-        g_lastBpm     = bpm;
-        g_lastQueryTo = g_curCycle;
-    }
+    // Clamp per-frame dt so giant stalls (alt-tab, debugger pause, the
+    // app being obscured and Windows throttling the render thread) can't
+    // dump a pile of scheduled events when execution resumes. 100 ms
+    // max per frame ≈ 0.05 cycles at 120 BPM, well inside the lookahead.
+    float stepDt = dt;
+    if (stepDt < 0.f)    stepDt = 0.f;
+    if (stepDt > 0.1f)   stepDt = 0.1f;
+    g_curCycle += stepDt / cs;
+    g_lastBpm   = bpm;
 
     if (!g_playing || g_pattern.empty()) return;
+
+    // If the update loop has been starved for more than a cycle (focus
+    // loss, stutter, debugger pause), snap the query cursor forward
+    // instead of trying to replay all missed events in bulk — that
+    // would dump a pile of triggers with delaySec clamped to 0.
+    if (g_curCycle - g_lastQueryTo > 1.0) {
+        g_lastQueryTo = g_curCycle;
+    }
 
     // Query window: from last-fired up to now + lookahead.
     double qStart = g_lastQueryTo;
@@ -305,9 +313,30 @@ void update(double now, float bpm) {
     if (qEnd <= qStart) return;
 
     auto evs = query(g_pattern, qStart, qEnd);
+    // Optional per-trigger log so we can sanity-check scheduling from
+    // the console without wiring a full HUD view. Enable with
+    //   setx FEEDBACK_MUSIC_DEBUG 1  (then restart the app)
+    static int s_dbg = -1;
+    if (s_dbg < 0) {
+        const char* e = std::getenv("FEEDBACK_MUSIC_DEBUG");
+        s_dbg = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
     for (const auto& e : evs) {
-        double delaySec = (e.begin - g_curCycle) * cs;
+        // Only fire events whose natural onset (whole.begin) is inside
+        // THIS query slice. queryArc returns every hap whose part
+        // overlaps the arc — firing on part.begin would re-trigger every
+        // frame as the query window slid across a long hap.
+        if (e.wholeBegin < qStart || e.wholeBegin >= qEnd) continue;
+
+        double delaySec = (e.wholeBegin - g_curCycle) * cs;
         if (delaySec < 0.0) delaySec = 0.0;
+        if (s_dbg) {
+            std::fprintf(stderr,
+                "[sched] cyc=%.3f wbeg=%.3f dly=%.3fs s=%-6s note=%-4s\n",
+                g_curCycle, e.wholeBegin, delaySec,
+                e.sample.empty() ? "-" : e.sample.c_str(),
+                e.note.empty() ? "-" : e.note.c_str());
+        }
 
         // Branch on what's attached to the hap:
         //   • note set (with or without s=saw/square/…) → synth voice
@@ -322,7 +351,7 @@ void update(double now, float bpm) {
             n.wave        = Audio::is_synth_name(e.sample)
                           ? Audio::waveform_from_name(e.sample)
                           : Audio::WAVE_SAW;
-            n.durationSec = (float)((e.end - e.begin) * cs);
+            n.durationSec = (float)((e.wholeEnd - e.wholeBegin) * cs);
             n.gain        = (float)e.gain * 0.35f;
             n.pan         = (float)e.pan;
             n.lpf         = (float)e.lpf;
@@ -339,7 +368,7 @@ void update(double now, float bpm) {
             Audio::NoteOpts n;
             n.delaySec    = delaySec;
             n.wave        = Audio::waveform_from_name(e.sample);
-            n.durationSec = (float)((e.end - e.begin) * cs);
+            n.durationSec = (float)((e.wholeEnd - e.wholeBegin) * cs);
             n.gain        = (float)e.gain * 0.35f;
             n.pan         = (float)e.pan;
             n.lpf         = (float)e.lpf;

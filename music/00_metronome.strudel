@@ -1,0 +1,8 @@
+// 00_metronome — bare-bones beat for scheduler sanity check.
+// Kick on beat 1, snare on beat 3, one cycle = one bar of 4 beats.
+// At 120 BPM that's kick then snare at 500 ms apart. If this doesn't
+// sound steady, the scheduler is off.
+
+stack(
+  s("bd ~ sn ~").room(0.1)
+)

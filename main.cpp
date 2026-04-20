@@ -3181,9 +3181,12 @@ int main(int argc, char** argv) {
         // BPM clock — advances beat phase, fires beat events.
         update_bpm(frameStart, dt);
 
-        // Music scheduler — advance cycle clock, query pattern, trigger
-        // audio events in the ~250ms lookahead window.
-        Music::update(frameStart, S.p.bpm);
+        // Music scheduler — advance cycle clock by frame dt, query
+        // pattern, trigger audio events in the ~250ms lookahead window.
+        // Coupling to dt (not wall time) means the music tempo tracks
+        // the sim's framerate, and a stalled loop can't backfill a pile
+        // of events on resume.
+        Music::update(frameStart, dt, S.p.bpm);
         // Hot-reload: if the current preset file changed on disk, re-read
         // it. Throttled internally to ~250ms.
         Music::pollPresetReload();

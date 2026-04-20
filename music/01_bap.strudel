@@ -1,8 +1,10 @@
-// 01_bap — basic boom-bap starter.
-// Hot-reload: save this file in feedback's music/ folder and the
-// currently-playing pattern updates within ~250ms.
+// 01_bap — classic 4-bar boom-bap: kick on 1, snare on 3, hats on 8ths.
+// Edit this file and save while feedback is running — it hot-reloads
+// within ~250 ms.
 
 stack(
-  s("bd*2, ~ sn, hh*8").room(0.15),
-  note("c2 ~ eb2 g2").s("saw").lpf(700).gain(0.25)
+  s("bd ~ ~ ~").room(0.12),      // kick on 1
+  s("~ ~ sn ~").room(0.18),      // snare on 3
+  s("hh*8").gain(0.4),           // eight straight hats
+  note("<c2 c2 eb2 g2>").s("saw").lpf(700).gain(0.22)
 )
