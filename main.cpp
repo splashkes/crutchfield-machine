@@ -197,7 +197,33 @@ struct Params {
 
     // Output fade — bipolar, -1 = full black, 0 = pass-through, +1 = white.
     float outFade = 0.0f;
+
+    // BPM sync. Tap tempo fills taps[]; bpm is smoothed across the
+    // last few taps. beatPhase in [0, 1) is the fractional position
+    // within the current beat. divIdx selects division (see BPM_DIVS).
+    float bpm          = 120.0f;
+    double beatOrigin  = 0.0;    // glfwGetTime() reference for beat 0
+    float beatPhase    = 0.0f;   // cached; updated in update_bpm
+    int   divIdx       = 1;      // 0 = x2 (double tempo)
+                                 // 1 = x1 (every beat)
+                                 // 2 = half-tempo
+                                 // 3 = quarter-tempo
+    bool  bpmSyncOn    = false;
+    bool  bpmInject    = true;   // inject on beat (starts on once sync on)
+    bool  bpmStrobe    = true;   // strobe rate lock
+    bool  bpmVfxCycle  = false;  // auto-cycle vfx slot 1
+    bool  bpmFlash     = false;  // flash fade on beat
+    bool  bpmDecayDip  = false;  // momentary decay dip
+
+    // Transients driven by beat events. Not user-facing.
+    float decayDipTimer = 0.0f;  // seconds remaining in active dip
+    float flashDecay    = 0.0f;  // decaying flash magnitude (signed)
 };
+
+// BPM division multipliers (applied to the 60/bpm base period).
+static constexpr float BPM_DIV_MUL[] = { 0.5f, 1.0f, 2.0f, 4.0f };
+static const char* BPM_DIV_NAMES[] = { "x2 (fast)", "x1", "÷2", "÷4" };
+static constexpr int N_BPM_DIVS = 4;
 
 // Effect catalogue shared between host, shader, and UI. Index 0 is "off".
 // Keep in sync with vfx_apply's switch in shaders/layers/vfx_slot.glsl.
@@ -605,7 +631,18 @@ static bool preset_write(const std::string& path) {
 "\n"
 "[output]\n"
 "# Output fade: bipolar, -1=black, 0=through, +1=white.\n"
-"fade     = %.6f\n",
+"fade     = %.6f\n"
+"\n"
+"[bpm]\n"
+"# Tempo + 5 beat-locked modulations. divIdx: 0=x2, 1=x1, 2=÷2, 3=÷4.\n"
+"bpm      = %.3f\n"
+"divIdx   = %d\n"
+"sync     = %s\n"
+"inject   = %s\n"
+"strobe   = %s\n"
+"vfxCycle = %s\n"
+"flash    = %s\n"
+"decayDip = %s\n",
         ts,
         io(L_WARP), io(L_OPTICS), io(L_GAMMA), io(L_COLOR), io(L_CONTRAST),
         io(L_DECAY), io(L_NOISE), io(L_COUPLE), io(L_EXTERNAL), io(L_INJECT),
@@ -620,7 +657,14 @@ static bool preset_write(const std::string& path) {
         p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl,
         p.vfxSlot[0], p.vfxParam[0], p.vfxBSource[0],
         p.vfxSlot[1], p.vfxParam[1], p.vfxBSource[1],
-        p.outFade);
+        p.outFade,
+        p.bpm, p.divIdx,
+        p.bpmSyncOn   ? "on" : "off",
+        p.bpmInject   ? "on" : "off",
+        p.bpmStrobe   ? "on" : "off",
+        p.bpmVfxCycle ? "on" : "off",
+        p.bpmFlash    ? "on" : "off",
+        p.bpmDecayDip ? "on" : "off");
     fclose(f);
     return true;
 }
@@ -749,6 +793,15 @@ static bool preset_load(const std::string& path) {
         } else if (section == "output") {
             float fv = (float)atof(v.c_str());
             if (k == "fade") p.outFade = fmaxf(-1.f, fminf(1.f, fv));
+        } else if (section == "bpm") {
+            if      (k == "bpm")     p.bpm = fmaxf(30.f, fminf(300.f, (float)atof(v.c_str())));
+            else if (k == "divIdx")  { int n = atoi(v.c_str()); if (n>=0 && n<N_BPM_DIVS) p.divIdx = n; }
+            else if (k == "sync")    p.bpmSyncOn   = parse_bool_onoff(v);
+            else if (k == "inject")  p.bpmInject   = parse_bool_onoff(v);
+            else if (k == "strobe")  p.bpmStrobe   = parse_bool_onoff(v);
+            else if (k == "vfxCycle")p.bpmVfxCycle = parse_bool_onoff(v);
+            else if (k == "flash")   p.bpmFlash    = parse_bool_onoff(v);
+            else if (k == "decayDip")p.bpmDecayDip = parse_bool_onoff(v);
         }
     }
     fclose(f);
@@ -1176,10 +1229,36 @@ static std::string section_output() {
     return b;
 }
 static std::string section_bpm() {
-    return "(BPM sync — wired in C7)\n"
-           "Tap tempo, beat divisions, and 5 beat-locked modulations:\n"
-           "  inject-on-beat, strobe-rate lock, vfx auto-cycle,\n"
-           "  fade flash, decay dip.";
+    const auto& p = S.p;
+    char b[1536];
+    snprintf(b, sizeof b,
+        "BPM      : %.1f   div: %s\n"
+        "sync     : %s\n"
+        "\n"
+        "%-10s tap tempo\n"
+        "%-10s sync on/off\n"
+        "%-10s cycle division\n"
+        "\n"
+        "-- beat-locked modulations --\n"
+        "%-10s inject-on-beat     : %s\n"
+        "%-10s strobe-rate lock   : %s\n"
+        "%-10s vfx auto-cycle     : %s\n"
+        "%-10s fade-flash         : %s\n"
+        "%-10s decay-dip          : %s\n"
+        "\n"
+        "beat phase: %.2f",
+        p.bpm, BPM_DIV_NAMES[p.divIdx],
+        p.bpmSyncOn ? "ON" : "off",
+        keys_for(ACT_BPM_TAP).c_str(),
+        keys_for(ACT_BPM_SYNC_TOGGLE).c_str(),
+        keys_for(ACT_BPM_DIV_CYCLE).c_str(),
+        keys_for(ACT_BPM_INJECT_TOGGLE).c_str(),   p.bpmInject    ? "ON" : "off",
+        keys_for(ACT_BPM_STROBE_TOGGLE).c_str(),   p.bpmStrobe    ? "ON" : "off",
+        keys_for(ACT_BPM_VFXCYCLE_TOGGLE).c_str(), p.bpmVfxCycle  ? "ON" : "off",
+        keys_for(ACT_BPM_FLASH_TOGGLE).c_str(),    p.bpmFlash     ? "ON" : "off",
+        keys_for(ACT_BPM_DECAYDIP_TOGGLE).c_str(), p.bpmDecayDip  ? "ON" : "off",
+        p.beatPhase);
+    return b;
 }
 
 static std::string section_bindings() {
@@ -1236,6 +1315,101 @@ static void reload_shaders() {
     if (progFeedback) glDeleteProgram(progFeedback);
     progFeedback = np;
     printf("[shaders] reloaded\n"); fflush(stdout);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// BPM — tap tempo + beat-clock + modulation dispatch.
+//
+// Each tap appends a timestamp; bpm is recomputed as the median of up to
+// 4 recent intervals. A gap >2s resets the tap buffer.
+//
+// Per frame, beatPhase advances; on phase wrap (crossing from ≈1 back to
+// 0) we fire one "beat event" and dispatch any enabled modulations.
+// ─────────────────────────────────────────────────────────────────────────
+static std::vector<double> g_bpmTaps;
+
+static void bpm_tap(double now) {
+    // Reset tap history after a big gap.
+    if (!g_bpmTaps.empty() && (now - g_bpmTaps.back()) > 2.0)
+        g_bpmTaps.clear();
+    g_bpmTaps.push_back(now);
+    if (g_bpmTaps.size() > 5) g_bpmTaps.erase(g_bpmTaps.begin());
+
+    if (g_bpmTaps.size() >= 2) {
+        // Median of intervals is more robust than mean against a bad tap.
+        std::vector<double> intervals;
+        for (size_t i = 1; i < g_bpmTaps.size(); i++)
+            intervals.push_back(g_bpmTaps[i] - g_bpmTaps[i-1]);
+        std::sort(intervals.begin(), intervals.end());
+        double median = intervals[intervals.size() / 2];
+        if (median > 0.05 && median < 3.0) {
+            float bpm = (float)(60.0 / median);
+            if (bpm < 30.f) bpm = 30.f;
+            if (bpm > 300.f) bpm = 300.f;
+            S.p.bpm = bpm;
+            // Re-anchor the beat origin to the latest tap so the phase
+            // aligns with the user's intention.
+            S.p.beatOrigin = now;
+            char b[64]; snprintf(b, sizeof b, "BPM: %.1f", bpm);
+            S.ov.logEvent(b);
+        }
+    } else {
+        S.ov.logEvent("BPM: tap again");
+    }
+}
+
+// Called once per displayed frame. dt is the frame delta time. Advances
+// the beat phase, detects beat crossings, and fires the enabled
+// modulations for each crossing.
+static void update_bpm(double now, float dt) {
+    (void)dt;
+    auto& p = S.p;
+
+    // Decay transient fade-flash toward 0 each frame — ~150ms half-life.
+    if (p.flashDecay != 0.0f) {
+        p.flashDecay *= 0.80f;
+        if (std::fabs(p.flashDecay) < 0.01f) p.flashDecay = 0.0f;
+    }
+    // Decay dip timer.
+    if (p.decayDipTimer > 0.0f) {
+        p.decayDipTimer -= dt;
+        if (p.decayDipTimer < 0.0f) p.decayDipTimer = 0.0f;
+    }
+
+    // Beat period (seconds) for the current division.
+    float basePeriod = 60.0f / fmaxf(p.bpm, 1.0f);
+    float period     = basePeriod * BPM_DIV_MUL[p.divIdx];
+
+    // Fractional position through the current beat.
+    double since = now - p.beatOrigin;
+    double beats = since / period;
+    float  phase = (float)(beats - std::floor(beats));
+    float  prev  = p.beatPhase;
+    p.beatPhase  = phase;
+
+    // Crossing: phase jumped backwards (wrapped from near-1 to near-0).
+    // Also fire on first frame (prev==0 and phase just seeded) — skip
+    // the very first frame of the loop by requiring a real crossing.
+    bool crossed = (prev > 0.5f && phase < 0.5f);
+    if (!p.bpmSyncOn || !crossed) return;
+
+    // ── beat event ── fire enabled modulations.
+    if (p.bpmInject) {
+        p.inject = 1.0f;   // same shape as ACT_INJECT_HOLD press.
+    }
+    if (p.bpmVfxCycle) {
+        // Advance slot 1's effect, skipping 'off'.
+        p.vfxSlot[0] = (p.vfxSlot[0] % (VFX_COUNT - 1)) + 1;
+    }
+    if (p.bpmFlash) {
+        // Alternate between white and black flashes per beat.
+        static int tick = 0;
+        tick++;
+        p.flashDecay = (tick & 1) ? +0.6f : -0.6f;
+    }
+    if (p.bpmDecayDip) {
+        p.decayDipTimer = 0.08f;   // ~5 frames at 60fps
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1713,12 +1887,41 @@ static void apply_action(ActionId id, float mag) {
             p.outFade = fmaxf(-1.0f, fminf(1.0f, mag));
             return;
 
-        // ── BPM (wired in C7) ─────────────────────────────────────
-        case ACT_BPM_TAP: case ACT_BPM_SYNC_TOGGLE: case ACT_BPM_DIV_CYCLE:
-        case ACT_BPM_INJECT_TOGGLE: case ACT_BPM_STROBE_TOGGLE:
-        case ACT_BPM_VFXCYCLE_TOGGLE: case ACT_BPM_FLASH_TOGGLE:
+        // ── BPM sync + tap tempo ──────────────────────────────────
+        case ACT_BPM_TAP: bpm_tap(glfwGetTime()); return;
+        case ACT_BPM_SYNC_TOGGLE: {
+            p.bpmSyncOn = !p.bpmSyncOn;
+            if (p.bpmSyncOn) p.beatOrigin = glfwGetTime();
+            char b[64]; snprintf(b, sizeof b, "BPM sync: %s  (%.1f bpm, %s)",
+                                 p.bpmSyncOn ? "ON" : "off", p.bpm,
+                                 BPM_DIV_NAMES[p.divIdx]);
+            S.ov.logEvent(b); return;
+        }
+        case ACT_BPM_DIV_CYCLE: {
+            p.divIdx = (p.divIdx + 1) % N_BPM_DIVS;
+            char b[64]; snprintf(b, sizeof b, "BPM div: %s", BPM_DIV_NAMES[p.divIdx]);
+            S.ov.logEvent(b); return;
+        }
+        case ACT_BPM_INJECT_TOGGLE:
+            p.bpmInject = !p.bpmInject;
+            S.ov.logEvent(p.bpmInject ? "bpm inject-on-beat: ON"
+                                      : "bpm inject-on-beat: off"); return;
+        case ACT_BPM_STROBE_TOGGLE:
+            p.bpmStrobe = !p.bpmStrobe;
+            S.ov.logEvent(p.bpmStrobe ? "bpm strobe lock: ON"
+                                      : "bpm strobe lock: off"); return;
+        case ACT_BPM_VFXCYCLE_TOGGLE:
+            p.bpmVfxCycle = !p.bpmVfxCycle;
+            S.ov.logEvent(p.bpmVfxCycle ? "bpm vfx auto-cycle: ON"
+                                        : "bpm vfx auto-cycle: off"); return;
+        case ACT_BPM_FLASH_TOGGLE:
+            p.bpmFlash = !p.bpmFlash;
+            S.ov.logEvent(p.bpmFlash ? "bpm fade-flash: ON"
+                                     : "bpm fade-flash: off"); return;
         case ACT_BPM_DECAYDIP_TOGGLE:
-            return;
+            p.bpmDecayDip = !p.bpmDecayDip;
+            S.ov.logEvent(p.bpmDecayDip ? "bpm decay-dip: ON"
+                                        : "bpm decay-dip: off"); return;
 
         case ACT_NONE: case ACT__COUNT: return;
     }
@@ -1775,7 +1978,12 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1f("uGamma", p.gamma);
     U1f("uHueRate", p.hueRate); U1f("uSatGain", p.satGain);
     U1f("uContrast", p.contrast);
-    U1f("uDecay", p.decay);
+    // Beat-driven transients are composed here so p.* values stay the
+    // user's "set point". Flash adds/subtracts to outFade (clamped); dip
+    // lowers decay to 0.90 while the timer is warm.
+    float effOutFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + p.flashDecay));
+    float effDecay   = (p.decayDipTimer > 0.0f) ? 0.90f : p.decay;
+    U1f("uDecay", effDecay);
     U1f("uNoise", p.noise);
     U1i("uNoiseQuality", S.noiseQ);
     U1i("uInvert",      p.invert);
@@ -1802,7 +2010,11 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
         if (lPar >= 0) glUniform1fv(lPar, 2, p.vfxParam);
         if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
     }
-    U1f("uOutFade", p.outFade);
+    U1f("uOutFade", effOutFade);
+
+    // BPM strobe-lock uniforms for vfx_slot.glsl.
+    U1f("uBpmPhase", p.beatPhase);
+    U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
@@ -2331,6 +2543,9 @@ int main(int argc, char** argv) {
         // callback inside glfwPollEvents.
         g_input.pollGamepad(GLFW_JOYSTICK_1, dt);
         g_input.pollMidi(dt);
+
+        // BPM clock — advances beat phase, fires beat events.
+        update_bpm(frameStart, dt);
 
         glBindVertexArray(mainVAO);
 

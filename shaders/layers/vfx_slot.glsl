@@ -21,6 +21,10 @@ uniform int   uVfxEffect[2];
 uniform float uVfxParam[2];
 uniform int   uVfxBSource[2];
 
+// BPM: provided so Strobe can beat-lock when the host asks for it.
+uniform float uBpmPhase;       // 0..1 within the current beat
+uniform int   uBpmStrobeLock;  // 1 = override param, use beat phase
+
 // Rec. 709 luma — matches what the rest of the pipeline uses.
 float vfx_lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
@@ -47,12 +51,19 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
     // it so PinP can resample at the inset coordinate, not the outer one.
     if      (eff == 0)  return col;                // off
     else if (eff == 1) {                           // Strobe — intensity modulation
-        // Period 2..30 frames, 50% duty cycle. Off-beats dim to 10% so
-        // trails aren't completely wiped out of the feedback field.
-        int period = int(floor(mix(2.0, 30.0, p)));
-        if (period < 2) period = 2;
-        int phase  = int(uFrame) - (int(uFrame) / period) * period;
-        float k = (phase < period / 2) ? 1.0 : 0.10;
+        // Two timing sources:
+        //   bpm-locked: on the first half of each beat, off on the second.
+        //   free:       period 2..30 frames, 50% duty, driven by uFrame.
+        // Off-beats dim to 10% so trails aren't wiped from the field.
+        float k;
+        if (uBpmStrobeLock == 1) {
+            k = (uBpmPhase < 0.5) ? 1.0 : 0.10;
+        } else {
+            int period = int(floor(mix(2.0, 30.0, p)));
+            if (period < 2) period = 2;
+            int phase  = int(uFrame) - (int(uFrame) / period) * period;
+            k = (phase < period / 2) ? 1.0 : 0.10;
+        }
         return vec4(col.rgb * k, col.a);
     }
     else if (eff == 2) {                           // Still — freeze feedback
