@@ -93,6 +93,12 @@ Release rule: either bundle/relocate those dylibs into the macOS artifact, or
 state the Homebrew runtime prerequisite explicitly in the release notes and
 README. Do not ship an undocumented dynamic dependency.
 
+Also verify asset lookup from a non-asset working directory. If the macOS
+binary only finds `shaders/` and `presets/` when launched from inside its own
+folder, document that explicitly in the README/release notes or fix the binary
+to resolve assets relative to the executable path. Do not make users infer
+this from a startup failure like `can't open shaders/main.vert`.
+
 ## Cut a release
 
 ```bash

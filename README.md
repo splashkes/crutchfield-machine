@@ -49,6 +49,20 @@ If the app aborts at launch with a `dyld: Library not loaded` error pointing
 at `/opt/homebrew/opt/glfw/...` or `/opt/homebrew/opt/glew/...`, that's the
 missing first-run prerequisite.
 
+The current macOS binary also expects to find `shaders/` and `presets/`
+relative to the **current working directory**. So launch it from inside the
+extracted folder:
+
+```bash
+cd /path/to/feedback-macos-arm64
+./feedback
+```
+
+If you run `/path/to/feedback-macos-arm64/feedback` while your shell is in
+some other directory, startup may fail with `can't open shaders/main.vert`.
+The same current-directory rule is why first launch may write `bindings.ini`
+next to whatever directory you launched from.
+
 ## Two ways to build
 
 ### Option A: MSYS2 / MinGW (fastest, recommended)
