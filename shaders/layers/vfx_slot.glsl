@@ -21,6 +21,12 @@ uniform int   uVfxEffect[2];
 uniform float uVfxParam[2];
 uniform int   uVfxBSource[2];
 
+// Rec. 709 luma — matches what the rest of the pipeline uses.
+float vfx_lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+// Map a 0..1 parameter onto the full hue wheel, saturation = 1, value = 1.
+vec3 vfx_hue_tint(float p) { return hsv2rgb(vec3(fract(p), 1.0, 1.0)); }
+
 // Return the "B source" colour for key/PinP families.
 //   bsrc == 0  → camera
 //   bsrc == 1  → current feedback frame at the same uv (simple self-mix)
@@ -47,11 +53,46 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
     else if (eff == 1)  return col;                // Strobe   (C5c)
     else if (eff == 2)  return col;                // Still    (C5c)
     else if (eff == 3)  return col;                // Shake    (C5b)
-    else if (eff == 4)  return col;                // Negative (C5a)
-    else if (eff == 5)  return col;                // Colorize (C5a)
-    else if (eff == 6)  return col;                // Mono     (C5a)
-    else if (eff == 7)  return col;                // Posterize(C5a)
-    else if (eff == 8)  return col;                // ColorPass(C5a)
+    else if (eff == 4) {                           // Negative
+        // param = mix between original and full RGB inversion.
+        vec3 inv = 1.0 - col.rgb;
+        return vec4(mix(col.rgb, inv, p), col.a);
+    }
+    else if (eff == 5) {                           // Colorize
+        // param = hue of tint. Luminance preserved; mix 60% toward tinted
+        // luminance so colour remains bent rather than pure-paletted.
+        vec3 tint = vfx_hue_tint(p);
+        float L   = vfx_lum(col.rgb);
+        vec3 tinted = vec3(L) * tint * 1.5;          // 1.5 compensates the darkening from mono conversion
+        return vec4(mix(col.rgb, tinted, 0.75), col.a);
+    }
+    else if (eff == 6) {                           // Monochrome
+        // Pure luma × tint. param = tint hue. Classic B&W with a cast.
+        vec3 tint = vfx_hue_tint(p);
+        float L   = vfx_lum(col.rgb);
+        return vec4(vec3(L) * tint, col.a);
+    }
+    else if (eff == 7) {                           // Posterize
+        // Reduce brightness gradations. param sweeps level count 2..16
+        // (exponential-ish for a smoother sweep at low levels).
+        float levels = floor(mix(2.0, 16.0, p * p));
+        vec3 q = floor(col.rgb * levels + 0.5) / levels;
+        return vec4(q, col.a);
+    }
+    else if (eff == 8) {                           // ColorPass
+        // Preserve colours whose hue is near `p`, desaturate everything else.
+        // Tolerance widens with lower param — so p near 0 or 1 is narrow,
+        // p near 0.5 catches a broad hue band? No — we fix tolerance and
+        // let param drive the target hue.
+        vec3 hsv = rgb2hsv(col.rgb);
+        float target = fract(p);                     // target hue
+        float d = abs(fract(hsv.x - target + 0.5) - 0.5); // 0..0.5 wrapped
+        float tol = 0.08;                            // ±8% of hue wheel
+        float keep = 1.0 - smoothstep(tol, tol + 0.06, d);
+        float L = vfx_lum(col.rgb);
+        vec3 mono = vec3(L);
+        return vec4(mix(mono, col.rgb, keep), col.a);
+    }
     else if (eff == 9)  return col;                // Mirror-H (C5b)
     else if (eff == 10) return col;                // Mirror-V (C5b)
     else if (eff == 11) return col;                // Mirror-HV(C5b)
