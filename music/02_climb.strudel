@@ -1,0 +1,21 @@
+// 02_climb — melodic ascending arpeggio over a sub pulse. The top saw
+// line walks up an octave each cycle; the bass anchors on root fifths.
+
+stack(
+  s("bd ~ ~ ~ bd ~ ~ ~").gain(0.8).room(0.15),
+  s("~ ~ sn ~ ~ ~ sn ~").room(0.2),
+  s("hh*8").gain(0.3).pan(0.55),
+  // Sub bass: root-fifth pulse, slight lowpass so it doesn't boom.
+  note("c2 g1 c2 g1").s("sine").gain(0.4).lpf(220),
+  // Climbing arp: direction flips with zoom (zoom>1 ascends, <1
+  // descends). Strength swells when zoom is further from rest.
+  // Filter opens with rotation.
+  (fb.zoom > 1
+    ? note("<c4 eb4 g4 bb4 c5 eb5 g5 bb5>")
+    : note("<bb5 g5 eb5 c5 bb4 g4 eb4 c4>"))
+    .s("saw")
+    .lpf(1000 + fb.theta * 3000)
+    .gain(0.18 + Math.min(Math.abs(fb.zoom - 1), 0.25) * 0.6)
+    .delay(0.25).room(0.3)
+    .attack(0.005).release(0.18)
+)

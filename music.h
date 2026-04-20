@@ -46,6 +46,11 @@ struct Event {
     double      room   = 0.0;
     double      delay  = 0.0;
     int         channel = 0;
+    // Envelope overrides (only used by synth voices; 0 = "use default").
+    double      attack  = 0.0;
+    double      decayT  = 0.0;
+    double      sustain = -1.0;    // -1 = default
+    double      release = 0.0;
 };
 
 // Evaluate a pattern expression (Strudel-syntax JS) and query events in
@@ -100,6 +105,12 @@ const std::string& currentPresetName();
 // Check whether the current preset file has changed on disk and reload
 // if so. Called cheaply once per frame; stat()s one file max.
 void pollPresetReload();
+
+// Momentary preset — push a named preset (matched by filename substring),
+// pop to restore. Designed for live gestures like "hold Space to jump to
+// a breakbeat". Nested pushes collapse to the outermost.
+void pushMomentaryPreset(const std::string& nameSubstr);
+void popMomentaryPreset();
 
 // ── Video ↔ music bridge ─────────────────────────────────────────────
 // Publish a named scalar to the JS context's `fb` global so patterns

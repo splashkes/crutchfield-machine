@@ -1,0 +1,19 @@
+// 03_dub_pulse — sparse, heavy echo, long sustained bass stabs. The
+// snare is drenched in delay so each hit smears across the next bar.
+
+stack(
+  s("bd ~ ~ ~").gain(0.95).room(0.25),
+  s("~ ~ sn ~").gain(0.7).delay(0.55).room(0.4),
+  // Off-beat rim, quiet, deep in the mix.
+  s("~ rim ~ ~ rim ~ ~ ~").gain(0.35).delay(0.3),
+  // Long sustained bass chord — direction follows zoom; filter
+  // wobbles with rotation (slow sweep feel on the sustained note).
+  (fb.zoom > 1
+    ? note("<c2 c2 eb2 g2>")
+    : note("<g2 eb2 c2 c2>"))
+    .s("tri")
+    .lpf(250 + fb.theta * 1500)
+    .gain(0.35 + Math.min(Math.abs(fb.zoom - 1), 0.2) * 0.7)
+    .attack(0.08).sustain(0.85).release(1.2)
+    .room(0.5)
+)

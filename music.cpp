@@ -229,6 +229,10 @@ std::vector<Event> query(const std::string& code, double begin, double end) {
         e.room    = get_num(g_ctx, val,  "room",   0.0);
         e.delay   = get_num(g_ctx, val,  "delay",  0.0);
         e.channel = (int)get_num(g_ctx, val, "channel", 0);
+        e.attack  = get_num(g_ctx, val, "attack",  0.0);
+        e.decayT  = get_num(g_ctx, val, "decayT",  0.0);
+        e.sustain = get_num(g_ctx, val, "sustain", -1.0);
+        e.release = get_num(g_ctx, val, "release", 0.0);
         out.push_back(std::move(e));
 
         JS_FreeValue(g_ctx, part);
@@ -342,15 +346,8 @@ void update(double now, float dt, float bpm) {
         //   • note set (with or without s=saw/square/…) → synth voice
         //   • s set to a sample name → sample trigger
         //   • nothing → ignore
-        if (!e.note.empty()) {
-            int midi = Audio::note_to_midi(e.note);
-            if (midi < 0) continue;
-            Audio::NoteOpts n;
+        auto fill_note = [&](Audio::NoteOpts& n) {
             n.delaySec    = delaySec;
-            n.freqHz      = Audio::midi_to_freq(midi);
-            n.wave        = Audio::is_synth_name(e.sample)
-                          ? Audio::waveform_from_name(e.sample)
-                          : Audio::WAVE_SAW;
             n.durationSec = (float)((e.wholeEnd - e.wholeBegin) * cs);
             n.gain        = (float)e.gain * 0.35f;
             n.pan         = (float)e.pan;
@@ -358,6 +355,21 @@ void update(double now, float dt, float bpm) {
             n.hpf         = (float)e.hpf;
             n.delaySend   = (float)e.delay;
             n.roomSend    = (float)e.room;
+            if (e.attack  > 0.0) n.attack  = (float)e.attack;
+            if (e.decayT  > 0.0) n.decay   = (float)e.decayT;
+            if (e.sustain >= 0.0) n.sustain = (float)e.sustain;
+            if (e.release > 0.0) n.release = (float)e.release;
+        };
+
+        if (!e.note.empty()) {
+            int midi = Audio::note_to_midi(e.note);
+            if (midi < 0) continue;
+            Audio::NoteOpts n;
+            n.freqHz = Audio::midi_to_freq(midi);
+            n.wave   = Audio::is_synth_name(e.sample)
+                     ? Audio::waveform_from_name(e.sample)
+                     : Audio::WAVE_SAW;
+            fill_note(n);
             Audio::trigger_note(n);
             continue;
         }
@@ -366,15 +378,8 @@ void update(double now, float dt, float bpm) {
 
         if (Audio::is_synth_name(e.sample)) {
             Audio::NoteOpts n;
-            n.delaySec    = delaySec;
-            n.wave        = Audio::waveform_from_name(e.sample);
-            n.durationSec = (float)((e.wholeEnd - e.wholeBegin) * cs);
-            n.gain        = (float)e.gain * 0.35f;
-            n.pan         = (float)e.pan;
-            n.lpf         = (float)e.lpf;
-            n.hpf         = (float)e.hpf;
-            n.delaySend   = (float)e.delay;
-            n.roomSend    = (float)e.room;
+            n.wave = Audio::waveform_from_name(e.sample);
+            fill_note(n);
             Audio::trigger_note(n);
             continue;
         }
@@ -422,6 +427,8 @@ namespace {
     std::string              g_presetName;
     std::filesystem::file_time_type g_presetMtime;
     double                   g_nextReloadCheck = 0.0;
+    int                      g_momentaryBase  = -1;   // preset idx to restore on pop
+    bool                     g_inMomentary    = false;
 }
 
 static std::string read_file(const std::string& path) {
@@ -489,6 +496,37 @@ void prevPreset() {
 }
 
 const std::string& currentPresetName() { return g_presetName; }
+
+void pushMomentaryPreset(const std::string& nameSubstr) {
+    namespace fs = std::filesystem;
+    if (g_inMomentary) return;                 // already jumped — ignore
+    if (g_presetPaths.empty()) return;
+    // Find the first preset whose stem contains the substring (case-ins).
+    auto lc = [](std::string s){
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    std::string needle = lc(nameSubstr);
+    int target = -1;
+    for (int i = 0; i < (int)g_presetPaths.size(); i++) {
+        std::string stem = lc(fs::path(g_presetPaths[i]).stem().string());
+        if (stem.find(needle) != std::string::npos) { target = i; break; }
+    }
+    if (target < 0 || target == g_presetIdx) return;
+    g_momentaryBase = g_presetIdx;
+    g_inMomentary   = true;
+    loadPreset(target);
+}
+
+void popMomentaryPreset() {
+    if (!g_inMomentary) return;
+    g_inMomentary = false;
+    int restore = g_momentaryBase;
+    g_momentaryBase = -1;
+    if (restore >= 0 && restore < (int)g_presetPaths.size() && restore != g_presetIdx) {
+        loadPreset(restore);
+    }
+}
 
 void pollPresetReload() {
     namespace fs = std::filesystem;

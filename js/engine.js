@@ -58,6 +58,11 @@ class Pattern {
     room(v)    { return this.set('room',  v); }
     crush(v)   { return this.set('crush', v); }
     channel(c) { return this.set('channel', c); }
+    // ADSR (seconds for a/d/r; 0..1 for s). Strudel uses the same names.
+    attack(v)  { return this.set('attack',  v); }
+    decayT(v)  { return this.set('decayT',  v); }   // 'decay' is taken by dyn/damping — alias
+    sustain(v) { return this.set('sustain', v); }
+    release(v) { return this.set('release', v); }
 
     // Time-scale: fast(2) compresses two cycles into one.
     fast(factor) {
@@ -366,7 +371,6 @@ const _UNIMPL_METHODS = [
     'jux', 'juxBy', 'off', 'ply', 'chunk', 'struct', 'mask', 'when',
     // Audio params we don't DSP yet:
     'vowel', 'shape', 'coarse', 'cut', 'begin', 'end', 'loop',
-    'attack', 'sustain', 'release',  // (decay already lives on our effects map)
     'lpq', 'hpq', 'bpq', 'lpenv', 'hpenv', 'phaser', 'tremolo',
     'dry', 'wet',
     // Tempo / time helpers:

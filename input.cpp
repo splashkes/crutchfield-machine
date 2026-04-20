@@ -360,11 +360,13 @@ void Input::installDefaults() {
     // Music / MIDI: Ctrl+M launches loopMIDI.
     K(in, ACT_LAUNCH_LOOPMIDI,      GLFW_KEY_M,         GLFW_MOD_CONTROL);
 
-    // Music engine (native Strudel-compat pattern engine). Shift+Ctrl
-    // combo stays out of the way of the preset shortcuts (Ctrl+N/P).
-    K(in, ACT_MUSIC_NEXT,       GLFW_KEY_N, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT);
-    K(in, ACT_MUSIC_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT);
-    K(in, ACT_MUSIC_PLAYPAUSE,  GLFW_KEY_SPACE, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT);
+    // Music engine (native Strudel-compat pattern engine). Uses Ctrl+Alt
+    // rather than Ctrl+Shift because Shift is handled separately as the
+    // coarse-step multiplier — so Ctrl+Shift+N would collide with the
+    // visual preset binding on Ctrl+N.
+    K(in, ACT_MUSIC_NEXT,       GLFW_KEY_N, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_MUSIC_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_MUSIC_PLAYPAUSE,  GLFW_KEY_SPACE, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
 
     // Help nav — arrow keys dedicated while help is open (the handler checks
     // help visibility and consumes these only then, so they do NOT conflict

@@ -2222,8 +2222,13 @@ static void apply_action(ActionId id, float mag) {
                 printf("[inject pattern=%d]\n", p.pattern);
                 char buf[64]; snprintf(buf, sizeof buf, "inject: %s", names[p.pattern]);
                 S.ov.logEvent(buf);
+                // Live-gesture coupling: hold Space to jump the music
+                // engine to a breakbeat, release to return to whatever
+                // preset was playing. No-op if already on breakbeat.
+                Music::pushMomentaryPreset("breakbeat");
             } else {
                 p.inject = 0.3f;
+                Music::popMomentaryPreset();
             }
             return;
         }
