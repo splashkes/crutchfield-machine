@@ -2902,13 +2902,21 @@ int main(int argc, char** argv) {
     // setup pointer so CLI users know Strudel sync is a flip away.
     music_startup_hint();
 
-    // Embedded JS runtime — first step of the standalone music system.
-    // Later steps will load @strudel/core here and wire pattern events
-    // into a native audio engine.
+    // Embedded JS runtime + pattern engine. Later steps layer audio +
+    // effects + file-based presets on top.
     if (Music::init()) {
-        Music::eval("print('feedback music engine online — QuickJS ready');",
-                    "<startup>");
-        Music::eval("print('1 + 2 * 3 =', 1 + 2 * 3);", "<smoketest>");
+        // Quick pattern engine smoketest: query one cycle of a simple
+        // Strudel-syntax snippet and print the events. Proves the whole
+        // parse → evaluate → queryArc → C++ marshalling pipeline works.
+        auto evs = Music::query("s(\"bd sn hh*2 [cp cp]\")", 0.0, 1.0);
+        std::printf("[music] pattern test: %zu event(s) in cycle [0,1):\n",
+                    evs.size());
+        for (const auto& e : evs) {
+            std::printf("  [%6.3f,%6.3f)  s=%-6s note=%-4s\n",
+                        e.begin, e.end,
+                        e.sample.empty() ? "-" : e.sample.c_str(),
+                        e.note.empty()   ? "-" : e.note.c_str());
+        }
     }
 
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }

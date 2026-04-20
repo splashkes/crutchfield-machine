@@ -12,6 +12,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace Music {
 
@@ -27,5 +28,27 @@ void shutdown();
 // identify the source (e.g. a filename or "<startup>"). Returns true
 // on success; prints any exception to stderr.
 bool eval(const std::string& code, const std::string& tag);
+
+// A single pattern event — what falls out of Pattern.queryArc mapped
+// into a POD the rest of the app can consume.
+struct Event {
+    double      begin;     // cycle-time start (inclusive)
+    double      end;       // cycle-time end (exclusive)
+    std::string sample;    // value.s — e.g. "bd", "" if not set
+    std::string note;      // value.note — e.g. "c3", "" if not set
+    double      gain   = 1.0;
+    double      pan    = 0.5;
+    double      speed  = 1.0;
+    double      lpf    = 0.0;
+    double      hpf    = 0.0;
+    double      room   = 0.0;
+    double      delay  = 0.0;
+    int         channel = 0;
+};
+
+// Evaluate a pattern expression (Strudel-syntax JS) and query events in
+// cycle range [begin, end). Returns empty vector on error. `code` should
+// be a single expression producing a Pattern — e.g. `s("bd sn hh*2")`.
+std::vector<Event> query(const std::string& code, double begin, double end);
 
 } // namespace Music
