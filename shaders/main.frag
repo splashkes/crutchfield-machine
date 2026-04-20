@@ -131,20 +131,26 @@ void main() {
     //  3b. gamma out — re-encode before mixing with display-gamma signals
     if ((uEnable & L_GAMMA) != 0) col = gamma_out_apply(col);
 
+    //  6. decay: per-frame bleed. Runs BEFORE mixers so fresh partner-field
+    //     and camera content enter at full amplitude against a faded
+    //     background — matching an analog rig where the camera sees live
+    //     content at scene brightness, not CRT-attenuated brightness.
+    //     See development/LAYERS.md §feedback-write stages.
+    if ((uEnable & L_DECAY) != 0) col = decay_apply(col);
+
     //  7. couple: blend in the other field (Kaneko)
     if ((uEnable & L_COUPLE) != 0) col = couple_apply(col, uv);
 
     //  8. external: blend in camera
     if ((uEnable & L_EXTERNAL) != 0) col = external_apply(col, uv);
 
-    //  6. decay: per-frame bleed
-    if ((uEnable & L_DECAY) != 0) col = decay_apply(col);
-
-    //  9. noise: thermal sensor floor
-    if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
-
-    // 10. inject: triggered pattern perturbation
+    //  9. inject: triggered pattern perturbation. Runs BEFORE noise so
+    //     injected patterns pick up sensor-floor texture rather than
+    //     reading as pristine-synthetic against noisy feedback.
     if ((uEnable & L_INJECT) != 0) col = inject_apply(col, uv);
+
+    // 10. noise: thermal sensor floor — final additive stage before post.
+    if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
 
     // 11. V-4-style effect slots. Two back-to-back slots, each holding
     //     any of 18 effects (or off). Placed last so effects operate on

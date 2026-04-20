@@ -91,8 +91,9 @@ implement individual layers; `shaders/common.glsl` provides helpers;
 
 **Layer dispatch order is significant.** Warp and thermal happen on
 the *sample* UV (before the texture read); optics performs the read;
-everything else operates on the returned color. Don't reorder without
-understanding what each stage expects.
+everything else operates on the returned color. Full per-layer
+reference, order rationale, and hard-vs-soft reorder constraints live
+in [LAYERS.md](LAYERS.md). Don't reorder without reading it.
 
 **Hot reload:** `\` key triggers `reload_shaders()` in main.cpp, which
 rebuilds the program from disk. If compile fails, the old program
@@ -387,9 +388,16 @@ Break these and things go subtly wrong:
 
 1. **Every layer's `_apply()` function signature is in main.frag's dispatch.**
    If a layer function signature changes, main.frag needs updating too.
+   See [LAYERS.md](LAYERS.md).
 2. **Layer bits in host `L_*` enum match the GLSL `const int L_*`.**
    These are mirrored by hand. Getting them out of sync silently breaks
-   layer toggles.
+   layer toggles. See [LAYERS.md](LAYERS.md).
+2a. **No layer in the default feedback path clamps to [0,1].** The loop
+   is float precisely so HDR overshoot (S-curves, Reinhard pre-knee,
+   additive bloom) is preserved. Use `max(x, 0)` only as NaN defense,
+   never as range compression. See
+   [ADR-0015](ADR/0015-pipeline-order-and-float-preservation.md) and
+   [LAYERS.md §float-precision invariant](LAYERS.md#float-precision-invariant).
 3. **`S.p` is the single source of truth for per-layer parameters.**
    Uniforms read from it; presets write from/to it; `apply_action`
    modifies it.

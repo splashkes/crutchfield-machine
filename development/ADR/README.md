@@ -91,3 +91,5 @@ Use git commits for those — the history is their ADR.
 | [0012](0012-clean-room-pattern-engine.md) | Clean-room pattern engine, not Strudel's AGPL source | Accepted | 2026-04-20 |
 | [0013](0013-dt-coupled-music-scheduler.md) | Music scheduler advances on frame dt, not wall time | Accepted | 2026-04-20 |
 | [0014](0014-platform-transforms-for-mac-and-linux.md) | Platform ports live as build-time transforms, not forks | Accepted | 2026-04-20 |
+| [0015](0015-pipeline-order-and-float-preservation.md) | Preserve float headroom through the loop, and reorder the feedback-write tail | Accepted | 2026-04-20 |
+| [0016](0016-nan-inf-sanitize-at-output.md) | Sanitize NaN/Inf at `output_fade`, never anywhere else | Accepted | 2026-04-20 |

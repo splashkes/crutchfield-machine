@@ -1,3 +1,59 @@
+# Worklog — 2026-04-20 session (pipeline order + float preservation)
+
+Short audit of `shaders/main.frag` and the layer files surfaced two
+issues worth fixing before further work lands on top of them.
+
+## Scope
+
+- **Float-precision invariant restored.** Removed `clamp(rgb, 0, 1)`
+  from the tail of `physics_apply` (physics.glsl:54) and from
+  `contrast_apply` (contrast.glsl:8). Both were defensive clamps that
+  silently undid the whole point of running the loop in RGBA32F.
+  `max(c.rgb, 0.0)` in gamma.glsl stays — that's legitimate NaN
+  defense for `pow()` of negatives, not range compression.
+- **Pipeline tail reordered** in main.frag:
+  - `decay` now runs BEFORE `couple` / `external`, so fresh
+    partner-field and camera content enter at full amplitude against
+    faded feedback (matches the analog-rig metaphor).
+  - `inject` now runs BEFORE `noise`, so injected patterns pick up
+    sensor-floor texture instead of reading as synthetic.
+- **New canonical doc**: `development/LAYERS.md` — pipeline order
+  reference, per-layer quick ref, hard-vs-soft reorder constraints,
+  and the float-precision invariant written down.
+- **ADR-0015** — records both the reorder and the clamp removal, and
+  the aesthetic cost (every curated preset will look different;
+  retuning is follow-up work).
+- ARCHITECTURE.md and development/README.md cross-refs updated.
+
+## Follow-up (not done this session)
+
+- Retune `presets/01_*.ini` through `05_*.ini` against the new
+  pipeline. Aesthetic calibration pass; no code.
+- Consider whether `contrast` wants a soft-knee option (matched to
+  physics's Reinhard) for users who want a high contrast setting
+  without unbounded overshoot.
+
+## Follow-up that landed same session: NaN/Inf sanitize
+
+First live test of the unclamped pipeline revealed the expected
+IEEE-754 trap: heavy contrast overshoot pushes pixels to `Inf`,
+downstream arithmetic turns them into `NaN`, and NaN propagates
+through every subsequent op (`decay`, `couple`, `external`, `inject`,
+`noise`) because `NaN * 0 = NaN`. Symptom: "inject stopped working"
+after a divergent run, recoverable only via `C` (clear fields).
+
+Added a per-component `isnan || isinf ? 0 : v` select at the end of
+`output_fade_apply` — the one and only place in the default path
+where the pipeline touches a component for non-range reasons. Full
+HDR range still preserved; only non-finite components get clobbered.
+Uses ternary not `mix()` because `mix(NaN, 0, 1) = NaN`.
+
+ADR-0016 captures the derivation — why output_fade, why ternary,
+why 0 as the substitute, why not clamp, why not sanitize earlier.
+LAYERS.md §float-precision invariant updated with the exception.
+
+---
+
 # Worklog — 2026-04-19 session
 
 Polish pass aimed at making the repo usable by people other than the author.

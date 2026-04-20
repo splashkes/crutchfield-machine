@@ -22,6 +22,12 @@
 // All four default to "off"-equivalent values (1.0, 1.0, 0.0, 0.0) so the
 // layer can be enabled with no immediate visual change, then dialed in
 // individually.
+//
+// Deliberately NOT clamped to [0,1]. The loop runs in float precisely so
+// values can exceed the display range and come back via decay / contrast
+// shaping. Camera-side saturation is modeled by the `uSatKnee` Reinhard
+// rolloff, not by a hard clip. See development/LAYERS.md §float-precision
+// invariant and ADR-0015.
 
 vec4 physics_apply(vec4 c) {
     vec3 rgb = c.rgb;
@@ -51,5 +57,5 @@ vec4 physics_apply(vec4 c) {
         rgb = mix(rgb, vec3(avg), uColorCross);
     }
 
-    return vec4(clamp(rgb, 0.0, 1.0), c.a);
+    return vec4(rgb, c.a);
 }
