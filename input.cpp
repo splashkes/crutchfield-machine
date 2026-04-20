@@ -705,8 +705,16 @@ static bool parse_key_spec(const std::string& spec, int& outKey, int& outMods) {
         {"KP3",GLFW_KEY_KP_3},{"KP4",GLFW_KEY_KP_4},{"KP5",GLFW_KEY_KP_5},
         {"KP6",GLFW_KEY_KP_6},{"KP7",GLFW_KEY_KP_7},{"KP8",GLFW_KEY_KP_8},
         {"KP9",GLFW_KEY_KP_9},
+        {"PrintScreen", GLFW_KEY_PRINT_SCREEN},
+        {"PrtSc",       GLFW_KEY_PRINT_SCREEN},
     };
     for (auto& n : names) if (ieq(key, n.name)) { outKey = n.code; return true; }
+    // Numeric fallback: <NNN> — lets key_spec_string's round-trip path work
+    // for any key we haven't mapped to a name yet. Paranoid parse.
+    if (key.size() >= 3 && key.front() == '<' && key.back() == '>') {
+        int v = std::atoi(key.c_str() + 1);
+        if (v > 0 && v <= GLFW_KEY_LAST) { outKey = v; return true; }
+    }
     return false;
 }
 
@@ -745,6 +753,7 @@ static std::string key_spec_string(int key, int mods) {
         case GLFW_KEY_SLASH:         s += "/"; return s;
         case GLFW_KEY_BACKSLASH:     s += "\\"; return s;
         case GLFW_KEY_GRAVE_ACCENT:  s += "`"; return s;
+        case GLFW_KEY_PRINT_SCREEN:  s += "PrtSc"; return s;
     }
     if (key >= GLFW_KEY_F1 && key <= GLFW_KEY_F12) {
         char buf[8]; std::snprintf(buf, sizeof buf, "F%d", 1 + (key - GLFW_KEY_F1));
