@@ -63,7 +63,7 @@ feedback-GBPS/
 ├── presets/*.ini        Curated (01..05) + user-saved (auto_*).
 ├── research/            Source papers, V-4 inventory, A/B-bus holdback doc.
 ├── gallery/             README screenshots.
-├── linux/, macOS/       WIP ports (see their READMEs).
+├── linux/, macOS/       Platform ports — transform scripts + native camera backend. See ADR-0014.
 ├── Makefile             MSYS2/MinGW build + `make dist` target.
 ├── build_msvc.bat       MSVC/vcpkg alternate (less maintained).
 └── development/         You are here.

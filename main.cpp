@@ -2933,8 +2933,19 @@ static void encode_prompt(const std::vector<std::string>& dirs) {
         run_ffmpeg_encode(e.dir, p, e.w, e.h, e.realFps);
     }
 
-    std::printf("\nAll done. EXR sources remain in their directories.\n");
-    std::printf("To delete after confirming MP4s look right:  rmdir /S <dir>\n\n");
+    uint64_t exrTotalBytes = 0;
+    for (const auto& e : entries) exrTotalBytes += e.bytes;
+    double exrTotalGB = (double)exrTotalBytes / (1024.0 * 1024.0 * 1024.0);
+
+    std::printf("\nAll done. EXR sources remain in their directories:\n");
+    for (const auto& e : entries) {
+        double gb = (double)e.bytes / (1024.0 * 1024.0 * 1024.0);
+        std::printf("  %.2f GB  %s\n", gb, e.dir.c_str());
+    }
+    std::printf("  ─────────\n");
+    std::printf("  %.2f GB  total\n", exrTotalGB);
+    std::printf("\nEXR sources are LARGE. Review the MP4s, then delete the\n");
+    std::printf("source folders yourself to reclaim the disk space.\n\n");
     std::fflush(stdout);
 }
 

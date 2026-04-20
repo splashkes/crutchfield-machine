@@ -19,7 +19,7 @@ pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw \
 - `pdftotext` from `mingw-w64-x86_64-poppler` if you need to quote
   research papers.
 
-## Build
+## Build (Windows — reference build)
 
 ```bash
 make                   # incremental
@@ -28,6 +28,49 @@ make clean && make     # full rebuild
 
 Expected output includes one warning from `stb_easy_font.h` about an
 unused function — harmless. Any other warning is worth investigating.
+
+## Build (Linux — Ubuntu / Debian)
+
+The Linux port is a transform over the Windows source tree — no forked
+`main.cpp`. See [ADR-0014](ADR/0014-platform-transforms-for-mac-and-linux.md).
+
+```bash
+sudo apt install build-essential python3 pkg-config \
+                 libglfw3-dev libglew-dev libgl1-mesa-dev \
+                 libasound2-dev zlib1g-dev ffmpeg
+cd linux
+make                        # incremental
+make clean && make          # full rebuild
+make dist                   # feedback-linux-x64.tar.gz
+```
+
+Run from the resource tree so cwd-relative asset loads resolve:
+
+```bash
+cd linux/build/resources
+../bin/feedback
+```
+
+Prep-time failures that name a specific snippet (e.g. "couldn't find
+expected snippet for ffmpeg probe null device") mean a Windows-source
+edit drifted the patch target. Fix `linux/scripts/prepare_sources.py`
+to match the new snippet shape; the Windows source is canonical.
+
+## Build (macOS — Apple Silicon)
+
+Same transform pattern as Linux, plus `.app` bundling and ad-hoc
+codesigning.
+
+```bash
+brew install glfw glew
+cd macOS
+make                        # builds build/bin/feedback, then feedback.app
+make dist                   # feedback-macos-arm64.zip with the .app inside
+```
+
+The `.app` bundle relocates `libglfw.3.dylib` and `libGLEW.2.3.dylib`
+into `Contents/Frameworks/` via `install_name_tool`, so end-users don't
+need a Homebrew install at runtime.
 
 ## Run
 
