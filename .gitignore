@@ -4,6 +4,11 @@ feedback.exe
 
 # Recorded output (EXR sequences + encoded MP4s are large)
 recordings/
+screenshots/
+
+# Distribution bundle from `make dist`
+feedback-windows-x64/
+feedback-windows-x64.zip
 
 # OS junk
 Thumbs.db

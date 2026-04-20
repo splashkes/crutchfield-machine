@@ -114,6 +114,7 @@ static const ActionInfo ACTIONS[] = {
     { ACT_RELOAD_SHADERS,   "app.reloadShaders",  AK_DISCRETE, "App", "reload shaders" },
     { ACT_FULLSCREEN,       "app.fullscreen",     AK_DISCRETE, "App", "fullscreen toggle" },
     { ACT_REC_TOGGLE,       "rec.toggle",         AK_DISCRETE, "App", "recording start/stop" },
+    { ACT_SCREENSHOT,       "app.screenshot",     AK_DISCRETE, "App", "screenshot (PNG, sim resolution, no HUD)" },
     { ACT_PRESET_SAVE,      "preset.save",        AK_DISCRETE, "App", "preset save" },
     { ACT_PRESET_NEXT,      "preset.next",        AK_DISCRETE, "App", "preset next" },
     { ACT_PRESET_PREV,      "preset.prev",        AK_DISCRETE, "App", "preset prev" },
@@ -294,6 +295,7 @@ void Input::installDefaults() {
     K(in, ACT_RELOAD_SHADERS,    GLFW_KEY_BACKSLASH);
     K(in, ACT_FULLSCREEN,        GLFW_KEY_F11);
     K(in, ACT_REC_TOGGLE,        GLFW_KEY_GRAVE_ACCENT);
+    K(in, ACT_SCREENSHOT,        GLFW_KEY_PRINT_SCREEN);
     K(in, ACT_PRESET_SAVE,       GLFW_KEY_S, GLFW_MOD_CONTROL);
     K(in, ACT_PRESET_NEXT,       GLFW_KEY_N, GLFW_MOD_CONTROL);
     K(in, ACT_PRESET_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL);

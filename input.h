@@ -87,6 +87,7 @@ enum ActionId : int {
     ACT_RELOAD_SHADERS,
     ACT_FULLSCREEN,
     ACT_REC_TOGGLE,
+    ACT_SCREENSHOT,
     ACT_PRESET_SAVE, ACT_PRESET_NEXT, ACT_PRESET_PREV,
     ACT_BLURQ_CYCLE, ACT_CAQ_CYCLE, ACT_NOISEQ_CYCLE, ACT_FIELDS_CYCLE,
     // Cursor-based quality navigation (D-pad L/R + A in Quality section)

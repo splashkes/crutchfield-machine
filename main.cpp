@@ -32,18 +32,23 @@
 #include <map>
 #include <chrono>
 #include <thread>
+#include <iostream>
 
 #include "camera.h"
 #include "recorder.h"
 #include "overlay.h"
 #include "input.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO_WARNING
+#include "stb_image_write.h"
+
 // ── runtime config (from CLI) ─────────────────────────────────────────────
 struct Cfg {
     int  simW = 0, simH = 0;        // 0 means "match display"
     int  dispW = 1280, dispH = 720;
     bool fullscreen = false;
-    int  precision = 32;            // 16 or 32 (RGBA16F vs RGBA32F)
+    int  precision = 32;            // 8, 16, or 32 (RGBA8 / RGBA16F / RGBA32F)
     int  blurQ = 1;                 // 0=5-tap  1=9-tap gauss  2=25-tap gauss
     int  caQ   = 1;                 // 0=3-sample  1=5-ramp  2=8-wavelen
     int  noiseQ = 1;                // 0=white  1=pink
@@ -56,6 +61,10 @@ struct Cfg {
     int  recRamMB = 0;              // 0 = auto (min(free/4, 8 GB))
     int  recEncoders = 0;           // 0 = auto (hw_concurrency - 2, clamped)
     bool recUncompressed = false;   // write uncompressed EXR
+    std::string preset;             // preset name or path to load at startup
+    // Auto-demo mode — unattended installations / gallery use.
+    float demoPresetSec = 0.0f;     // >0 = cycle to next preset every N seconds
+    float demoInjectSec = 0.0f;     // >0 = fire an injection every N seconds
 };
 
 static void print_cli_help() {
@@ -64,7 +73,8 @@ static void print_cli_help() {
       "  --sim-res WxH       internal simulation resolution (default: match display)\n"
       "  --display-res WxH   window size in windowed mode (default: 1280x720)\n"
       "  --fullscreen        borderless fullscreen at monitor's native resolution\n"
-      "  --precision 16|32   feedback buffer float precision (default: 32)\n"
+      "  --precision 8|16|32 feedback buffer format: RGBA8 / RGBA16F / RGBA32F (default: 32)\n"
+      "                       (8 = unorm — simulates 8-bit HDMI capture in the feedback loop)\n"
       "  --blur-q 0|1|2      blur kernel: 5-tap / 9-tap / 25-tap gaussian (default: 1)\n"
       "  --ca-q   0|1|2      chromatic aberration: 3 / 5 / 8 samples (default: 1)\n"
       "  --noise-q 0|1       sensor noise: white / pink-1/f (default: 1)\n"
@@ -76,7 +86,13 @@ static void print_cli_help() {
       "  --rec-ram-gb N      RAM buffer for recording, GB (default: auto, capped at 8)\n"
       "  --rec-encoders N    encoder threads for EXR writes (default: auto)\n"
       "  --rec-uncompressed  write uncompressed EXR — larger files, much faster writes\n"
+      "  --preset NAME       load preset at startup (bare name or path; .ini optional)\n"
+      "  --demo-presets S    auto-cycle to next preset every S seconds (0 = off)\n"
+      "  --demo-inject S     auto-fire a random injection every S seconds (0 = off)\n"
+      "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
       "  -h, --help          show this help\n\n"
+      "Launch with NO arguments to get an interactive mode picker — handy for\n"
+      "non-CLI use and for double-clicking the exe from Explorer.\n\n"
       "Examples:\n"
       "  feedback --fullscreen\n"
       "  feedback --fullscreen --sim-res 3840x2160 --precision 32\n"
@@ -91,7 +107,7 @@ static Cfg parse_cli(int argc, char** argv) {
         if      (eq("--sim-res"))      { sscanf(next(), "%dx%d", &c.simW, &c.simH); }
         else if (eq("--display-res"))  { sscanf(next(), "%dx%d", &c.dispW, &c.dispH); }
         else if (eq("--fullscreen"))   { c.fullscreen = true; }
-        else if (eq("--precision"))    { int p = atoi(next()); if (p==16||p==32) c.precision = p; }
+        else if (eq("--precision"))    { int p = atoi(next()); if (p==8||p==16||p==32) c.precision = p; }
         else if (eq("--blur-q"))       { int q = atoi(next()); if (q>=0&&q<=2) c.blurQ = q; }
         else if (eq("--ca-q"))         { int q = atoi(next()); if (q>=0&&q<=2) c.caQ = q; }
         else if (eq("--noise-q"))      { int q = atoi(next()); if (q>=0&&q<=1) c.noiseQ = q; }
@@ -104,6 +120,10 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--rec-ram-gb"))   { int g = atoi(next()); if (g > 0) c.recRamMB = g * 1024; }
         else if (eq("--rec-encoders")) { int n = atoi(next()); if (n > 0) c.recEncoders = n; }
         else if (eq("--rec-uncompressed")) { c.recUncompressed = true; }
+        else if (eq("--preset"))       { c.preset = next(); }
+        else if (eq("--demo-presets")) { c.demoPresetSec = (float)atof(next()); if (c.demoPresetSec < 0) c.demoPresetSec = 0; }
+        else if (eq("--demo-inject"))  { c.demoInjectSec = (float)atof(next()); if (c.demoInjectSec < 0) c.demoInjectSec = 0; }
+        else if (eq("--demo"))         { c.demoPresetSec = 30.0f; c.demoInjectSec = 8.0f; }
         else if (eq("-h") || eq("--help")) { print_cli_help(); exit(0); }
         else { fprintf(stderr, "[cli] unknown arg: %s\n", argv[i]); print_cli_help(); exit(1); }
     }
@@ -114,6 +134,10 @@ static Cfg parse_cli(int argc, char** argv) {
 
 // File-scope cfg, so helper functions declared before State can reference it.
 static Cfg g_cfg;
+
+static const char* precision_label(int p) {
+    return p == 8 ? "RGBA8" : p == 32 ? "RGBA32F" : "RGBA16F";
+}
 
 // ── layer enum (must mirror main.frag) ────────────────────────────────────
 enum : int {
@@ -246,8 +270,12 @@ static void resize_fbo(FBO& f, int w, int h) {
     if (!f.tex) glGenTextures(1, &f.tex);
     f.w = w; f.h = h;
     glBindTexture(GL_TEXTURE_2D, f.tex);
-    GLenum internalFmt = (g_cfg.precision == 32) ? GL_RGBA32F : GL_RGBA16F;
-    GLenum type        = (g_cfg.precision == 32) ? GL_FLOAT   : GL_HALF_FLOAT;
+    GLenum internalFmt, type;
+    switch (g_cfg.precision) {
+        case 8:  internalFmt = GL_RGBA8;    type = GL_UNSIGNED_BYTE; break;
+        case 32: internalFmt = GL_RGBA32F;  type = GL_FLOAT;         break;
+        default: internalFmt = GL_RGBA16F;  type = GL_HALF_FLOAT;    break;
+    }
     glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, w, h, 0, GL_RGBA, type, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -417,6 +445,16 @@ struct State {
     int  armedLayer = 0;
     // Armed-quality cursor for the Quality section. 0..3.
     int  armedQuality = 0;
+
+    // Screenshot request — set by key handler, consumed in render loop.
+    bool screenshotPending = false;
+
+    // Auto-demo mode. Zero = disabled; positive = seconds between firings.
+    // `demoLastPreset` / `demoLastInject` track the last time each fired.
+    float demoPresetSec = 0.0f;
+    float demoInjectSec = 0.0f;
+    double demoLastPreset = 0.0;
+    double demoLastInject = 0.0;
 };
 static State S;
 
@@ -433,6 +471,7 @@ static void print_help() {
       " End      cycle coupled fields (1 / 2 / 3 / 4)\n"
       " H        toggle help overlay (in-window)\n"
       " `        start/stop recording (feedback_<timestamp>.mp4)\n"
+      " PrtSc    screenshot (PNG, sim resolution, no HUD)\n"
       " \\        reload shaders from disk\n"
       " Ctrl+S   save current settings as preset (./presets/auto_*.ini)\n"
       " Ctrl+N   load next preset      Ctrl+P  load previous preset\n"
@@ -835,6 +874,25 @@ static std::string preset_current_name() {
     return p.stem().string();
 }
 
+// Resolve a --preset argument to a real path in g_presetFiles, or "" if no
+// match. Accepts: bare stem ("03_turing_blobs"), filename with extension, or
+// a direct absolute/relative path. Match is exact on stem or filename.
+// Must be called after preset_rescan() so g_presetFiles is populated.
+static std::string preset_resolve(const std::string& arg) {
+    if (arg.empty()) return "";
+    // Direct path (works for absolute or cwd-relative).
+    if (fs::exists(arg)) return arg;
+    // Exact stem or filename match against scanned presets.
+    for (const auto& p : g_presetFiles) {
+        fs::path fp(p);
+        if (fp.stem().string() == arg || fp.filename().string() == arg) return p;
+    }
+    // Try "<name>.ini" under presets/ if user dropped the extension.
+    fs::path tryPath = fs::path(preset_dir()) / (arg + ".ini");
+    if (fs::exists(tryPath)) return tryPath.string();
+    return "";
+}
+
 // Cycle to next/prev. Returns new selection name for HUD logging.
 static std::string preset_cycle(int dir) {
     if (g_presetFiles.empty()) return "";
@@ -866,6 +924,120 @@ static std::string preset_save_now() {
     for (size_t i = 0; i < g_presetFiles.size(); i++)
         if (g_presetFiles[i] == full.string()) { g_currentPreset = (int)i; break; }
     return full.filename().string();
+}
+
+// ── screenshots ──────────────────────────────────────────────────────────
+// One-shot PNG capture of the current sim-resolution frame. Reads from the
+// field FBO directly (not the display), so screenshots are always at full
+// sim quality regardless of window size, and never include the HUD overlay.
+static std::string screenshot_dir() {
+    return g_shader_base.empty() ? "screenshots" : (g_shader_base + "screenshots");
+}
+
+static bool save_screenshot(GLuint fbo, int w, int h) {
+    std::vector<uint8_t> buf((size_t)w * h * 3);
+    GLint prev = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, buf.data());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev);
+
+    // GL origin is bottom-left; PNG origin is top-left. Flip row-by-row.
+    const size_t row = (size_t)w * 3;
+    std::vector<uint8_t> flipped(buf.size());
+    for (int y = 0; y < h; y++)
+        std::memcpy(flipped.data() + (size_t)y * row,
+                    buf.data()     + (size_t)(h - 1 - y) * row, row);
+
+    fs::path dir = screenshot_dir();
+    if (!fs::exists(dir)) fs::create_directory(dir);
+    char ts[64];
+    time_t t = time(nullptr);
+    struct tm lt;
+#ifdef _WIN32
+    localtime_s(&lt, &t);
+#else
+    localtime_r(&t, &lt);
+#endif
+    strftime(ts, sizeof ts, "shot_%Y%m%d_%H%M%S.png", &lt);
+    fs::path full = dir / ts;
+    int ok = stbi_write_png(full.string().c_str(), w, h, 3,
+                            flipped.data(), (int)row);
+    if (ok) printf("[shot] %s\n", full.string().c_str());
+    else    fprintf(stderr, "[shot] failed to write %s\n", full.string().c_str());
+    return ok != 0;
+}
+
+// ── startup mode picker ──────────────────────────────────────────────────
+// Shown only when the app is launched with no CLI args — i.e. double-clicked
+// from Explorer. Gives non-CLI users a one-keystroke way to pick a common
+// mode. Any CLI arg at all skips this path so existing workflows stay intact.
+//
+// Implementation: console prompt. On Windows, double-clicking a console-
+// subsystem .exe pops a terminal window automatically; the menu lives there.
+// It's not pretty, but it's zero deps and works identically on every machine.
+static void run_mode_picker(Cfg& c) {
+    preset_rescan();
+
+    while (true) {
+        printf("\n");
+        printf("========================================================\n");
+        printf("    Crutchfield Machine  —  video feedback, pure and simple\n");
+        printf("========================================================\n\n");
+        printf("  1  Default        windowed, moderate quality\n");
+        printf("  2  Fullscreen     borderless at native resolution\n");
+        printf("  3  Gallery mode   fullscreen + auto-cycle presets + inject\n");
+        printf("  4  4K Fullscreen  full float 3840x2160 sim\n");
+        printf("  5  8-bit study    RGBA8 feedback loop (quantization demo)\n");
+        printf("  6  Load preset... pick from the %zu preset(s) shipped\n",
+               g_presetFiles.size());
+        printf("\n  Q  Quit\n\n");
+        printf("  Tip: run with --help for the full list of flags.\n\n");
+        printf("Choice [1]: ");
+        fflush(stdout);
+
+        std::string line;
+        if (!std::getline(std::cin, line)) return;              // EOF → defaults
+        char ch = line.empty() ? '1' : (char)tolower((unsigned char)line[0]);
+
+        switch (ch) {
+            case '1': return;
+            case '2': c.fullscreen = true; return;
+            case '3': c.fullscreen = true;
+                      c.demoPresetSec = 30.0f;
+                      c.demoInjectSec = 8.0f; return;
+            case '4': c.fullscreen = true;
+                      c.simW = 3840; c.simH = 2160; return;
+            case '5': c.precision = 8; return;
+            case '6': {
+                if (g_presetFiles.empty()) {
+                    printf("\n  No presets found in %s/\n", preset_dir().c_str());
+                    continue;
+                }
+                printf("\n");
+                for (size_t i = 0; i < g_presetFiles.size(); i++) {
+                    fs::path p = g_presetFiles[i];
+                    printf("  %2zu  %s\n", i + 1, p.stem().string().c_str());
+                }
+                printf("\nPreset number [1]: ");
+                fflush(stdout);
+                std::getline(std::cin, line);
+                int idx = line.empty() ? 1 : atoi(line.c_str());
+                if (idx >= 1 && idx <= (int)g_presetFiles.size()) {
+                    c.preset = g_presetFiles[idx - 1];
+                    return;
+                }
+                printf("  (invalid — showing menu again)\n");
+                continue;
+            }
+            case 'q': exit(0);
+            default:
+                printf("  (unrecognised — try 1-6 or Q)\n");
+                continue;
+        }
+    }
 }
 
 // Track frame timing for FPS readout in the help overlay.
@@ -1853,6 +2025,10 @@ static void apply_action(ActionId id, float mag) {
                 S.ov.logEvent("recording: started");
             }
             return;
+        case ACT_SCREENSHOT:
+            S.screenshotPending = true;
+            S.ov.logEvent("screenshot queued");
+            return;
         case ACT_PRESET_SAVE: {
             std::string fn = preset_save_now();
             if (!fn.empty()) {
@@ -2514,6 +2690,10 @@ int main(int argc, char** argv) {
     timeBeginPeriod(1);
 #endif
 
+    // No CLI args → user double-clicked the exe from Explorer. Show a mode
+    // picker on the console. Any flag (even --help) skips this path.
+    if (argc == 1) run_mode_picker(g_cfg);
+
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -2567,12 +2747,14 @@ int main(int argc, char** argv) {
     S.caQ   = g_cfg.caQ;
     S.noiseQ = g_cfg.noiseQ;
     S.activeFields = g_cfg.fields;
+    S.demoPresetSec = g_cfg.demoPresetSec;
+    S.demoInjectSec = g_cfg.demoInjectSec;
 
     const char* blurNames[]  = { "5-tap cross", "9-tap gauss", "25-tap gauss" };
     const char* caNames[]    = { "3-sample", "5-sample ramp", "8-sample wavelen" };
     const char* noiseNames[] = { "white", "pink 1/f" };
-    printf("[sim] %dx%d  precision=RGBA%dF  iters=%d\n",
-           S.simW, S.simH, g_cfg.precision, g_cfg.iters);
+    printf("[sim] %dx%d  precision=%s  iters=%d\n",
+           S.simW, S.simH, precision_label(g_cfg.precision), g_cfg.iters);
     printf("[quality] blur=%s  ca=%s  noise=%s  fields=%d\n",
            blurNames[S.blurQ], caNames[S.caQ], noiseNames[S.noiseQ], S.activeFields);
 
@@ -2657,6 +2839,20 @@ int main(int argc, char** argv) {
 
     preset_rescan();
     printf("[presets] %zu file(s) in %s/\n", g_presetFiles.size(), preset_dir().c_str());
+
+    // Optional startup preset from --preset NAME. If it doesn't resolve we
+    // just warn and continue with defaults — not fatal.
+    if (!g_cfg.preset.empty()) {
+        std::string path = preset_resolve(g_cfg.preset);
+        if (path.empty()) {
+            fprintf(stderr, "[preset] '%s' not found — using defaults\n",
+                    g_cfg.preset.c_str());
+        } else if (preset_load(path)) {
+            for (size_t i = 0; i < g_presetFiles.size(); i++)
+                if (g_presetFiles[i] == path) { g_currentPreset = (int)i; break; }
+            printf("[preset] loaded: %s\n", preset_current_name().c_str());
+        }
+    }
 
     if (g_cfg.playerFps > 0)
         printf("[fps] vsync %s, cap %d fps\n", g_cfg.vsync ? "on" : "off", g_cfg.playerFps);
@@ -2749,6 +2945,12 @@ int main(int argc, char** argv) {
         // Record from the sim-resolution texture (not the display framebuffer)
         // so recordings get the full internal quality regardless of window size.
         if (S.rec.active()) S.rec.capture(latest.fbo);
+
+        // One-shot screenshot request from PrtSc (ACT_SCREENSHOT).
+        if (S.screenshotPending) {
+            S.screenshotPending = false;
+            save_screenshot(latest.fbo, S.simW, S.simH);
+        }
 
         // Help provider is pulled per-frame from inside Overlay::draw, so
         // values shown in a section stay live. Nothing to push here.
