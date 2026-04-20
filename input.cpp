@@ -176,6 +176,9 @@ static const ActionInfo ACTIONS[] = {
     { ACT_BPM_DECAYDIP_TOGGLE,   "bpm.decayDip",      AK_DISCRETE, "BPM", "toggle decay-dip on beat" },
 
     { ACT_LAUNCH_LOOPMIDI,       "music.installMidiDriver", AK_DISCRETE, "BPM", "install MIDI driver (Windows)" },
+    { ACT_MUSIC_NEXT,            "music.next",      AK_DISCRETE, "BPM", "next music preset" },
+    { ACT_MUSIC_PREV,            "music.prev",      AK_DISCRETE, "BPM", "prev music preset" },
+    { ACT_MUSIC_PLAYPAUSE,       "music.playpause", AK_DISCRETE, "BPM", "music play/pause" },
 };
 static constexpr int N_ACTIONS = (int)(sizeof(ACTIONS) / sizeof(ACTIONS[0]));
 
@@ -356,6 +359,12 @@ void Input::installDefaults() {
 
     // Music / MIDI: Ctrl+M launches loopMIDI.
     K(in, ACT_LAUNCH_LOOPMIDI,      GLFW_KEY_M,         GLFW_MOD_CONTROL);
+
+    // Music engine (native Strudel-compat pattern engine). Shift+Ctrl
+    // combo stays out of the way of the preset shortcuts (Ctrl+N/P).
+    K(in, ACT_MUSIC_NEXT,       GLFW_KEY_N, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT);
+    K(in, ACT_MUSIC_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT);
+    K(in, ACT_MUSIC_PLAYPAUSE,  GLFW_KEY_SPACE, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT);
 
     // Help nav — arrow keys dedicated while help is open (the handler checks
     // help visibility and consumes these only then, so they do NOT conflict

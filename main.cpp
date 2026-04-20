@@ -2428,6 +2428,27 @@ static void apply_action(ActionId id, float mag) {
 #endif
             return;
 
+        case ACT_MUSIC_NEXT: {
+            Music::nextPreset();
+            char b[128]; snprintf(b, sizeof b, "music: %s",
+                Music::currentPresetName().empty() ? "-" :
+                Music::currentPresetName().c_str());
+            S.ov.logEvent(b);
+            return;
+        }
+        case ACT_MUSIC_PREV: {
+            Music::prevPreset();
+            char b[128]; snprintf(b, sizeof b, "music: %s",
+                Music::currentPresetName().empty() ? "-" :
+                Music::currentPresetName().c_str());
+            S.ov.logEvent(b);
+            return;
+        }
+        case ACT_MUSIC_PLAYPAUSE:
+            Music::setPlaying(!Music::playing());
+            S.ov.logEvent(Music::playing() ? "music: playing" : "music: paused");
+            return;
+
         case ACT_NONE: case ACT__COUNT: return;
     }
     print_status();
@@ -2909,25 +2930,21 @@ int main(int argc, char** argv) {
     Audio::loadSamplesFromDir("samples");
 
     if (Music::init()) {
-        auto evs = Music::query("s(\"bd sn hh*2 [cp cp]\")", 0.0, 1.0);
-        std::printf("[music] pattern test: %zu event(s) in cycle [0,1):\n",
-                    evs.size());
-        for (const auto& e : evs) {
-            std::printf("  [%6.3f,%6.3f)  s=%-6s note=%-4s\n",
-                        e.begin, e.end,
-                        e.sample.empty() ? "-" : e.sample.c_str(),
-                        e.note.empty()   ? "-" : e.note.c_str());
+        // Scan music/ for .strudel presets. Autoload the first one if any.
+        int nPresets = Music::scanPresets("music");
+        if (nPresets > 0) {
+            Music::loadPreset(0);
+        } else {
+            // Fallback: a built-in demo pattern so the app is audible
+            // even when music/ is empty.
+            Music::setPattern(
+                "stack("
+                "  s(\"bd*2, ~ sn, hh*8\").room(0.2),"
+                "  note(\"c2 ~ eb2 g2\").s(\"saw\").lpf(800).gain(0.25),"
+                "  note(\"<c5 eb5 g5 bb5>\").s(\"tri\").gain(0.15).delay(0.3).room(0.5)"
+                ")"
+            );
         }
-        // Default pattern — exercises samples, synth, filters, reverb,
-        // and delay together so a quick launch demonstrates the whole
-        // audio chain. Step 6 lets users swap this for .strudel files.
-        Music::setPattern(
-            "stack("
-            "  s(\"bd*2, ~ sn, hh*8\").room(0.2),"
-            "  note(\"c2 ~ eb2 g2\").s(\"saw\").lpf(800).gain(0.25),"
-            "  note(\"<c5 eb5 g5 bb5>\").s(\"tri\").gain(0.15).delay(0.3).room(0.5)"
-            ")"
-        );
         Music::setPlaying(true);
     }
 
@@ -3129,6 +3146,9 @@ int main(int argc, char** argv) {
         // Music scheduler — advance cycle clock, query pattern, trigger
         // audio events in the ~250ms lookahead window.
         Music::update(frameStart, S.p.bpm);
+        // Hot-reload: if the current preset file changed on disk, re-read
+        // it. Throttled internally to ~250ms.
+        Music::pollPresetReload();
 
         glBindVertexArray(mainVAO);
 

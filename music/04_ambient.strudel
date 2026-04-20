@@ -1,0 +1,7 @@
+// 04_ambient — no drums, evolving chord cycle. Cycle slowly to give
+// the reverb + delay room to do work. Nice for quiet feedback sessions.
+
+stack(
+  note("<c3 eb3 g3 bb3>").s("sine").gain(0.2).lpf(1500).room(0.8).delay(0.4),
+  note("<g4 ~ bb4 ~ c5 ~ eb5 ~>").s("tri").gain(0.14).room(0.9).delay(0.6)
+).slow(4)

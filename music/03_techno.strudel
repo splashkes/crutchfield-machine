@@ -1,0 +1,8 @@
+// 03_techno — four-on-the-floor kick with offset hats and a sawbass line.
+
+stack(
+  s("bd bd bd bd").gain(0.9),
+  s("~ hh ~ hh").gain(0.5),
+  s("~ ~ sn ~").room(0.2),
+  note("c2 c2 ~ eb2 c2 ~ g1 ~").s("saw").lpf(1200).gain(0.3)
+)

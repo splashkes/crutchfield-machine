@@ -1,0 +1,8 @@
+// 01_bap — basic boom-bap starter.
+// Hot-reload: save this file in feedback's music/ folder and the
+// currently-playing pattern updates within ~250ms.
+
+stack(
+  s("bd*2, ~ sn, hh*8").room(0.15),
+  note("c2 ~ eb2 g2").s("saw").lpf(700).gain(0.25)
+)

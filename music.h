@@ -71,4 +71,29 @@ void update(double now, float bpm);
 // Read-only state for the help UI.
 double currentCycle();   // fractional cycle position (e.g. 3.75)
 
+// ── Preset system ────────────────────────────────────────────────────
+// Scans `dir` for *.strudel files. Each file is a plain Strudel-syntax
+// expression; whitespace and comments (// ...) are allowed. Returns the
+// count loaded.
+int scanPresets(const std::string& dir);
+
+// Number of discovered presets.
+int presetCount();
+
+// Load the preset at the given index. Reads the file fresh each call,
+// so editing + reloading picks up external edits.
+bool loadPreset(int index);
+
+// Cycle controls used by the keyboard / gamepad bindings.
+void nextPreset();
+void prevPreset();
+
+// Human-readable name of the current preset (basename sans extension),
+// or "" if none is loaded.
+const std::string& currentPresetName();
+
+// Check whether the current preset file has changed on disk and reload
+// if so. Called cheaply once per frame; stat()s one file max.
+void pollPresetReload();
+
 } // namespace Music

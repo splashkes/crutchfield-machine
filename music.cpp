@@ -16,6 +16,10 @@ extern "C" {
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <filesystem>
+#include <chrono>
+#include <vector>
+#include <algorithm>
 
 namespace {
     JSRuntime* g_rt  = nullptr;
@@ -355,5 +359,103 @@ void update(double now, float bpm) {
 }
 
 double currentCycle() { return g_curCycle; }
+
+// ── Preset system ────────────────────────────────────────────────────
+
+namespace {
+    std::vector<std::string> g_presetPaths;    // absolute paths
+    int                      g_presetIdx = -1;
+    std::string              g_presetName;
+    std::filesystem::file_time_type g_presetMtime;
+    double                   g_nextReloadCheck = 0.0;
+}
+
+static std::string read_file(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {};
+    std::stringstream ss; ss << f.rdbuf();
+    return ss.str();
+}
+
+int scanPresets(const std::string& dir) {
+    namespace fs = std::filesystem;
+    g_presetPaths.clear();
+    if (!fs::is_directory(dir)) return 0;
+    for (const auto& ent : fs::directory_iterator(dir)) {
+        if (!ent.is_regular_file()) continue;
+        fs::path p = ent.path();
+        std::string ext = p.extension().string();
+        for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+        if (ext != ".strudel" && ext != ".js") continue;
+        g_presetPaths.push_back(p.string());
+    }
+    std::sort(g_presetPaths.begin(), g_presetPaths.end());
+    std::fprintf(stdout, "[music] %zu preset(s) in %s\n",
+                 g_presetPaths.size(), dir.c_str());
+    return (int)g_presetPaths.size();
+}
+
+int presetCount() { return (int)g_presetPaths.size(); }
+
+bool loadPreset(int index) {
+    namespace fs = std::filesystem;
+    if (g_presetPaths.empty()) return false;
+    int n = (int)g_presetPaths.size();
+    index = ((index % n) + n) % n;
+    const std::string& path = g_presetPaths[index];
+    std::string code = read_file(path);
+    if (code.empty()) {
+        std::fprintf(stderr, "[music] preset %s is empty or unreadable\n", path.c_str());
+        return false;
+    }
+    g_presetIdx   = index;
+    g_presetName  = fs::path(path).stem().string();
+    // Skip line comments for cleanliness — Strudel code often includes
+    // `//` comments that we want to forward to the JS engine intact;
+    // but for safety we trim trailing whitespace so one-liner files
+    // don't trip the parser with stray newlines.
+    setPattern(code);
+    g_presetMtime = fs::last_write_time(path);
+    std::fprintf(stdout, "[music] loaded preset '%s' [%d/%d]\n",
+                 g_presetName.c_str(), index + 1, n);
+    return true;
+}
+
+void nextPreset() {
+    if (g_presetPaths.empty()) return;
+    int i = (g_presetIdx < 0) ? 0 : ((g_presetIdx + 1) % (int)g_presetPaths.size());
+    loadPreset(i);
+}
+
+void prevPreset() {
+    if (g_presetPaths.empty()) return;
+    int n = (int)g_presetPaths.size();
+    int i = (g_presetIdx < 0) ? (n - 1) : (((g_presetIdx - 1) % n + n) % n);
+    loadPreset(i);
+}
+
+const std::string& currentPresetName() { return g_presetName; }
+
+void pollPresetReload() {
+    namespace fs = std::filesystem;
+    if (g_presetIdx < 0 || g_presetIdx >= (int)g_presetPaths.size()) return;
+    // Throttle: check once every ~250ms.
+    double now = (double)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count() * 0.001;
+    if (now < g_nextReloadCheck) return;
+    g_nextReloadCheck = now + 0.25;
+
+    const std::string& path = g_presetPaths[g_presetIdx];
+    std::error_code ec;
+    auto mt = fs::last_write_time(path, ec);
+    if (ec) return;
+    if (mt != g_presetMtime) {
+        std::string code = read_file(path);
+        if (code.empty()) return;
+        g_presetMtime = mt;
+        setPattern(code);
+        std::fprintf(stdout, "[music] hot-reloaded '%s'\n", g_presetName.c_str());
+    }
+}
 
 } // namespace Music

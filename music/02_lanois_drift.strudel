@@ -1,0 +1,9 @@
+// 02_lanois_drift — slow, wet, pedal-steel-ish. A placeholder for the
+// kind of pad washes Daniel Lanois productions use — layered fifths
+// with long reverb and delay, one soft kick anchoring the cycle.
+
+stack(
+  s("bd/4").gain(0.6).room(0.4),
+  note("<c4 eb4 g4 bb4>").s("tri").gain(0.22).lpf(1800).delay(0.5).room(0.75),
+  note("<g3 ~ bb3 ~>").s("sine").gain(0.18).delay(0.35).room(0.6)
+).slow(2)

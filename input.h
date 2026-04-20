@@ -123,6 +123,11 @@ enum ActionId : int {
     // Launches loopMIDI if installed. No-op if a MIDI port already exists.
     ACT_LAUNCH_LOOPMIDI,
 
+    // Native music engine — preset cycle + play/pause.
+    ACT_MUSIC_NEXT,
+    ACT_MUSIC_PREV,
+    ACT_MUSIC_PLAYPAUSE,
+
     // ── BPM (C7) ─────────────────────────────────────────────────────
     ACT_BPM_TAP,
     ACT_BPM_SYNC_TOGGLE,
