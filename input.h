@@ -119,6 +119,10 @@ enum ActionId : int {
     ACT_HUE_AXIS,
     ACT_DECAY_AXIS,
 
+    // ── Music / MIDI integration ─────────────────────────────────────
+    // Launches loopMIDI if installed. No-op if a MIDI port already exists.
+    ACT_LAUNCH_LOOPMIDI,
+
     // ── BPM (C7) ─────────────────────────────────────────────────────
     ACT_BPM_TAP,
     ACT_BPM_SYNC_TOGGLE,

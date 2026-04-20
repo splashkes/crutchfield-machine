@@ -174,6 +174,8 @@ static const ActionInfo ACTIONS[] = {
     { ACT_BPM_VFXCYCLE_TOGGLE,   "bpm.vfxCycle",      AK_DISCRETE, "BPM", "toggle vfx auto-cycle on beat" },
     { ACT_BPM_FLASH_TOGGLE,      "bpm.flash",         AK_DISCRETE, "BPM", "toggle fade-flash on beat" },
     { ACT_BPM_DECAYDIP_TOGGLE,   "bpm.decayDip",      AK_DISCRETE, "BPM", "toggle decay-dip on beat" },
+
+    { ACT_LAUNCH_LOOPMIDI,       "music.launchLoopMidi", AK_DISCRETE, "BPM", "launch loopMIDI (Windows)" },
 };
 static constexpr int N_ACTIONS = (int)(sizeof(ACTIONS) / sizeof(ACTIONS[0]));
 
@@ -351,6 +353,9 @@ void Input::installDefaults() {
     K(in, ACT_BPM_VFXCYCLE_TOGGLE,  GLFW_KEY_V,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_BPM_FLASH_TOGGLE,     GLFW_KEY_F,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_BPM_DECAYDIP_TOGGLE,  GLFW_KEY_D,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+
+    // Music / MIDI: Ctrl+M launches loopMIDI.
+    K(in, ACT_LAUNCH_LOOPMIDI,      GLFW_KEY_M,         GLFW_MOD_CONTROL);
 
     // Help nav — arrow keys dedicated while help is open (the handler checks
     // help visibility and consumes these only then, so they do NOT conflict

@@ -20,6 +20,8 @@
   #endif
   #include <windows.h>
   #include <timeapi.h>
+  #include <shellapi.h>
+  #include <mmsystem.h>
 #endif
 #include <cstdio>
 #include <cstdlib>
@@ -970,6 +972,107 @@ static bool save_screenshot(GLuint fbo, int w, int h) {
     return ok != 0;
 }
 
+// ── music-mode helpers ───────────────────────────────────────────────────
+// Small glue around loopMIDI + the Strudel website, used both by the startup
+// picker's "Music mode" and by the runtime Ctrl+M shortcut.
+//
+// loopMIDI auto-launch strategy:
+//   1. Look for loopMIDI.exe next to feedback.exe (so bundling it into a
+//      release zip "just works" without the user installing anything).
+//   2. Try the standard Program Files install locations.
+//   3. If none exist, print a one-line hint pointing at the download URL.
+//
+// "Is loopMIDI already running?" is a heuristic — we just check
+// midiInGetNumDevs(). If any MIDI port exists we assume the user already
+// has their bridge configured; we don't pile another instance onto it.
+
+#ifdef _WIN32
+static std::string music_find_loopmidi_path() {
+    // 1. Adjacent to our exe.
+    if (!g_shader_base.empty()) {
+        std::string adj = g_shader_base + "loopMIDI.exe";
+        if (GetFileAttributesA(adj.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return adj;
+    }
+    // 2. Standard install paths.
+    const char* paths[] = {
+        "C:\\Program Files (x86)\\Tobias Erichsen\\loopMIDI\\loopMIDI.exe",
+        "C:\\Program Files\\Tobias Erichsen\\loopMIDI\\loopMIDI.exe",
+    };
+    for (const char* p : paths) {
+        if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return p;
+    }
+    return "";
+}
+
+// Returns true if a port was already live or we successfully launched
+// something that brought one online.
+static bool music_launch_loopmidi() {
+    if (midiInGetNumDevs() > 0) {
+        std::printf("[music] MIDI port already present — skipping loopMIDI launch\n");
+        return true;
+    }
+    std::string path = music_find_loopmidi_path();
+    if (path.empty()) {
+        std::fprintf(stderr,
+            "[music] loopMIDI not found. Install it (free) from:\n"
+            "        https://www.tobias-erichsen.de/software/loopmidi.html\n"
+            "        Or drop loopMIDI.exe next to feedback.exe.\n");
+        return false;
+    }
+    HINSTANCE r = ShellExecuteA(nullptr, "open", path.c_str(),
+                                nullptr, nullptr, SW_SHOWMINIMIZED);
+    if ((INT_PTR)r <= 32) {
+        std::fprintf(stderr, "[music] ShellExecute failed (%ld) on %s\n",
+                     (long)(INT_PTR)r, path.c_str());
+        return false;
+    }
+    std::printf("[music] launched %s — waiting for it to open a port…\n",
+                path.c_str());
+    // loopMIDI restores its saved ports automatically, but needs a moment.
+    for (int i = 0; i < 30; i++) {   // up to ~3s
+        Sleep(100);
+        if (midiInGetNumDevs() > 0) {
+            std::printf("[music] port online after %d ms\n", (i + 1) * 100);
+            return true;
+        }
+    }
+    std::fprintf(stderr,
+        "[music] loopMIDI launched but no port appeared. Open the loopMIDI\n"
+        "        window and click + to create a port (default name is fine).\n");
+    return false;
+}
+
+static void music_open_strudel() {
+    HINSTANCE r = ShellExecuteA(nullptr, "open", "https://strudel.cc/",
+                                nullptr, nullptr, SW_SHOWNORMAL);
+    if ((INT_PTR)r <= 32)
+        std::fprintf(stderr, "[music] couldn't open browser (%ld)\n",
+                     (long)(INT_PTR)r);
+    else
+        std::printf("[music] opened https://strudel.cc/ — paste the MIDI\n"
+                    "        snippet from README and hit Play.\n");
+}
+
+// Passive hint on every launch when no MIDI device is visible. Non-
+// intrusive; just a printf block so CLI users know what's missing.
+static void music_startup_hint() {
+    if (midiInGetNumDevs() > 0) return;
+    std::printf(
+        "\n[music] No MIDI input detected.\n"
+        "        To drive BPM + visual hits from Strudel (https://strudel.cc):\n"
+        "          1. Install loopMIDI (free): tobias-erichsen.de/software/loopmidi.html\n"
+        "          2. Open loopMIDI, click + to create a port (e.g. 'loopMIDI Port').\n"
+        "          3. Route Strudel: .midi(\"loopMIDI Port\")\n"
+        "        Or in-app: Ctrl+M to auto-launch loopMIDI.\n"
+        "        Startup picker has a 'Music mode' option that does all of this.\n\n");
+}
+#else
+static bool music_launch_loopmidi() { return false; }
+static void music_open_strudel() {}
+static void music_startup_hint() {}
+#endif
+
 // ── startup mode picker ──────────────────────────────────────────────────
 // Shown only when the app is launched with no CLI args — i.e. double-clicked
 // from Explorer. Gives non-CLI users a one-keystroke way to pick a common
@@ -993,6 +1096,7 @@ static void run_mode_picker(Cfg& c) {
         printf("  5  8-bit study    RGBA8 feedback loop (quantization demo)\n");
         printf("  6  Load preset... pick from the %zu preset(s) shipped\n",
                g_presetFiles.size());
+        printf("  7  Music mode     fullscreen + launch loopMIDI + open Strudel\n");
         printf("\n  Q  Quit\n\n");
         printf("  Tip: run with --help for the full list of flags.\n\n");
         printf("Choice [1]: ");
@@ -1011,6 +1115,13 @@ static void run_mode_picker(Cfg& c) {
             case '4': c.fullscreen = true;
                       c.simW = 3840; c.simH = 2160; return;
             case '5': c.precision = 8; return;
+            case '7': {
+                c.fullscreen = true;
+                printf("\n");
+                music_launch_loopmidi();
+                music_open_strudel();
+                return;
+            }
             case '6': {
                 if (g_presetFiles.empty()) {
                     printf("\n  No presets found in %s/\n", preset_dir().c_str());
@@ -1424,7 +1535,8 @@ static std::string section_bpm() {
             mi.portName.c_str());
     } else {
         snprintf(midiLine, sizeof midiLine,
-            "MIDI     : no port (loopMIDI not running?)");
+            "MIDI     : no port — press %s to launch loopMIDI",
+            keys_for(ACT_LAUNCH_LOOPMIDI).c_str());
     }
     char lastLine[160] = "";
     if (mi.lastNoteNum >= 0 || mi.lastCcNum >= 0) {
@@ -2293,6 +2405,13 @@ static void apply_action(ActionId id, float mag) {
             S.ov.logEvent(p.bpmDecayDip ? "bpm decay-dip: ON"
                                         : "bpm decay-dip: off"); return;
 
+        case ACT_LAUNCH_LOOPMIDI:
+            S.ov.logEvent("launching loopMIDI...");
+#ifdef _WIN32
+            music_launch_loopmidi();
+#endif
+            return;
+
         case ACT_NONE: case ACT__COUNT: return;
     }
     print_status();
@@ -2763,6 +2882,10 @@ int main(int argc, char** argv) {
     // No CLI args → user double-clicked the exe from Explorer. Show a mode
     // picker on the console. Any flag (even --help) skips this path.
     if (argc == 1) run_mode_picker(g_cfg);
+
+    // Passive MIDI hint: if no input port is visible, show a one-time
+    // setup pointer so CLI users know Strudel sync is a flip away.
+    music_startup_hint();
 
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
 

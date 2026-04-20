@@ -56,6 +56,11 @@ $(BIN): $(OBJS)
 
 # `make dist` produces a zip with the exe + everything it needs at runtime.
 # Recipients unzip, double-click feedback.exe, done.
+#
+# Optional: if loopMIDI.exe is dropped into the repo root before building,
+# it's bundled into the zip so Music-mode can launch it zero-install. The
+# binary is freeware (https://www.tobias-erichsen.de/software/loopmidi.html)
+# but confirm its EULA before redistributing.
 dist: $(BIN)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)
 	mkdir -p $(DIST_DIR)
@@ -63,6 +68,12 @@ dist: $(BIN)
 	cp -r shaders $(DIST_DIR)/
 	cp -r presets $(DIST_DIR)/
 	cp README.md LICENSE CREDITS.md $(DIST_DIR)/
+	@if [ -f loopMIDI.exe ]; then \
+	  echo "bundling loopMIDI.exe"; \
+	  cp loopMIDI.exe $(DIST_DIR)/; \
+	else \
+	  echo "note: loopMIDI.exe not present — Music mode will prompt user to install"; \
+	fi
 	@echo "--- DLL check (should list only Windows system DLLs) ---"
 	@objdump -p $(BIN) | grep "DLL Name:" || true
 	@# PowerShell's Compress-Archive ships with Windows 10+, so this works
