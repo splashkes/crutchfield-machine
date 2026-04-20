@@ -120,19 +120,6 @@ show multi-line error text.
 - Successful reload still shows the "shaders reloaded" toast.
 **Effort:** small.
 
-### [P1] `presets/README.md` describing the curated presets
-
-**Why:** `01_default` through `05_kaneko_cml` ship with the release
-but only have one-line `# notes:` headers. A one-paragraph description
-per preset turns them from mystery files into a guided tour.
-**Where:** new `presets/README.md`.
-**Done when:**
-- Each of `01_*` through `05_*` has a 2-4 sentence description of
-  what it does, what makes it distinct, and what parameters to tweak
-  from there.
-- Linked from root README's `CLI flag cookbook > Presets` section.
-**Effort:** small.
-
 ### [P1] `--display N` flag for targeting a specific monitor
 
 **Why:** Matters for the Elgato / OBS capture workflow. Users with a
@@ -319,11 +306,10 @@ write on change, read at startup.
 
 ### [P2] `presets/README.md` describing the curated presets
 
-*(Moved from P1 — still open.)*
-
 **Why:** `01_default` through `05_kaneko_cml` ship with the release
 but only have one-line `# notes:` headers. A one-paragraph description
-per preset turns them from mystery files into a guided tour.
+per preset turns them from mystery files into a guided tour. Especially
+needed now that the help panel surfaces presets but has no meta.
 **Where:** new `presets/README.md`.
 **Done when:**
 - Each of `01_*` through `05_*` has a 2-4 sentence description of
@@ -338,19 +324,7 @@ per preset turns them from mystery files into a guided tour.
 
 *Remove from this list after ~2 releases.*
 
-- Static-link Windows binary for DLL-free distribution (ADR-0003). v0.1.0.
-- `make dist` target. v0.1.0.
-- `--precision 8` RGBA8 unorm feedback mode. v0.1.0.
-- `--preset NAME` startup load. v0.1.0.
-- `PrtSc` screenshot. v0.1.0.
-- Auto-demo mode (`--demo`). v0.1.0.
-- Demo-mode inject-on-preset-cycle fix. v0.1.0.
-- Console mode picker on `argc == 1` (ADR-0006). v0.1.0.
-- CONTRIBUTING.md with shader authoring walkthrough. v0.1.0.
-- Release gallery images via orphan branch (no asset list clutter). v0.1.0.
-- `development/` canonical docs (this set of files). v0.1.1.
-
-### From the `roland-v4` branch (PR #1, pending merge)
+**Landed in PR #1 (`roland-v4`) — merged 2026-04-20:**
 
 - Action registry + `bindings.ini` for unified keyboard / gamepad /
   MIDI dispatch (ADR-0007).
@@ -367,3 +341,19 @@ per preset turns them from mystery files into a guided tour.
 - `build_msvc.bat` missing sources (recorder, overlay, input) fixed.
 - Gamepad help discoverability: Back button = help, bottom-right
   section tag when help is closed.
+- Bindings parser/writer learned `PrtSc` round-trip and `<NNN>`
+  numeric fallback (fix for first-run regression).
+
+**Landed in v0.1.0:**
+
+- Static-link Windows binary for DLL-free distribution (ADR-0003).
+- `make dist` target.
+- `--precision 8` RGBA8 unorm feedback mode.
+- `--preset NAME` startup load.
+- `PrtSc` screenshot.
+- Auto-demo mode (`--demo`).
+- Demo-mode inject-on-preset-cycle fix.
+- Console mode picker on `argc == 1` (ADR-0006).
+- CONTRIBUTING.md with shader authoring walkthrough.
+- Release gallery images via orphan branch (no asset list clutter).
+- `development/` canonical docs.
