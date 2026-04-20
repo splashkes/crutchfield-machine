@@ -19,6 +19,18 @@ If `dyld` reports `Library not loaded` for
 runtime dependencies. `pkg-config` is only needed for source builds, not for
 running a prebuilt binary.
 
+The current prebuilt macOS binary also resolves `shaders/`, `presets/`, and
+`bindings.ini` from the shell's current working directory rather than from the
+binary's own folder. Launch it from inside the extracted directory:
+
+```bash
+cd /path/to/feedback-macos-arm64
+./feedback
+```
+
+If you run it by absolute path from some other directory, startup may fail
+with `can't open shaders/main.vert`.
+
 ## What's here
 
 - `shaders/` — same shader source as the Windows build.
