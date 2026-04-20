@@ -874,6 +874,7 @@ bool Input::loadIni(const std::string& path) {
             if (lo == "vfx2")     return CTX_SEC_VFX2;
             if (lo == "output")   return CTX_SEC_OUTPUT;
             if (lo == "bpm")      return CTX_SEC_BPM;
+            if (lo == "music")    return CTX_SEC_MUSIC;
             if (lo == "quality")  return CTX_SEC_QUALITY;
             if (lo == "app")      return CTX_SEC_APP;
             if (lo == "bindings") return CTX_SEC_BINDINGS;
@@ -1442,7 +1443,7 @@ bool Input::saveIni(const std::string& path) const {
                     static const char* CTXN[] = {
                         "any","menu","status","layers","warp","optics",
                         "color","dyn","physics","thermal","inject",
-                        "vfx1","vfx2","output","bpm","quality","app","bindings"
+                        "vfx1","vfx2","output","bpm","music","quality","app","bindings"
                     };
                     if (b.context >= 0 && b.context < CTX__COUNT)
                         std::fprintf(f, " ctx=%s", CTXN[b.context]);

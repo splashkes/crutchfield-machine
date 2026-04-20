@@ -342,6 +342,40 @@ function evaluate(userCode) {
              silence, pure, Pattern);
 }
 
+// ── Forward-compat safety net ─────────────────────────────────────────
+// Pasted snippets from strudel.cc can reference combinators we haven't
+// implemented yet (e.g. `.euclid(3,8)`, `.arp`, `.jux`). Rather than
+// crashing the query, each unimplemented method on Pattern.prototype is
+// installed as a logging no-op that returns `this` so the chain keeps
+// working for the parts that DO exist.
+// Conservative list — only methods where "do nothing, return self" is a
+// tolerable degradation (not ones that transform values like .range or
+// .add, where no-op would silently mis-map the signal).
+const _UNIMPL_METHODS = [
+    // Structural combinators we'll add later:
+    'euclid', 'euclidLegato', 'euclidRot', 'arp', 'arpWith',
+    'jux', 'juxBy', 'off', 'ply', 'chunk', 'struct', 'mask', 'when',
+    // Audio params we don't DSP yet:
+    'vowel', 'shape', 'coarse', 'cut', 'begin', 'end', 'loop',
+    'attack', 'sustain', 'release',  // (decay already lives on our effects map)
+    'lpq', 'hpq', 'bpq', 'lpenv', 'hpenv', 'phaser', 'tremolo',
+    'dry', 'wet',
+    // Tempo / time helpers:
+    'cps', 'legato', 'swing', 'swingBy', 'shuffle',
+];
+const _missingLogged = new Set();
+for (const m of _UNIMPL_METHODS) {
+    if (Pattern.prototype[m]) continue;
+    Pattern.prototype[m] = function (...args) {
+        if (!_missingLogged.has(m)) {
+            _missingLogged.add(m);
+            print(`[engine] '.${m}()' not yet implemented — skipped (chain continues)`);
+        }
+        void args;
+        return this;
+    };
+}
+
 // ── Expose to the host ────────────────────────────────────────────────
 globalThis.Pattern  = Pattern;
 globalThis.silence  = silence;

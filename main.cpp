@@ -1245,7 +1245,7 @@ static std::string keys_pair(ActionId up, ActionId dn) {
 static const char* HELP_SECTIONS[] = {
     "Status", "Layers", "Warp", "Optics", "Color",
     "Dynamics", "Physics", "Thermal", "Inject",
-    "VFX-1", "VFX-2", "Output", "BPM",
+    "VFX-1", "VFX-2", "Output", "BPM", "Music",
     "Quality", "App", "Bindings",
 };
 static constexpr int N_HELP_SECTIONS =
@@ -1606,6 +1606,43 @@ static std::string section_bpm() {
     return b;
 }
 
+static std::string section_music() {
+    char buf[2048];
+    const std::string& name = Music::currentPresetName();
+    int nPresets = Music::presetCount();
+    snprintf(buf, sizeof buf,
+        "preset  : %s %s\n"
+        "         (%d in music/ — %s cycle)\n"
+        "\n"
+        "%-10s next preset\n"
+        "%-10s prev preset\n"
+        "%-10s play / pause\n"
+        "\n"
+        "cycle   : %.2f\n"
+        "\n"
+        "fb scalars (readable from .strudel patterns as fb.NAME):\n"
+        "  zoom=%.3f  theta=%.3f  hueRate=%.3f\n"
+        "  decay=%.3f  contrast=%.3f  chroma=%.4f\n"
+        "  blur=%.2f  noise=%.4f  inject=%.2f\n"
+        "  outFade=%.2f  paused=%d  beatPhase=%.2f\n"
+        "\n"
+        "Example:  note(\"c3\").lpf(500 + fb.decay * 2000)\n"
+        "Edit any file in music/ and save — reloads within 250ms.",
+        name.empty() ? "(none)" : name.c_str(),
+        Music::playing() ? "  [PLAYING]" : "  [paused]",
+        nPresets,
+        nPresets > 0 ? "Ctrl+Shift+N/P" : "drop .strudel files to",
+        keys_for(ACT_MUSIC_NEXT).c_str(),
+        keys_for(ACT_MUSIC_PREV).c_str(),
+        keys_for(ACT_MUSIC_PLAYPAUSE).c_str(),
+        Music::currentCycle(),
+        S.p.zoom, S.p.theta, S.p.hueRate,
+        S.p.decay, S.p.contrast, S.p.chroma,
+        S.p.blurX + S.p.blurY, S.p.noise, S.p.inject,
+        S.p.outFade, S.paused ? 1 : 0, S.p.beatPhase);
+    return buf;
+}
+
 static std::string section_bindings() {
     std::string s;
     s += "All current keyboard bindings.\n";
@@ -1696,9 +1733,10 @@ static std::string help_section_body(int i) {
         case 10: return section_vfx(1);
         case 11: return section_output();
         case 12: return section_bpm();
-        case 13: return section_quality();
-        case 14: return section_app();
-        case 15: return section_bindings();
+        case 13: return section_music();
+        case 14: return section_quality();
+        case 15: return section_app();
+        case 16: return section_bindings();
     }
     return "";
 }

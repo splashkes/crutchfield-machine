@@ -177,6 +177,7 @@ enum BindContext : int {
     CTX_SEC_VFX2,
     CTX_SEC_OUTPUT,
     CTX_SEC_BPM,
+    CTX_SEC_MUSIC,
     CTX_SEC_QUALITY,
     CTX_SEC_APP,
     CTX_SEC_BINDINGS,

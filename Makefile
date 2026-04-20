@@ -84,6 +84,9 @@ dist: $(BIN)
 	cp $(BIN) $(DIST_DIR)/
 	cp -r shaders $(DIST_DIR)/
 	cp -r presets $(DIST_DIR)/
+	cp -r js $(DIST_DIR)/
+	cp -r music $(DIST_DIR)/
+	@if [ -d samples ]; then cp -r samples $(DIST_DIR)/; fi
 	cp README.md LICENSE CREDITS.md $(DIST_DIR)/
 	@echo "--- DLL check (should list only Windows system DLLs) ---"
 	@objdump -p $(BIN) | grep "DLL Name:" || true
