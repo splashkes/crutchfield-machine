@@ -20,6 +20,8 @@
   #endif
   #include <windows.h>
   #include <timeapi.h>
+  #include <shellapi.h>
+  #include <mmsystem.h>
 #endif
 #include <cstdio>
 #include <cstdlib>
@@ -38,6 +40,8 @@
 #include "recorder.h"
 #include "overlay.h"
 #include "input.h"
+#include "music.h"
+#include "audio.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO_WARNING
@@ -970,6 +974,121 @@ static bool save_screenshot(GLuint fbo, int w, int h) {
     return ok != 0;
 }
 
+// ── music-mode helpers ───────────────────────────────────────────────────
+// Glue between the app and a running Strudel session.
+//
+// How the integration works: feedback.exe registers itself as a virtual
+// MIDI port called "feedback" via teVirtualMIDI (the driver ships with
+// loopMIDI and is auto-loaded at boot). Strudel's Web MIDI sees the port
+// directly — the user just writes `.midi("feedback")` and it works.
+// The loopMIDI GUI never needs to open.
+//
+// The only thing we might need to do at runtime: install the driver if
+// it's missing. That's a one-time winget step.
+
+#ifdef _WIN32
+static bool driver_installed() {
+    // teVirtualMIDI64.dll ships with loopMIDI and lives in System32 after
+    // install. Presence of the file is our "driver ready" signal.
+    return GetFileAttributesA("C:\\Windows\\System32\\teVirtualMIDI64.dll")
+           != INVALID_FILE_ATTRIBUTES;
+}
+
+// winget-based installer for the loopMIDI package, which contains the
+// driver we actually want. UAC prompt appears; all other agreements
+// auto-accepted. Blocks up to ~3 min.
+static bool winget_install(const char* packageId) {
+    std::printf("[music] invoking winget to install %s (accept the UAC prompt)…\n",
+                packageId);
+    char cmdline[512];
+    std::snprintf(cmdline, sizeof cmdline,
+        "install --id %s --silent "
+        "--accept-package-agreements --accept-source-agreements",
+        packageId);
+    SHELLEXECUTEINFOA sei = {};
+    sei.cbSize       = sizeof sei;
+    sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb       = "open";
+    sei.lpFile       = "winget";
+    sei.lpParameters = cmdline;
+    sei.nShow        = SW_SHOWNORMAL;
+    if (!ShellExecuteExA(&sei) || !sei.hProcess) {
+        std::fprintf(stderr, "[music] winget not available on this system\n");
+        return false;
+    }
+    DWORD wait = WaitForSingleObject(sei.hProcess, 180000);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(sei.hProcess, &exitCode);
+    CloseHandle(sei.hProcess);
+    if (wait != WAIT_OBJECT_0) {
+        std::fprintf(stderr, "[music] winget install timed out\n");
+        return false;
+    }
+    if (exitCode == 0 || exitCode == 0x8A15002B) {   // 0x8A15002B = already installed
+        std::printf("[music] winget install succeeded (exit 0x%lx)\n",
+                    (unsigned long)exitCode);
+        return true;
+    }
+    std::fprintf(stderr, "[music] winget install failed (exit 0x%lx)\n",
+                 (unsigned long)exitCode);
+    return false;
+}
+
+// Ensure the teVirtualMIDI driver is present. If missing, winget-install
+// loopMIDI (which bundles the driver). Returns true if the driver is
+// ready to use.
+static bool music_ensure_driver() {
+    if (driver_installed()) return true;
+    std::printf("[music] MIDI driver not found — installing loopMIDI "
+                "(its driver is what Strudel will route through)…\n");
+    if (!winget_install("TobiasErichsen.loopMIDI")) {
+        std::fprintf(stderr,
+            "[music] Couldn't install automatically. Install manually from:\n"
+            "        https://www.tobias-erichsen.de/software/loopmidi.html\n");
+        ShellExecuteA(nullptr, "open",
+            "https://www.tobias-erichsen.de/software/loopmidi.html",
+            nullptr, nullptr, SW_SHOWNORMAL);
+        return false;
+    }
+    // Post-install verify.
+    if (!driver_installed()) {
+        std::fprintf(stderr,
+            "[music] winget reported success but driver DLL is still missing.\n"
+            "        A reboot may be required to finish driver registration.\n");
+        return false;
+    }
+    std::printf("[music] driver installed. Virtual port will activate now.\n");
+    return true;
+}
+
+static void music_open_strudel() {
+    HINSTANCE r = ShellExecuteA(nullptr, "open", "https://strudel.cc/",
+                                nullptr, nullptr, SW_SHOWNORMAL);
+    if ((INT_PTR)r <= 32)
+        std::fprintf(stderr, "[music] couldn't open browser (%ld)\n",
+                     (long)(INT_PTR)r);
+    else
+        std::printf("[music] opened https://strudel.cc/ — use .midi(\"feedback\")\n"
+                    "        in your pattern to route to this app.\n");
+}
+
+// Passive hint on every launch when the driver's absent. Silent when
+// everything's ready to go.
+static void music_startup_hint() {
+    if (driver_installed()) return;
+    std::printf(
+        "\n[music] MIDI driver not present — Strudel integration is one click away:\n"
+        "        Press Ctrl+M in-app to winget-install the driver (free, ~1 MB),\n"
+        "        then the port 'feedback' appears automatically in Strudel.\n"
+        "        Pattern side: `s(\"bd\").midi(\"feedback\")`\n"
+        "        Startup picker's 'Music mode' (#7) does this plus opens Strudel.\n\n");
+}
+#else
+static bool music_ensure_driver() { return false; }
+static void music_open_strudel() {}
+static void music_startup_hint() {}
+#endif
+
 // ── startup mode picker ──────────────────────────────────────────────────
 // Shown only when the app is launched with no CLI args — i.e. double-clicked
 // from Explorer. Gives non-CLI users a one-keystroke way to pick a common
@@ -993,6 +1112,7 @@ static void run_mode_picker(Cfg& c) {
         printf("  5  8-bit study    RGBA8 feedback loop (quantization demo)\n");
         printf("  6  Load preset... pick from the %zu preset(s) shipped\n",
                g_presetFiles.size());
+        printf("  7  Music mode     fullscreen + launch loopMIDI + open Strudel\n");
         printf("\n  Q  Quit\n\n");
         printf("  Tip: run with --help for the full list of flags.\n\n");
         printf("Choice [1]: ");
@@ -1011,6 +1131,13 @@ static void run_mode_picker(Cfg& c) {
             case '4': c.fullscreen = true;
                       c.simW = 3840; c.simH = 2160; return;
             case '5': c.precision = 8; return;
+            case '7': {
+                c.fullscreen = true;
+                printf("\n");
+                music_ensure_driver();
+                music_open_strudel();
+                return;
+            }
             case '6': {
                 if (g_presetFiles.empty()) {
                     printf("\n  No presets found in %s/\n", preset_dir().c_str());
@@ -1118,7 +1245,7 @@ static std::string keys_pair(ActionId up, ActionId dn) {
 static const char* HELP_SECTIONS[] = {
     "Status", "Layers", "Warp", "Optics", "Color",
     "Dynamics", "Physics", "Thermal", "Inject",
-    "VFX-1", "VFX-2", "Output", "BPM",
+    "VFX-1", "VFX-2", "Output", "BPM", "Music",
     "Quality", "App", "Bindings",
 };
 static constexpr int N_HELP_SECTIONS =
@@ -1412,12 +1539,46 @@ static std::string section_output() {
 }
 static std::string section_bpm() {
     const auto& p = S.p;
-    char b[1536];
+    const auto& mi = g_input.midi();
+    char midiLine[256];
+    if (mi.connected && mi.clockLive) {
+        snprintf(midiLine, sizeof midiLine,
+            "MIDI     : '%s'  clock %.1f bpm  LOCKED",
+            mi.portName.c_str(), mi.derivedBpm);
+    } else if (mi.connected) {
+        snprintf(midiLine, sizeof midiLine,
+            "MIDI     : '%s'  no clock (tap active)",
+            mi.portName.c_str());
+    } else {
+        snprintf(midiLine, sizeof midiLine,
+            "MIDI     : no port — press %s to install driver",
+            keys_for(ACT_LAUNCH_LOOPMIDI).c_str());
+    }
+    char lastLine[160] = "";
+    if (mi.lastNoteNum >= 0 || mi.lastCcNum >= 0) {
+        if (mi.lastNoteNum >= 0 && mi.lastCcNum >= 0) {
+            snprintf(lastLine, sizeof lastLine,
+                "           last note %d ch%d vel%d   cc %d=%d ch%d\n",
+                mi.lastNoteNum, mi.lastNoteCh, mi.lastNoteVel,
+                mi.lastCcNum, mi.lastCcVal, mi.lastCcCh);
+        } else if (mi.lastNoteNum >= 0) {
+            snprintf(lastLine, sizeof lastLine,
+                "           last note %d ch%d vel%d\n",
+                mi.lastNoteNum, mi.lastNoteCh, mi.lastNoteVel);
+        } else {
+            snprintf(lastLine, sizeof lastLine,
+                "           last cc %d=%d ch%d\n",
+                mi.lastCcNum, mi.lastCcVal, mi.lastCcCh);
+        }
+    }
+    char b[2048];
     snprintf(b, sizeof b,
         "BPM      : %.1f   div: %s\n"
         "sync     : %s\n"
+        "%s\n"
+        "%s"
         "\n"
-        "%-10s tap tempo\n"
+        "%-10s tap tempo (inert when MIDI clock is live)\n"
         "%-10s sync on/off\n"
         "%-10s cycle division\n"
         "\n"
@@ -1431,6 +1592,8 @@ static std::string section_bpm() {
         "beat phase: %.2f",
         p.bpm, BPM_DIV_NAMES[p.divIdx],
         p.bpmSyncOn ? "ON" : "off",
+        midiLine,
+        lastLine,
         keys_for(ACT_BPM_TAP).c_str(),
         keys_for(ACT_BPM_SYNC_TOGGLE).c_str(),
         keys_for(ACT_BPM_DIV_CYCLE).c_str(),
@@ -1441,6 +1604,43 @@ static std::string section_bpm() {
         keys_for(ACT_BPM_DECAYDIP_TOGGLE).c_str(), p.bpmDecayDip  ? "ON" : "off",
         p.beatPhase);
     return b;
+}
+
+static std::string section_music() {
+    char buf[2048];
+    const std::string& name = Music::currentPresetName();
+    int nPresets = Music::presetCount();
+    snprintf(buf, sizeof buf,
+        "preset  : %s %s\n"
+        "         (%d in music/ — %s cycle)\n"
+        "\n"
+        "%-10s next preset\n"
+        "%-10s prev preset\n"
+        "%-10s play / pause\n"
+        "\n"
+        "cycle   : %.2f\n"
+        "\n"
+        "fb scalars (readable from .strudel patterns as fb.NAME):\n"
+        "  zoom=%.3f  theta=%.3f  hueRate=%.3f\n"
+        "  decay=%.3f  contrast=%.3f  chroma=%.4f\n"
+        "  blur=%.2f  noise=%.4f  inject=%.2f\n"
+        "  outFade=%.2f  paused=%d  beatPhase=%.2f\n"
+        "\n"
+        "Example:  note(\"c3\").lpf(500 + fb.decay * 2000)\n"
+        "Edit any file in music/ and save — reloads within 250ms.",
+        name.empty() ? "(none)" : name.c_str(),
+        Music::playing() ? "  [PLAYING]" : "  [paused]",
+        nPresets,
+        nPresets > 0 ? "Ctrl+Shift+N/P" : "drop .strudel files to",
+        keys_for(ACT_MUSIC_NEXT).c_str(),
+        keys_for(ACT_MUSIC_PREV).c_str(),
+        keys_for(ACT_MUSIC_PLAYPAUSE).c_str(),
+        Music::currentCycle(),
+        S.p.zoom, S.p.theta, S.p.hueRate,
+        S.p.decay, S.p.contrast, S.p.chroma,
+        S.p.blurX + S.p.blurY, S.p.noise, S.p.inject,
+        S.p.outFade, S.paused ? 1 : 0, S.p.beatPhase);
+    return buf;
 }
 
 static std::string section_bindings() {
@@ -1533,9 +1733,10 @@ static std::string help_section_body(int i) {
         case 10: return section_vfx(1);
         case 11: return section_output();
         case 12: return section_bpm();
-        case 13: return section_quality();
-        case 14: return section_app();
-        case 15: return section_bindings();
+        case 13: return section_music();
+        case 14: return section_quality();
+        case 15: return section_app();
+        case 16: return section_bindings();
     }
     return "";
 }
@@ -1568,6 +1769,12 @@ static void reload_shaders() {
 static std::vector<double> g_bpmTaps;
 
 static void bpm_tap(double now) {
+    // If MIDI Clock is driving tempo, tap-tempo goes inert — announce
+    // rather than silently do nothing.
+    if (g_input.midi().clockLive) {
+        S.ov.logEvent("BPM: MIDI clock locked (tap ignored)");
+        return;
+    }
     // Reset tap history after a big gap.
     if (!g_bpmTaps.empty() && (now - g_bpmTaps.back()) > 2.0)
         g_bpmTaps.clear();
@@ -1615,6 +1822,35 @@ static void update_bpm(double now, float dt) {
         if (p.decayDipTimer < 0.0f) p.decayDipTimer = 0.0f;
     }
 
+    // ── MIDI Clock override ──────────────────────────────────────────────
+    // If Strudel (or any upstream) is streaming MIDI Clock, its tempo wins
+    // over both the manual `p.bpm` value and tap-tempo. Start (0xFA)
+    // re-anchors our beat phase; Stop (0xFC) freezes beat events until the
+    // clock resumes.
+    auto& midi = g_input.midi();
+    static bool s_midiFrozen = false;
+    if (midi.clockLive && midi.derivedBpm > 0.0f) {
+        p.bpm = midi.derivedBpm;
+        if (!p.bpmSyncOn) {
+            p.bpmSyncOn   = true;         // auto-on when clock is driving
+            p.beatOrigin  = now;
+        }
+        s_midiFrozen = false;
+    }
+    if (midi.startPending) {
+        p.beatOrigin  = now;
+        p.bpmSyncOn   = true;
+        p.beatPhase   = 0.0f;
+        s_midiFrozen  = false;
+        midi.startPending = false;
+        S.ov.logEvent("MIDI Start");
+    }
+    if (midi.stopPending) {
+        s_midiFrozen = true;
+        midi.stopPending = false;
+        S.ov.logEvent("MIDI Stop");
+    }
+
     // Beat period (seconds) for the current division.
     float basePeriod = 60.0f / fmaxf(p.bpm, 1.0f);
     float period     = basePeriod * BPM_DIV_MUL[p.divIdx];
@@ -1630,7 +1866,7 @@ static void update_bpm(double now, float dt) {
     // Also fire on first frame (prev==0 and phase just seeded) — skip
     // the very first frame of the loop by requiring a real crossing.
     bool crossed = (prev > 0.5f && phase < 0.5f);
-    if (!p.bpmSyncOn || !crossed) return;
+    if (!p.bpmSyncOn || s_midiFrozen || !crossed) return;
 
     // ── beat event ── fire enabled modulations.
     if (p.bpmInject) {
@@ -1986,8 +2222,13 @@ static void apply_action(ActionId id, float mag) {
                 printf("[inject pattern=%d]\n", p.pattern);
                 char buf[64]; snprintf(buf, sizeof buf, "inject: %s", names[p.pattern]);
                 S.ov.logEvent(buf);
+                // Live-gesture coupling: hold Space to jump the music
+                // engine to a breakbeat, release to return to whatever
+                // preset was playing. No-op if already on breakbeat.
+                Music::pushMomentaryPreset("breakbeat");
             } else {
                 p.inject = 0.3f;
+                Music::popMomentaryPreset();
             }
             return;
         }
@@ -2222,6 +2463,34 @@ static void apply_action(ActionId id, float mag) {
             p.bpmDecayDip = !p.bpmDecayDip;
             S.ov.logEvent(p.bpmDecayDip ? "bpm decay-dip: ON"
                                         : "bpm decay-dip: off"); return;
+
+        case ACT_LAUNCH_LOOPMIDI:
+            S.ov.logEvent("installing MIDI driver...");
+#ifdef _WIN32
+            music_ensure_driver();
+#endif
+            return;
+
+        case ACT_MUSIC_NEXT: {
+            Music::nextPreset();
+            char b[128]; snprintf(b, sizeof b, "music: %s",
+                Music::currentPresetName().empty() ? "-" :
+                Music::currentPresetName().c_str());
+            S.ov.logEvent(b);
+            return;
+        }
+        case ACT_MUSIC_PREV: {
+            Music::prevPreset();
+            char b[128]; snprintf(b, sizeof b, "music: %s",
+                Music::currentPresetName().empty() ? "-" :
+                Music::currentPresetName().c_str());
+            S.ov.logEvent(b);
+            return;
+        }
+        case ACT_MUSIC_PLAYPAUSE:
+            Music::setPlaying(!Music::playing());
+            S.ov.logEvent(Music::playing() ? "music: playing" : "music: paused");
+            return;
 
         case ACT_NONE: case ACT__COUNT: return;
     }
@@ -2694,6 +2963,34 @@ int main(int argc, char** argv) {
     // picker on the console. Any flag (even --help) skips this path.
     if (argc == 1) run_mode_picker(g_cfg);
 
+    // Passive MIDI hint: if no input port is visible, show a one-time
+    // setup pointer so CLI users know Strudel sync is a flip away.
+    music_startup_hint();
+
+    // Embedded JS runtime + pattern engine + audio output.
+    Audio::init();
+    // Try samples/ folder first so real WAVs win over the synth fallbacks.
+    Audio::loadSamplesFromDir("samples");
+
+    if (Music::init()) {
+        // Scan music/ for .strudel presets. Autoload the first one if any.
+        int nPresets = Music::scanPresets("music");
+        if (nPresets > 0) {
+            Music::loadPreset(0);
+        } else {
+            // Fallback: a built-in demo pattern so the app is audible
+            // even when music/ is empty.
+            Music::setPattern(
+                "stack("
+                "  s(\"bd*2, ~ sn, hh*8\").room(0.2),"
+                "  note(\"c2 ~ eb2 g2\").s(\"saw\").lpf(800).gain(0.25),"
+                "  note(\"<c5 eb5 g5 bb5>\").s(\"tri\").gain(0.15).delay(0.3).room(0.5)"
+                ")"
+            );
+        }
+        Music::setPlaying(true);
+    }
+
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -2889,6 +3186,33 @@ int main(int argc, char** argv) {
         // BPM clock — advances beat phase, fires beat events.
         update_bpm(frameStart, dt);
 
+        // Music scheduler — advance cycle clock by frame dt, query
+        // pattern, trigger audio events in the ~250ms lookahead window.
+        // Coupling to dt (not wall time) means the music tempo tracks
+        // the sim's framerate, and a stalled loop can't backfill a pile
+        // of events on resume.
+        Music::update(frameStart, dt, S.p.bpm);
+        // Hot-reload: if the current preset file changed on disk, re-read
+        // it. Throttled internally to ~250ms.
+        Music::pollPresetReload();
+
+        // Publish live feedback-side scalars to the JS `fb` global so
+        // patterns can modulate based on what's on screen. Keep this
+        // list small + stable — it's the closed-loop contract for music
+        // files to rely on.
+        Music::setScalar("zoom",      S.p.zoom);
+        Music::setScalar("theta",     S.p.theta);
+        Music::setScalar("hueRate",   S.p.hueRate);
+        Music::setScalar("decay",     S.p.decay);
+        Music::setScalar("contrast",  S.p.contrast);
+        Music::setScalar("chroma",    S.p.chroma);
+        Music::setScalar("blur",      S.p.blurX + S.p.blurY);
+        Music::setScalar("noise",     S.p.noise);
+        Music::setScalar("inject",    S.p.inject);
+        Music::setScalar("outFade",   S.p.outFade);
+        Music::setScalar("paused",    S.paused ? 1.0 : 0.0);
+        Music::setScalar("beatPhase", S.p.beatPhase);
+
         glBindVertexArray(mainVAO);
 
         if (S.needClear) {
@@ -3000,6 +3324,9 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     timeEndPeriod(1);
 #endif
+
+    Music::shutdown();
+    Audio::shutdown();
 
     // Post-session encode prompt — offer to convert each EXR sequence
     // captured this session to MP4 via ffmpeg.

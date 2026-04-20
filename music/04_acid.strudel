@@ -1,0 +1,18 @@
+// 04_acid — 16th-note sawbass that walks a riff, heavy resonance
+// emulated via a tight LPF + quick envelope. Four-on-the-floor kick,
+// off-beat hats.
+
+stack(
+  s("bd bd bd bd").gain(0.95),
+  s("~ hh ~ hh ~ hh ~ hh").gain(0.45),
+  s("~ ~ cp ~").room(0.25),
+  // Sawbass walks through c-minor; zoom reverses the line and swells
+  // gain; rotation is the classic acid filter sweep (turn W/S).
+  (fb.zoom > 1
+    ? note("c2 c2 eb2 c2 g2 c2 f2 eb2")
+    : note("eb2 f2 c2 g2 c2 eb2 c2 c2"))
+    .s("saw")
+    .lpf(350 + fb.theta * 2500)
+    .gain(0.28 + Math.min(Math.abs(fb.zoom - 1), 0.25) * 0.6)
+    .attack(0.002).release(0.04)
+)

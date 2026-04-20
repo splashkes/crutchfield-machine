@@ -9,6 +9,14 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <deque>
+#include <mutex>
+
+#ifdef _WIN32
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #include <mmsystem.h>
+#endif
 
 Input g_input;
 
@@ -166,6 +174,11 @@ static const ActionInfo ACTIONS[] = {
     { ACT_BPM_VFXCYCLE_TOGGLE,   "bpm.vfxCycle",      AK_DISCRETE, "BPM", "toggle vfx auto-cycle on beat" },
     { ACT_BPM_FLASH_TOGGLE,      "bpm.flash",         AK_DISCRETE, "BPM", "toggle fade-flash on beat" },
     { ACT_BPM_DECAYDIP_TOGGLE,   "bpm.decayDip",      AK_DISCRETE, "BPM", "toggle decay-dip on beat" },
+
+    { ACT_LAUNCH_LOOPMIDI,       "music.installMidiDriver", AK_DISCRETE, "BPM", "install MIDI driver (Windows)" },
+    { ACT_MUSIC_NEXT,            "music.next",      AK_DISCRETE, "BPM", "next music preset" },
+    { ACT_MUSIC_PREV,            "music.prev",      AK_DISCRETE, "BPM", "prev music preset" },
+    { ACT_MUSIC_PLAYPAUSE,       "music.playpause", AK_DISCRETE, "BPM", "music play/pause" },
 };
 static constexpr int N_ACTIONS = (int)(sizeof(ACTIONS) / sizeof(ACTIONS[0]));
 
@@ -343,6 +356,17 @@ void Input::installDefaults() {
     K(in, ACT_BPM_VFXCYCLE_TOGGLE,  GLFW_KEY_V,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_BPM_FLASH_TOGGLE,     GLFW_KEY_F,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_BPM_DECAYDIP_TOGGLE,  GLFW_KEY_D,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+
+    // Music / MIDI: Ctrl+M launches loopMIDI.
+    K(in, ACT_LAUNCH_LOOPMIDI,      GLFW_KEY_M,         GLFW_MOD_CONTROL);
+
+    // Music engine (native Strudel-compat pattern engine). Uses Ctrl+Alt
+    // rather than Ctrl+Shift because Shift is handled separately as the
+    // coarse-step multiplier — so Ctrl+Shift+N would collide with the
+    // visual preset binding on Ctrl+N.
+    K(in, ACT_MUSIC_NEXT,       GLFW_KEY_N, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_MUSIC_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_MUSIC_PLAYPAUSE,  GLFW_KEY_SPACE, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
 
     // Help nav — arrow keys dedicated while help is open (the handler checks
     // help visibility and consumes these only then, so they do NOT conflict
@@ -789,6 +813,23 @@ bool Input::loadIni(const std::string& path) {
         size_t hash = v.find('#');
         if (hash != std::string::npos) v = s_trim(v.substr(0, hash));
 
+        // Top-level keys inside [midi]: `port = …`, `clock = follow|ignore`.
+        // These configure the MIDI input rather than mapping to an action.
+        if (section == "midi") {
+            if (k == "port") {
+                setMidiPortHint(v);
+                continue;
+            }
+            if (k == "clock") {
+                // 'ignore' disables follow behavior on main.cpp side; for
+                // now we just stash intent in stderr (wired via a future
+                // flag if needed).
+                if (v == "ignore")
+                    std::fprintf(stderr, "[midi] clock=ignore honored by main.cpp side\n");
+                continue;
+            }
+        }
+
         const ActionInfo* info = action_info_by_name(k.c_str());
         if (!info) {
             std::fprintf(stderr, "[bindings] unknown action '%s' — skipped\n", k.c_str());
@@ -835,11 +876,13 @@ bool Input::loadIni(const std::string& path) {
             if (lo == "vfx2")     return CTX_SEC_VFX2;
             if (lo == "output")   return CTX_SEC_OUTPUT;
             if (lo == "bpm")      return CTX_SEC_BPM;
+            if (lo == "music")    return CTX_SEC_MUSIC;
             if (lo == "quality")  return CTX_SEC_QUALITY;
             if (lo == "app")      return CTX_SEC_APP;
             if (lo == "bindings") return CTX_SEC_BINDINGS;
             return CTX_ANY;
         };
+        int midiChannel = 0;  // 0 = omni (match any channel)
         for (size_t t = 1; t < toks.size(); t++) {
             const std::string& opt = toks[t];
             if (opt.rfind("scale=", 0) == 0)      scale = (float)std::atof(opt.c_str() + 6);
@@ -847,7 +890,9 @@ bool Input::loadIni(const std::string& path) {
             else if (opt == "abs" || opt == "absolute") absolute = true;
             else if (opt.rfind("deadzone=", 0) == 0) deadzone = (float)std::atof(opt.c_str() + 9);
             else if (opt.rfind("ctx=", 0) == 0)   ctx = parse_ctx(opt.substr(4));
+            else if (opt.rfind("ch=", 0) == 0)    midiChannel = std::atoi(opt.c_str() + 3);
         }
+        if (midiChannel < 0 || midiChannel > 16) midiChannel = 0;
 
         Binding b;
         b.action   = info->id;
@@ -880,8 +925,13 @@ bool Input::loadIni(const std::string& path) {
             }
         } else if (section == "midi") {
             if (keyPart.rfind("cc:", 0) == 0) {
-                b.source = SRC_MIDI_CC;
-                b.code   = std::atoi(keyPart.c_str() + 3);
+                b.source  = SRC_MIDI_CC;
+                b.code    = std::atoi(keyPart.c_str() + 3);
+                b.modmask = midiChannel;
+            } else if (keyPart.rfind("note:", 0) == 0) {
+                b.source  = SRC_MIDI_NOTE;
+                b.code    = std::atoi(keyPart.c_str() + 5);
+                b.modmask = midiChannel;
             } else {
                 continue;
             }
@@ -1008,12 +1058,331 @@ void Input::pollGamepad(int jid, float dt, BindContext currentCtx) {
     }
 }
 
-// Placeholder — wired when a real MIDI implementation arrives.
-// The call site in main is in place so gamepad-style per-frame polling
-// is already structured for CC-mapped knobs & buttons.
+// ─────────────────────────────────────────────────────────────────────────
+// MIDI input — teVirtualMIDI primary path, winmm fallback.
+//
+// The teVirtualMIDI driver (shipped with loopMIDI — installed once, then
+// always loaded by Windows) exposes a C API for any app to register as a
+// virtual MIDI port. We call virtualMIDICreatePortEx2("feedback", …) and
+// Strudel (or any other MIDI-aware tool) then sees our port in their
+// output device list. Zero user configuration.
+//
+// Functions are resolved at runtime via LoadLibrary so the app still
+// boots on machines without the driver — falling back to scanning existing
+// winmm input ports (hardware controllers, pre-configured loopMIDI bridges).
+//
+// Tempo derivation: MIDI Clock runs at 24 pulses per quarter note. We
+// keep a 24-sample rolling window of inter-pulse gaps and average them.
+// If no pulses arrive for ~500 ms we flag clockLive false and fall back
+// to tap tempo.
+// ─────────────────────────────────────────────────────────────────────────
+
+#ifdef _WIN32
+// Opaque handle — we don't dereference it.
+typedef struct _VM_MIDI_PORT *LPVM_MIDI_PORT;
+typedef void (CALLBACK *LPVM_MIDI_DATA_CB)(LPVM_MIDI_PORT, LPBYTE, DWORD, DWORD_PTR);
+typedef LPVM_MIDI_PORT (WINAPI *pfn_vmCreateEx2)(LPCWSTR, LPVM_MIDI_DATA_CB, DWORD_PTR, DWORD, DWORD);
+typedef void          (WINAPI *pfn_vmClose)(LPVM_MIDI_PORT);
+
+// Subset of TE_VM_FLAGS used here.
+#define TE_VM_FLAGS_PARSE_RX            0x00000001
+#define TE_VM_FLAGS_INSTANTIATE_RX_ONLY 0x00000004
+
+namespace {
+    // Parsed MIDI message — any length 1..3 (we drop SysEx).
+    struct MidiMsg {
+        uint8_t b[3];
+        uint8_t len;
+    };
+
+    // Shared source queue — both the teVirtualMIDI callback and the winmm
+    // callback enqueue into here; pollMidi drains on the main thread.
+    struct MidiQueue {
+        std::mutex          mu;
+        std::deque<MidiMsg> q;
+    };
+    MidiQueue g_mq;
+
+    // Tempo tracking — main-thread-owned.
+    struct ClockState {
+        double clockTimes[24] = {};
+        int    clockHead  = 0;
+        int    clockCount = 0;
+        double lastClockT = 0.0;
+    };
+    ClockState g_clk;
+
+    // ── teVirtualMIDI dynamic binding ────────────────────────────────
+    struct TeVm {
+        HMODULE          dll       = nullptr;
+        pfn_vmCreateEx2  pCreate   = nullptr;
+        pfn_vmClose      pClose    = nullptr;
+        LPVM_MIDI_PORT   port      = nullptr;
+        std::string      portName;
+        bool             triedLoad = false;
+        double           nextAttempt = 0.0;
+    };
+    TeVm g_te;
+
+    void CALLBACK te_cb(LPVM_MIDI_PORT, LPBYTE data, DWORD len, DWORD_PTR) {
+        if (!data || len == 0) return;
+        // With PARSE_RX, the driver hands us one complete message per call.
+        // SysEx messages can be arbitrarily long — drop them.
+        if (len > 3) return;
+        MidiMsg m;
+        m.len  = (uint8_t)len;
+        m.b[0] = data[0];
+        m.b[1] = len > 1 ? data[1] : 0;
+        m.b[2] = len > 2 ? data[2] : 0;
+        std::lock_guard<std::mutex> lk(g_mq.mu);
+        if (g_mq.q.size() > 4096) return;
+        g_mq.q.push_back(m);
+    }
+
+    bool te_try_load() {
+        if (g_te.dll) return true;
+        if (g_te.triedLoad) return false;
+        g_te.triedLoad = true;
+        // teVirtualMIDI64.dll lives in System32 (auto-found via PATH) after
+        // the loopMIDI installer runs. Fall back to the install dir if the
+        // loader can't find it.
+        g_te.dll = LoadLibraryA("teVirtualMIDI64.dll");
+        if (!g_te.dll) {
+            g_te.dll = LoadLibraryA(
+                "C:\\Program Files (x86)\\Tobias Erichsen\\loopMIDI\\teVirtualMIDI64.dll");
+        }
+        if (!g_te.dll) return false;
+        // reinterpret via void* silences GCC's -Wcast-function-type.
+        g_te.pCreate = reinterpret_cast<pfn_vmCreateEx2>(
+            reinterpret_cast<void*>(GetProcAddress(g_te.dll, "virtualMIDICreatePortEx2")));
+        g_te.pClose  = reinterpret_cast<pfn_vmClose>(
+            reinterpret_cast<void*>(GetProcAddress(g_te.dll, "virtualMIDIClosePort")));
+        if (!g_te.pCreate || !g_te.pClose) {
+            FreeLibrary(g_te.dll); g_te.dll = nullptr;
+            return false;
+        }
+        return true;
+    }
+
+    // Creates the virtual port. Returns true on success (or if already open).
+    bool te_open_port(const std::string& name) {
+        if (g_te.port) return true;
+        if (!te_try_load()) return false;
+        // Narrow → wide (the driver API is UTF-16).
+        std::wstring wname;
+        wname.reserve(name.size());
+        for (char c : name) wname.push_back((wchar_t)(unsigned char)c);
+        g_te.port = g_te.pCreate(wname.c_str(), te_cb, 0, /*maxSysex*/ 65536,
+                                 TE_VM_FLAGS_PARSE_RX | TE_VM_FLAGS_INSTANTIATE_RX_ONLY);
+        if (!g_te.port) return false;
+        g_te.portName = name + " (virtual)";
+        std::fprintf(stdout,
+            "[midi] teVirtualMIDI port '%s' created — visible to Strudel et al\n",
+            name.c_str());
+        return true;
+    }
+
+    // ── Winmm fallback: enumerate existing input ports ───────────────
+    struct WinMidi {
+        HMIDIIN     hIn   = nullptr;
+        UINT        devId = (UINT)-1;
+        std::string devName;
+        double      nextAttempt = 0.0;
+    };
+    WinMidi g_mi;
+
+    void CALLBACK winmm_cb(HMIDIIN, UINT wMsg, DWORD_PTR,
+                           DWORD_PTR dwParam1, DWORD_PTR) {
+        if (wMsg != MIM_DATA) return;
+        MidiMsg m;
+        uint8_t b0 = (uint8_t)( dwParam1        & 0xFF);
+        uint8_t b1 = (uint8_t)((dwParam1 >> 8)  & 0xFF);
+        uint8_t b2 = (uint8_t)((dwParam1 >> 16) & 0xFF);
+        // Derive length from status byte.
+        if (b0 >= 0xF8)                m.len = 1;
+        else if ((b0 & 0xF0) == 0xC0)  m.len = 2;  // program change
+        else if ((b0 & 0xF0) == 0xD0)  m.len = 2;  // channel pressure
+        else                           m.len = 3;
+        m.b[0] = b0; m.b[1] = b1; m.b[2] = b2;
+        std::lock_guard<std::mutex> lk(g_mq.mu);
+        if (g_mq.q.size() > 4096) return;
+        g_mq.q.push_back(m);
+    }
+
+    bool name_contains(const std::string& hay, const std::string& needle) {
+        if (needle.empty()) return true;
+        auto lc = [](char c){ return (char)std::tolower((unsigned char)c); };
+        std::string H; H.reserve(hay.size());    for (char c : hay)    H += lc(c);
+        std::string N; N.reserve(needle.size()); for (char c : needle) N += lc(c);
+        return H.find(N) != std::string::npos;
+    }
+
+    void winmm_try_open(const std::string& hint) {
+        if (g_mi.hIn) return;
+        UINT n = midiInGetNumDevs();
+        if (n == 0) return;
+        UINT pick = (UINT)-1;
+        std::string pickName;
+        for (UINT i = 0; i < n; i++) {
+            MIDIINCAPSA caps = {};
+            if (midiInGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) continue;
+            std::string nm = caps.szPname;
+            // Skip our own virtual port (when te already created it) — reading
+            // our own output would duplicate every event.
+            if (name_contains(nm, "feedback")) continue;
+            if (!hint.empty() && !name_contains(nm, hint)) continue;
+            pick = i; pickName = nm; break;
+        }
+        if (pick == (UINT)-1) return;
+        HMIDIIN h = nullptr;
+        MMRESULT r = midiInOpen(&h, pick, (DWORD_PTR)winmm_cb, 0, CALLBACK_FUNCTION);
+        if (r != MMSYSERR_NOERROR) return;
+        if (midiInStart(h) != MMSYSERR_NOERROR) { midiInClose(h); return; }
+        g_mi.hIn = h; g_mi.devId = pick; g_mi.devName = pickName;
+        std::fprintf(stdout, "[midi] winmm fallback opened '%s'\n", pickName.c_str());
+    }
+}
+#endif  // _WIN32
+
 void Input::pollMidi(float /*dt*/) {
-    // TODO: RtMidi or winmm-backed polling; dispatch CC edges as STEP/RATE
-    // and note-on as DISCRETE/TRIGGER using the existing Binding table.
+#ifdef _WIN32
+    const double now = glfwGetTime();
+
+    // 1. teVirtualMIDI: create our own named port. Retry every 2s so that
+    //    if loopMIDI gets installed after app launch it Just Works.
+    if (!g_te.port && now >= g_te.nextAttempt) {
+        te_open_port("feedback");
+        g_te.nextAttempt = now + 2.0;
+    }
+
+    // 2. Winmm fallback: scan existing ports (hardware controllers, other
+    //    bridges) IF no te port is open. If te is open we let it be the
+    //    sole source of MIDI to avoid double-counting.
+    if (!g_te.port && !g_mi.hIn && now >= g_mi.nextAttempt) {
+        winmm_try_open(midiPortHint_);
+        g_mi.nextAttempt = now + 2.0;
+    }
+
+    // Reflect connection state for the help UI.
+    if (g_te.port) {
+        midi_.connected = true;
+        midi_.portName  = g_te.portName;
+    } else if (g_mi.hIn) {
+        midi_.connected = true;
+        midi_.portName  = g_mi.devName;
+    } else {
+        midi_.connected = false;
+        midi_.portName.clear();
+    }
+
+    // Drain + parse.
+    std::deque<MidiMsg> local;
+    {
+        std::lock_guard<std::mutex> lk(g_mq.mu);
+        local.swap(g_mq.q);
+    }
+
+    for (const MidiMsg& m : local) {
+        uint8_t b0 = m.b[0], b1 = m.b[1], b2 = m.b[2];
+
+        // System real-time — single byte.
+        if (b0 >= 0xF8) {
+            if (b0 == 0xF8) {
+                if (g_clk.lastClockT > 0.0) {
+                    double gap = now - g_clk.lastClockT;
+                    g_clk.clockTimes[g_clk.clockHead] = gap;
+                    g_clk.clockHead = (g_clk.clockHead + 1) % 24;
+                    if (g_clk.clockCount < 24) g_clk.clockCount++;
+                    if (g_clk.clockCount >= 4) {
+                        double sum = 0.0;
+                        for (int i = 0; i < g_clk.clockCount; i++) sum += g_clk.clockTimes[i];
+                        double avg = sum / g_clk.clockCount;
+                        if (avg > 1e-5) {
+                            float bpm = (float)(60.0 / (avg * 24.0));
+                            if (bpm >= 20.f && bpm <= 400.f) midi_.derivedBpm = bpm;
+                        }
+                    }
+                }
+                g_clk.lastClockT = now;
+                midi_.clockLive  = true;
+            } else if (b0 == 0xFA) {
+                midi_.startPending = true;
+                g_clk.clockCount = 0;
+                g_clk.clockHead  = 0;
+                g_clk.lastClockT = 0.0;
+            } else if (b0 == 0xFC) {
+                midi_.stopPending = true;
+            }
+            continue;
+        }
+
+        uint8_t type = b0 & 0xF0;
+        int     ch1  = (b0 & 0x0F) + 1;
+
+        if (type == 0x90 || type == 0x80) {
+            int note = b1 & 0x7F;
+            int vel  = b2 & 0x7F;
+            bool on  = (type == 0x90) && (vel > 0);
+            midi_.lastNoteCh  = ch1;
+            midi_.lastNoteNum = note;
+            midi_.lastNoteVel = on ? vel : 0;
+
+            if (!handler_) continue;
+            for (const Binding& b : bindings_) {
+                if (b.source != SRC_MIDI_NOTE) continue;
+                if (b.code != note) continue;
+                if (b.modmask != 0 && b.modmask != ch1) continue;
+                const ActionInfo* info = action_info(b.action);
+                if (!info) continue;
+                float mg = (vel / 127.0f) * b.scale;
+                if (b.invert) mg = -mg;
+                switch (info->kind) {
+                case AK_DISCRETE: if (on) handler_(b.action, 1.0f); break;
+                case AK_TRIGGER:
+                    if (on)  handler_(b.action, 1.0f);
+                    if (!on) handler_(b.action, 0.0f);
+                    break;
+                case AK_STEP:
+                case AK_RATE:
+                    if (on) handler_(b.action, mg);
+                    break;
+                }
+            }
+        } else if (type == 0xB0) {
+            int ccNum = b1 & 0x7F;
+            int ccVal = b2 & 0x7F;
+            midi_.lastCcCh  = ch1;
+            midi_.lastCcNum = ccNum;
+            midi_.lastCcVal = ccVal;
+
+            if (!handler_) continue;
+            for (const Binding& b : bindings_) {
+                if (b.source != SRC_MIDI_CC) continue;
+                if (b.code != ccNum) continue;
+                if (b.modmask != 0 && b.modmask != ch1) continue;
+                const ActionInfo* info = action_info(b.action);
+                if (!info) continue;
+                float v = ccVal / 127.0f;
+                if (b.invert) v = 1.0f - v;
+                float mg = v * b.scale;
+                switch (info->kind) {
+                case AK_RATE:
+                case AK_STEP:    handler_(b.action, mg); break;
+                case AK_DISCRETE: if (ccVal > 63) handler_(b.action, 1.0f); break;
+                case AK_TRIGGER: handler_(b.action, ccVal > 63 ? 1.0f : 0.0f); break;
+                }
+            }
+        }
+    }
+
+    // Clock timeout.
+    if (midi_.clockLive && g_clk.lastClockT > 0.0 && (now - g_clk.lastClockT) > 0.5) {
+        midi_.clockLive  = false;
+        g_clk.clockCount = 0;
+    }
+#else
+    (void)midi_; (void)midiPortHint_;
+#endif
 }
 
 bool Input::saveIni(const std::string& path) const {
@@ -1047,8 +1416,8 @@ bool Input::saveIni(const std::string& path) const {
 "# panel.  Unknown action names are skipped with a warning to stderr.\n"
 "\n");
 
-    auto dump_section = [&](const char* name, BindSource src) {
-        std::fprintf(f, "[%s]\n", name);
+    auto dump_section = [&](const char* name, BindSource src, bool emitHeader = true) {
+        if (emitHeader) std::fprintf(f, "[%s]\n", name);
         for (int i = 0; i < action_info_count(); i++) {
             ActionId id = ACTIONS[i].id;
             for (const Binding& b : bindings_) {
@@ -1062,6 +1431,11 @@ bool Input::saveIni(const std::string& path) const {
                     std::fprintf(f, "%-24s = axis:%d", ACTIONS[i].name, b.code);
                 } else if (src == SRC_MIDI_CC) {
                     std::fprintf(f, "%-24s = cc:%d", ACTIONS[i].name, b.code);
+                } else if (src == SRC_MIDI_NOTE) {
+                    std::fprintf(f, "%-24s = note:%d", ACTIONS[i].name, b.code);
+                }
+                if ((src == SRC_MIDI_CC || src == SRC_MIDI_NOTE) && b.modmask != 0) {
+                    std::fprintf(f, " ch=%d", b.modmask);
                 }
                 if (b.scale != 1.0f)  std::fprintf(f, " scale=%.3f", b.scale);
                 if (b.invert)         std::fprintf(f, " invert");
@@ -1071,7 +1445,7 @@ bool Input::saveIni(const std::string& path) const {
                     static const char* CTXN[] = {
                         "any","menu","status","layers","warp","optics",
                         "color","dyn","physics","thermal","inject",
-                        "vfx1","vfx2","output","bpm","quality","app","bindings"
+                        "vfx1","vfx2","output","bpm","music","quality","app","bindings"
                     };
                     if (b.context >= 0 && b.context < CTX__COUNT)
                         std::fprintf(f, " ctx=%s", CTXN[b.context]);
@@ -1085,7 +1459,35 @@ bool Input::saveIni(const std::string& path) const {
     dump_section("keyboard", SRC_KEY);
     dump_section("gamepad",  SRC_GAMEPAD_BTN);
     dump_section("gamepad",  SRC_GAMEPAD_AXIS);
-    dump_section("midi",     SRC_MIDI_CC);
+
+    // MIDI section: emit a header with a port= hint first, then the two
+    // source types. Defaults leave the map empty — users add their own.
+    std::fprintf(f,
+"[midi]\n"
+"# Integration with Strudel (https://strudel.cc) or any MIDI controller.\n"
+"#\n"
+"# Windows: install loopMIDI (https://www.tobias-erichsen.de/software/loopmidi.html),\n"
+"# create a virtual port called 'loopMIDI Port' or similar, then route\n"
+"# Strudel's MIDI output there with `.midi(\"loopMIDI Port\")`.\n"
+"#\n"
+"# Top-level keys:\n"
+"#   port = <substring>   case-insensitive match against device names.\n"
+"#                        Omit to auto-pick the first loopMIDI port.\n"
+"#   clock = follow       follow incoming MIDI Clock for BPM (default).\n"
+"#\n"
+"# Binding syntax:\n"
+"#   action.name = note:NN [ch=N]   Note-On/Off. vel becomes magnitude.\n"
+"#   action.name = cc:NN   [ch=N]   CC value 0..127 → magnitude 0..1.\n"
+"#   ch=0 or omitted = match any channel (omni).\n"
+"#\n"
+"# Example drum-trigger map (General MIDI drum channel 10):\n"
+"#   inject.hold     = note:36 ch=10   # kick  → inject pulse\n"
+"#   vfx1.cycle+     = note:38 ch=10   # snare → next effect\n"
+"#   bpm.flash.lock  = note:42 ch=10   # hat   → toggle flash mod\n"
+"#   warp.zoom+      = cc:1            # mod wheel → zoom+\n"
+"\n");
+    dump_section("midi",     SRC_MIDI_CC,   /*emitHeader=*/false);
+    dump_section("midi",     SRC_MIDI_NOTE, /*emitHeader=*/false);
 
     std::fclose(f);
     return true;

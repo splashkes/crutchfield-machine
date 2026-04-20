@@ -12,7 +12,15 @@ CXX      ?= g++
 # it does NOT appear on the link line (that would pull dynamic winpthread).
 # `-Wno-missing-field-initializers` silences stb_image_write.h's `{ 0 }` inits.
 CXXFLAGS ?= -O3 -std=c++17 -Wall -Wextra -Wno-missing-field-initializers \
-            -pthread -DGLEW_STATIC
+            -pthread -DGLEW_STATIC -Ivendor/quickjs
+
+# QuickJS is pure C. Compile it with C99 (required by QuickJS) and suppress
+# warnings that fire from its internal patterns — the codebase uses a few
+# pragmas that trip -Wextra noisily but are correct (unused-params in
+# opcode-dispatch macros, implicit-fallthrough in parser jump tables).
+QJSFLAGS = -O3 -std=c99 -DCONFIG_VERSION="\"2025-04-26\"" \
+           -Wno-sign-compare -Wno-unused-parameter -Wno-implicit-fallthrough \
+           -Wno-array-bounds -Wno-format-truncation
 
 # Link-time flags. Kept SEPARATE from CXXFLAGS so `-pthread` doesn't get
 # expanded to `-lpthread` on the link line.
@@ -37,8 +45,14 @@ LDLIBS    = -Wl,-Bstatic -lglfw3 -lglew32 -lz -lwinpthread \
             -lwinmm \
             -Wl,-Bstatic
 
-SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp
+SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp music.cpp audio.cpp
 OBJS = $(SRCS:.cpp=.o)
+
+# Vendored QuickJS — compiled as C99, separate rule below.
+QJS_SRCS = vendor/quickjs/quickjs.c vendor/quickjs/libregexp.c \
+           vendor/quickjs/libunicode.c vendor/quickjs/dtoa.c
+QJS_OBJS = $(QJS_SRCS:.c=.o)
+
 BIN  = feedback.exe
 
 # Bundle zipped for distribution — what you upload to GitHub Releases.
@@ -48,20 +62,31 @@ DIST_ZIP  = $(DIST_NAME).zip
 
 all: $(BIN)
 
-$(BIN): $(OBJS)
+$(BIN): $(OBJS) $(QJS_OBJS)
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+vendor/quickjs/%.o: vendor/quickjs/%.c
+	$(CC) $(QJSFLAGS) -Ivendor/quickjs -c -o $@ $<
+
 # `make dist` produces a zip with the exe + everything it needs at runtime.
 # Recipients unzip, double-click feedback.exe, done.
+#
+# MIDI/Strudel integration: feedback.exe registers a virtual MIDI port via
+# the teVirtualMIDI driver (bundled with loopMIDI). On first run the app
+# prompts to winget-install loopMIDI, which drops the driver into System32.
+# Nothing extra ships in the zip.
 dist: $(BIN)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)
 	mkdir -p $(DIST_DIR)
 	cp $(BIN) $(DIST_DIR)/
 	cp -r shaders $(DIST_DIR)/
 	cp -r presets $(DIST_DIR)/
+	cp -r js $(DIST_DIR)/
+	cp -r music $(DIST_DIR)/
+	@if [ -d samples ]; then cp -r samples $(DIST_DIR)/; fi
 	cp README.md LICENSE CREDITS.md $(DIST_DIR)/
 	@echo "--- DLL check (should list only Windows system DLLs) ---"
 	@objdump -p $(BIN) | grep "DLL Name:" || true
@@ -72,7 +97,7 @@ dist: $(BIN)
 	@echo "Built $(DIST_ZIP) — upload this to GitHub Releases."
 
 clean:
-	rm -f $(OBJS) $(BIN)
+	rm -f $(OBJS) $(QJS_OBJS) $(BIN)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)
 
 .PHONY: all dist clean
