@@ -40,6 +40,7 @@
 #include "recorder.h"
 #include "overlay.h"
 #include "input.h"
+#include "music.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO_WARNING
@@ -2901,6 +2902,15 @@ int main(int argc, char** argv) {
     // setup pointer so CLI users know Strudel sync is a flip away.
     music_startup_hint();
 
+    // Embedded JS runtime — first step of the standalone music system.
+    // Later steps will load @strudel/core here and wire pattern events
+    // into a native audio engine.
+    if (Music::init()) {
+        Music::eval("print('feedback music engine online — QuickJS ready');",
+                    "<startup>");
+        Music::eval("print('1 + 2 * 3 =', 1 + 2 * 3);", "<smoketest>");
+    }
+
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -3207,6 +3217,8 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     timeEndPeriod(1);
 #endif
+
+    Music::shutdown();
 
     // Post-session encode prompt — offer to convert each EXR sequence
     // captured this session to MP4 via ffmpeg.
