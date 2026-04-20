@@ -134,13 +134,16 @@ enum ActionId : int {
 
 enum ActionKind : int { AK_STEP, AK_RATE, AK_DISCRETE, AK_TRIGGER };
 
-// Binding sources. GAMEPAD_* are populated in C2, MIDI_CC in a later pass.
+// Binding sources. GAMEPAD_* are populated in C2, MIDI_* by the Strudel
+// integration pass. For MIDI: `modmask` is MIDI channel (1..16), or 0 for
+// "omni" (match any channel).
 enum BindSource : int {
     SRC_NONE = 0,
     SRC_KEY,           // code = GLFW_KEY_*, modmask = GLFW_MOD_*
     SRC_GAMEPAD_BTN,   // code = GLFW_GAMEPAD_BUTTON_*
     SRC_GAMEPAD_AXIS,  // code = GLFW_GAMEPAD_AXIS_* (bipolar/rate)
-    SRC_MIDI_CC,       // code = CC number
+    SRC_MIDI_CC,       // code = CC number,        modmask = channel (0 = omni)
+    SRC_MIDI_NOTE,     // code = MIDI note number, modmask = channel (0 = omni)
 };
 
 // Gamepad binding context — what "mode" the controller is in. Keyboard
@@ -237,9 +240,40 @@ public:
     // from glfwGetTime delta.
     void pollGamepad(int jid, float dt, BindContext currentCtx);
 
-    // MIDI stub — populated by a future commit (RtMidi / winmm). Kept here
-    // so apply_action consumers never have to care where events originate.
+    // MIDI input — opens a winmm port on first call (Windows), re-tries if
+    // loopMIDI is started later. Drains the callback-populated queue on the
+    // main thread and dispatches Note/CC through the existing handler_.
+    // MIDI Clock / Start / Stop update midi_ state which main.cpp reads.
     void pollMidi(float dt);
+
+    // Live MIDI status — snapshot exposed to main.cpp for the BPM section
+    // display and for tempo-following. All fields are writer-owned by
+    // pollMidi; consumers may clear the `startPending` / `stopPending`
+    // flags after handling the event.
+    struct MidiState {
+        std::string portName;           // "" if not connected
+        bool  connected   = false;      // port open
+        bool  clockLive   = false;      // F8 arrived within ~500ms
+        float derivedBpm  = 0.0f;       // from rolling window of Clock pulses
+        // Last events received (for display / debugging).
+        int   lastNoteCh  = 0;          // 1..16, 0 = nothing yet
+        int   lastNoteNum = -1;
+        int   lastNoteVel = 0;
+        int   lastCcCh    = 0;
+        int   lastCcNum   = -1;
+        int   lastCcVal   = 0;
+        // Pending system real-time events — caller consumes by setting back
+        // to false after handling.
+        bool  startPending = false;
+        bool  stopPending  = false;
+    };
+    MidiState&       midi()       { return midi_; }
+    const MidiState& midi() const { return midi_; }
+
+    // Preferred port name, parsed from `[midi] port = …` in bindings.ini.
+    // Substring match against enumerated input devices; empty = pick the
+    // first loopMIDI-like port found. Set before the first pollMidi call.
+    void setMidiPortHint(const std::string& s) { midiPortHint_ = s; }
 
     // Low-level insert (used by installDefaults and loadIni).
     void bind(const Binding& b) { bindings_.push_back(b); }
@@ -250,6 +284,8 @@ public:
 private:
     std::vector<Binding> bindings_;
     Handler handler_;
+    MidiState   midi_;
+    std::string midiPortHint_;
 };
 
 // Global instance; defined in input.cpp.

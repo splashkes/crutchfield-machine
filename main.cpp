@@ -1412,12 +1412,45 @@ static std::string section_output() {
 }
 static std::string section_bpm() {
     const auto& p = S.p;
-    char b[1536];
+    const auto& mi = g_input.midi();
+    char midiLine[256];
+    if (mi.connected && mi.clockLive) {
+        snprintf(midiLine, sizeof midiLine,
+            "MIDI     : '%s'  clock %.1f bpm  LOCKED",
+            mi.portName.c_str(), mi.derivedBpm);
+    } else if (mi.connected) {
+        snprintf(midiLine, sizeof midiLine,
+            "MIDI     : '%s'  no clock (tap active)",
+            mi.portName.c_str());
+    } else {
+        snprintf(midiLine, sizeof midiLine,
+            "MIDI     : no port (loopMIDI not running?)");
+    }
+    char lastLine[160] = "";
+    if (mi.lastNoteNum >= 0 || mi.lastCcNum >= 0) {
+        if (mi.lastNoteNum >= 0 && mi.lastCcNum >= 0) {
+            snprintf(lastLine, sizeof lastLine,
+                "           last note %d ch%d vel%d   cc %d=%d ch%d\n",
+                mi.lastNoteNum, mi.lastNoteCh, mi.lastNoteVel,
+                mi.lastCcNum, mi.lastCcVal, mi.lastCcCh);
+        } else if (mi.lastNoteNum >= 0) {
+            snprintf(lastLine, sizeof lastLine,
+                "           last note %d ch%d vel%d\n",
+                mi.lastNoteNum, mi.lastNoteCh, mi.lastNoteVel);
+        } else {
+            snprintf(lastLine, sizeof lastLine,
+                "           last cc %d=%d ch%d\n",
+                mi.lastCcNum, mi.lastCcVal, mi.lastCcCh);
+        }
+    }
+    char b[2048];
     snprintf(b, sizeof b,
         "BPM      : %.1f   div: %s\n"
         "sync     : %s\n"
+        "%s\n"
+        "%s"
         "\n"
-        "%-10s tap tempo\n"
+        "%-10s tap tempo (inert when MIDI clock is live)\n"
         "%-10s sync on/off\n"
         "%-10s cycle division\n"
         "\n"
@@ -1431,6 +1464,8 @@ static std::string section_bpm() {
         "beat phase: %.2f",
         p.bpm, BPM_DIV_NAMES[p.divIdx],
         p.bpmSyncOn ? "ON" : "off",
+        midiLine,
+        lastLine,
         keys_for(ACT_BPM_TAP).c_str(),
         keys_for(ACT_BPM_SYNC_TOGGLE).c_str(),
         keys_for(ACT_BPM_DIV_CYCLE).c_str(),
@@ -1568,6 +1603,12 @@ static void reload_shaders() {
 static std::vector<double> g_bpmTaps;
 
 static void bpm_tap(double now) {
+    // If MIDI Clock is driving tempo, tap-tempo goes inert — announce
+    // rather than silently do nothing.
+    if (g_input.midi().clockLive) {
+        S.ov.logEvent("BPM: MIDI clock locked (tap ignored)");
+        return;
+    }
     // Reset tap history after a big gap.
     if (!g_bpmTaps.empty() && (now - g_bpmTaps.back()) > 2.0)
         g_bpmTaps.clear();
@@ -1615,6 +1656,35 @@ static void update_bpm(double now, float dt) {
         if (p.decayDipTimer < 0.0f) p.decayDipTimer = 0.0f;
     }
 
+    // ── MIDI Clock override ──────────────────────────────────────────────
+    // If Strudel (or any upstream) is streaming MIDI Clock, its tempo wins
+    // over both the manual `p.bpm` value and tap-tempo. Start (0xFA)
+    // re-anchors our beat phase; Stop (0xFC) freezes beat events until the
+    // clock resumes.
+    auto& midi = g_input.midi();
+    static bool s_midiFrozen = false;
+    if (midi.clockLive && midi.derivedBpm > 0.0f) {
+        p.bpm = midi.derivedBpm;
+        if (!p.bpmSyncOn) {
+            p.bpmSyncOn   = true;         // auto-on when clock is driving
+            p.beatOrigin  = now;
+        }
+        s_midiFrozen = false;
+    }
+    if (midi.startPending) {
+        p.beatOrigin  = now;
+        p.bpmSyncOn   = true;
+        p.beatPhase   = 0.0f;
+        s_midiFrozen  = false;
+        midi.startPending = false;
+        S.ov.logEvent("MIDI Start");
+    }
+    if (midi.stopPending) {
+        s_midiFrozen = true;
+        midi.stopPending = false;
+        S.ov.logEvent("MIDI Stop");
+    }
+
     // Beat period (seconds) for the current division.
     float basePeriod = 60.0f / fmaxf(p.bpm, 1.0f);
     float period     = basePeriod * BPM_DIV_MUL[p.divIdx];
@@ -1630,7 +1700,7 @@ static void update_bpm(double now, float dt) {
     // Also fire on first frame (prev==0 and phase just seeded) — skip
     // the very first frame of the loop by requiring a real crossing.
     bool crossed = (prev > 0.5f && phase < 0.5f);
-    if (!p.bpmSyncOn || !crossed) return;
+    if (!p.bpmSyncOn || s_midiFrozen || !crossed) return;
 
     // ── beat event ── fire enabled modulations.
     if (p.bpmInject) {

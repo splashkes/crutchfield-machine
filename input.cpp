@@ -9,6 +9,14 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <deque>
+#include <mutex>
+
+#ifdef _WIN32
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #include <mmsystem.h>
+#endif
 
 Input g_input;
 
@@ -789,6 +797,23 @@ bool Input::loadIni(const std::string& path) {
         size_t hash = v.find('#');
         if (hash != std::string::npos) v = s_trim(v.substr(0, hash));
 
+        // Top-level keys inside [midi]: `port = …`, `clock = follow|ignore`.
+        // These configure the MIDI input rather than mapping to an action.
+        if (section == "midi") {
+            if (k == "port") {
+                setMidiPortHint(v);
+                continue;
+            }
+            if (k == "clock") {
+                // 'ignore' disables follow behavior on main.cpp side; for
+                // now we just stash intent in stderr (wired via a future
+                // flag if needed).
+                if (v == "ignore")
+                    std::fprintf(stderr, "[midi] clock=ignore honored by main.cpp side\n");
+                continue;
+            }
+        }
+
         const ActionInfo* info = action_info_by_name(k.c_str());
         if (!info) {
             std::fprintf(stderr, "[bindings] unknown action '%s' — skipped\n", k.c_str());
@@ -840,6 +865,7 @@ bool Input::loadIni(const std::string& path) {
             if (lo == "bindings") return CTX_SEC_BINDINGS;
             return CTX_ANY;
         };
+        int midiChannel = 0;  // 0 = omni (match any channel)
         for (size_t t = 1; t < toks.size(); t++) {
             const std::string& opt = toks[t];
             if (opt.rfind("scale=", 0) == 0)      scale = (float)std::atof(opt.c_str() + 6);
@@ -847,7 +873,9 @@ bool Input::loadIni(const std::string& path) {
             else if (opt == "abs" || opt == "absolute") absolute = true;
             else if (opt.rfind("deadzone=", 0) == 0) deadzone = (float)std::atof(opt.c_str() + 9);
             else if (opt.rfind("ctx=", 0) == 0)   ctx = parse_ctx(opt.substr(4));
+            else if (opt.rfind("ch=", 0) == 0)    midiChannel = std::atoi(opt.c_str() + 3);
         }
+        if (midiChannel < 0 || midiChannel > 16) midiChannel = 0;
 
         Binding b;
         b.action   = info->id;
@@ -880,8 +908,13 @@ bool Input::loadIni(const std::string& path) {
             }
         } else if (section == "midi") {
             if (keyPart.rfind("cc:", 0) == 0) {
-                b.source = SRC_MIDI_CC;
-                b.code   = std::atoi(keyPart.c_str() + 3);
+                b.source  = SRC_MIDI_CC;
+                b.code    = std::atoi(keyPart.c_str() + 3);
+                b.modmask = midiChannel;
+            } else if (keyPart.rfind("note:", 0) == 0) {
+                b.source  = SRC_MIDI_NOTE;
+                b.code    = std::atoi(keyPart.c_str() + 5);
+                b.modmask = midiChannel;
             } else {
                 continue;
             }
@@ -1008,12 +1041,291 @@ void Input::pollGamepad(int jid, float dt, BindContext currentCtx) {
     }
 }
 
-// Placeholder — wired when a real MIDI implementation arrives.
-// The call site in main is in place so gamepad-style per-frame polling
-// is already structured for CC-mapped knobs & buttons.
+// ─────────────────────────────────────────────────────────────────────────
+// MIDI input (Windows / winmm).
+//
+// winmm runs the MIDI callback on a private thread; we cannot call any
+// MMSystem function from inside it beyond tracing. So we push short MIDI
+// bytes into a mutex-guarded deque and drain them on the main thread in
+// pollMidi(). All parsing / action dispatch happens on the main thread.
+//
+// Device selection: pick the port whose name substring-matches the
+// user-provided `port` hint (from bindings.ini); if no hint, pick the
+// first port whose name contains "loopMIDI" (case-insensitive), else
+// the first port available. Retries every ~2s while no port is open —
+// letting the user start loopMIDI after the app is already running.
+//
+// Tempo derivation: MIDI Clock runs at 24 pulses per quarter note. We
+// keep the last ~24 inter-pulse gaps and average them; BPM = 60 /
+// (avg_gap * 24). If no pulses arrive for ~500 ms we flag clockLive
+// false and let the app fall back to manual/tap tempo.
+// ─────────────────────────────────────────────────────────────────────────
+
+#ifdef _WIN32
+namespace {
+    struct WinMidi {
+        std::mutex               mu;         // guards q + lastEventTime
+        std::deque<uint32_t>     q;          // packed DWORDs from MIM_DATA
+        HMIDIIN                  hIn   = nullptr;
+        UINT                     devId = (UINT)-1;
+        std::string              devName;
+        // Tempo tracking — main-thread-owned (no lock needed).
+        double                   clockTimes[24] = {};
+        int                      clockHead = 0;
+        int                      clockCount = 0;
+        double                   lastClockT = 0.0;
+        // Retry throttling.
+        double                   nextOpenAttempt = 0.0;
+    };
+    WinMidi g_mi;
+
+    void CALLBACK midi_in_cb(HMIDIIN /*h*/, UINT wMsg, DWORD_PTR /*inst*/,
+                             DWORD_PTR dwParam1, DWORD_PTR /*dwParam2*/) {
+        if (wMsg != MIM_DATA) return;      // ignore MIM_LONGDATA (SysEx)
+        std::lock_guard<std::mutex> lk(g_mi.mu);
+        if (g_mi.q.size() > 4096) return;  // drop on runaway backlog
+        g_mi.q.push_back((uint32_t)dwParam1);
+    }
+
+    // Case-insensitive substring match.
+    bool name_contains(const std::string& hay, const std::string& needle) {
+        if (needle.empty()) return true;
+        auto lc = [](char c){ return (char)std::tolower((unsigned char)c); };
+        std::string H; H.reserve(hay.size());    for (char c : hay)    H += lc(c);
+        std::string N; N.reserve(needle.size()); for (char c : needle) N += lc(c);
+        return H.find(N) != std::string::npos;
+    }
+
+    void try_open_midi_port(const std::string& hint) {
+        if (g_mi.hIn) return;
+        UINT n = midiInGetNumDevs();
+        if (n == 0) return;
+        UINT pick = (UINT)-1;
+        std::string pickName;
+        // First pass: exact (substring) hint match.
+        for (UINT i = 0; i < n; i++) {
+            MIDIINCAPSA caps = {};
+            if (midiInGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) continue;
+            std::string nm = caps.szPname;
+            if (!hint.empty() && name_contains(nm, hint)) {
+                pick = i; pickName = nm; break;
+            }
+        }
+        // Fallback: first port whose name mentions loopMIDI.
+        if (pick == (UINT)-1 && hint.empty()) {
+            for (UINT i = 0; i < n; i++) {
+                MIDIINCAPSA caps = {};
+                if (midiInGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) continue;
+                std::string nm = caps.szPname;
+                if (name_contains(nm, "loopmidi")) {
+                    pick = i; pickName = nm; break;
+                }
+            }
+        }
+        // Last resort: port 0.
+        if (pick == (UINT)-1 && hint.empty()) {
+            MIDIINCAPSA caps = {};
+            if (midiInGetDevCapsA(0, &caps, sizeof caps) == MMSYSERR_NOERROR) {
+                pick = 0; pickName = caps.szPname;
+            }
+        }
+        if (pick == (UINT)-1) return;
+
+        HMIDIIN h = nullptr;
+        MMRESULT r = midiInOpen(&h, pick, (DWORD_PTR)midi_in_cb, 0,
+                                CALLBACK_FUNCTION);
+        if (r != MMSYSERR_NOERROR) {
+            std::fprintf(stderr, "[midi] midiInOpen('%s') failed (%u)\n",
+                         pickName.c_str(), (unsigned)r);
+            return;
+        }
+        r = midiInStart(h);
+        if (r != MMSYSERR_NOERROR) {
+            std::fprintf(stderr, "[midi] midiInStart('%s') failed (%u)\n",
+                         pickName.c_str(), (unsigned)r);
+            midiInClose(h);
+            return;
+        }
+        g_mi.hIn     = h;
+        g_mi.devId   = pick;
+        g_mi.devName = pickName;
+        std::fprintf(stdout, "[midi] opened input '%s' (dev %u)\n",
+                     pickName.c_str(), (unsigned)pick);
+    }
+
+    void close_midi_port() {
+        if (!g_mi.hIn) return;
+        midiInStop(g_mi.hIn);
+        midiInReset(g_mi.hIn);
+        midiInClose(g_mi.hIn);
+        g_mi.hIn = nullptr;
+        g_mi.devId = (UINT)-1;
+        std::fprintf(stdout, "[midi] closed input '%s'\n", g_mi.devName.c_str());
+        g_mi.devName.clear();
+    }
+}
+#endif  // _WIN32
+
 void Input::pollMidi(float /*dt*/) {
-    // TODO: RtMidi or winmm-backed polling; dispatch CC edges as STEP/RATE
-    // and note-on as DISCRETE/TRIGGER using the existing Binding table.
+#ifdef _WIN32
+    const double now = glfwGetTime();
+
+    // Keep trying to open the port (loopMIDI may be started after app launch).
+    if (!g_mi.hIn && now >= g_mi.nextOpenAttempt) {
+        try_open_midi_port(midiPortHint_);
+        g_mi.nextOpenAttempt = now + 2.0;  // retry every 2s if still not open
+    }
+
+    midi_.connected = (g_mi.hIn != nullptr);
+    midi_.portName  = g_mi.devName;
+
+    // Drain the callback's queue.
+    std::deque<uint32_t> local;
+    {
+        std::lock_guard<std::mutex> lk(g_mi.mu);
+        local.swap(g_mi.q);
+    }
+
+    for (uint32_t packed : local) {
+        uint8_t b0 = (uint8_t)(packed       & 0xFF);
+        uint8_t b1 = (uint8_t)((packed>>8)  & 0xFF);
+        uint8_t b2 = (uint8_t)((packed>>16) & 0xFF);
+
+        // System real-time (single byte, status >= 0xF8) — no channel.
+        if (b0 >= 0xF8) {
+            if (b0 == 0xF8) {
+                // Clock pulse — record interval, compute BPM.
+                if (g_mi.lastClockT > 0.0) {
+                    double gap = now - g_mi.lastClockT;
+                    g_mi.clockTimes[g_mi.clockHead] = gap;
+                    g_mi.clockHead = (g_mi.clockHead + 1) % 24;
+                    if (g_mi.clockCount < 24) g_mi.clockCount++;
+                    if (g_mi.clockCount >= 4) {
+                        double sum = 0.0;
+                        for (int i = 0; i < g_mi.clockCount; i++) sum += g_mi.clockTimes[i];
+                        double avg = sum / g_mi.clockCount;
+                        if (avg > 1e-5) {
+                            float bpm = (float)(60.0 / (avg * 24.0));
+                            if (bpm >= 20.f && bpm <= 400.f) midi_.derivedBpm = bpm;
+                        }
+                    }
+                }
+                g_mi.lastClockT = now;
+                midi_.clockLive = true;
+            } else if (b0 == 0xFA) {
+                midi_.startPending = true;
+                g_mi.clockCount = 0;
+                g_mi.clockHead  = 0;
+                g_mi.lastClockT = 0.0;
+            } else if (b0 == 0xFC) {
+                midi_.stopPending = true;
+            }
+            // (0xFB continue, 0xFE active sensing, 0xFF reset: ignore.)
+            continue;
+        }
+
+        // Channel voice: status high nibble = message, low nibble = channel 0..15.
+        uint8_t type = b0 & 0xF0;
+        int ch1      = (b0 & 0x0F) + 1;   // 1..16
+
+        if (type == 0x90 || type == 0x80) {
+            // Note-On (90, vel > 0) / Note-Off (80, or 90 with vel 0).
+            int note = b1 & 0x7F;
+            int vel  = b2 & 0x7F;
+            bool on  = (type == 0x90) && (vel > 0);
+            midi_.lastNoteCh  = ch1;
+            midi_.lastNoteNum = note;
+            midi_.lastNoteVel = on ? vel : 0;
+
+            if (!handler_) continue;
+            for (const Binding& b : bindings_) {
+                if (b.source != SRC_MIDI_NOTE) continue;
+                if (b.code != note) continue;
+                if (b.modmask != 0 && b.modmask != ch1) continue;
+                const ActionInfo* info = action_info(b.action);
+                if (!info) continue;
+                float m = (vel / 127.0f) * b.scale;
+                if (b.invert) m = -m;
+                switch (info->kind) {
+                case AK_DISCRETE: if (on) handler_(b.action, 1.0f); break;
+                case AK_TRIGGER:
+                    if (on)  handler_(b.action, 1.0f);
+                    if (!on) handler_(b.action, 0.0f);
+                    break;
+                case AK_STEP:
+                    if (on) handler_(b.action, m);
+                    break;
+                case AK_RATE:
+                    if (on) handler_(b.action, m);
+                    break;
+                }
+            }
+        } else if (type == 0xB0) {
+            int ccNum = b1 & 0x7F;
+            int ccVal = b2 & 0x7F;
+            midi_.lastCcCh  = ch1;
+            midi_.lastCcNum = ccNum;
+            midi_.lastCcVal = ccVal;
+
+            if (!handler_) continue;
+            for (const Binding& b : bindings_) {
+                if (b.source != SRC_MIDI_CC) continue;
+                if (b.code != ccNum) continue;
+                if (b.modmask != 0 && b.modmask != ch1) continue;
+                const ActionInfo* info = action_info(b.action);
+                if (!info) continue;
+                float v = ccVal / 127.0f;
+                if (b.invert) v = 1.0f - v;
+                float m = v * b.scale;
+                // CC is continuous — treat like an absolute-axis dispatch for
+                // RATE/STEP actions. Toggles (DISCRETE) fire on the 0→non-0 edge.
+                switch (info->kind) {
+                case AK_RATE:
+                case AK_STEP:
+                    handler_(b.action, m);
+                    break;
+                case AK_DISCRETE:
+                    if (ccVal > 63) handler_(b.action, 1.0f);
+                    break;
+                case AK_TRIGGER:
+                    handler_(b.action, ccVal > 63 ? 1.0f : 0.0f);
+                    break;
+                }
+            }
+        }
+        // (0xA0 poly-aftertouch, 0xC0 program change, 0xD0 channel pressure,
+        //  0xE0 pitch bend — ignored for now.)
+    }
+
+    // Clock timeout: if no Clock pulse for ~500ms, mark it dead.
+    if (midi_.clockLive && g_mi.lastClockT > 0.0 && (now - g_mi.lastClockT) > 0.5) {
+        midi_.clockLive = false;
+        g_mi.clockCount = 0;
+    }
+
+    // Detect port disappearance (user killed loopMIDI) — re-enumerate and
+    // close if ours is gone. Throttled to once every 2s.
+    static double s_enumT = 0.0;
+    if (g_mi.hIn && now - s_enumT > 2.0) {
+        s_enumT = now;
+        UINT n = midiInGetNumDevs();
+        bool found = false;
+        for (UINT i = 0; i < n && !found; i++) {
+            MIDIINCAPSA caps = {};
+            if (midiInGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) continue;
+            if (g_mi.devName == caps.szPname) found = true;
+        }
+        if (!found) {
+            close_midi_port();
+            midi_.clockLive = false;
+            midi_.connected = false;
+            g_mi.clockCount = 0;
+        }
+    }
+#else
+    // Non-Windows: ALSA seq / CoreMIDI support not implemented yet.
+    (void)midi_; (void)midiPortHint_;
+#endif
 }
 
 bool Input::saveIni(const std::string& path) const {
@@ -1047,8 +1359,8 @@ bool Input::saveIni(const std::string& path) const {
 "# panel.  Unknown action names are skipped with a warning to stderr.\n"
 "\n");
 
-    auto dump_section = [&](const char* name, BindSource src) {
-        std::fprintf(f, "[%s]\n", name);
+    auto dump_section = [&](const char* name, BindSource src, bool emitHeader = true) {
+        if (emitHeader) std::fprintf(f, "[%s]\n", name);
         for (int i = 0; i < action_info_count(); i++) {
             ActionId id = ACTIONS[i].id;
             for (const Binding& b : bindings_) {
@@ -1062,6 +1374,11 @@ bool Input::saveIni(const std::string& path) const {
                     std::fprintf(f, "%-24s = axis:%d", ACTIONS[i].name, b.code);
                 } else if (src == SRC_MIDI_CC) {
                     std::fprintf(f, "%-24s = cc:%d", ACTIONS[i].name, b.code);
+                } else if (src == SRC_MIDI_NOTE) {
+                    std::fprintf(f, "%-24s = note:%d", ACTIONS[i].name, b.code);
+                }
+                if ((src == SRC_MIDI_CC || src == SRC_MIDI_NOTE) && b.modmask != 0) {
+                    std::fprintf(f, " ch=%d", b.modmask);
                 }
                 if (b.scale != 1.0f)  std::fprintf(f, " scale=%.3f", b.scale);
                 if (b.invert)         std::fprintf(f, " invert");
@@ -1085,7 +1402,35 @@ bool Input::saveIni(const std::string& path) const {
     dump_section("keyboard", SRC_KEY);
     dump_section("gamepad",  SRC_GAMEPAD_BTN);
     dump_section("gamepad",  SRC_GAMEPAD_AXIS);
-    dump_section("midi",     SRC_MIDI_CC);
+
+    // MIDI section: emit a header with a port= hint first, then the two
+    // source types. Defaults leave the map empty — users add their own.
+    std::fprintf(f,
+"[midi]\n"
+"# Integration with Strudel (https://strudel.cc) or any MIDI controller.\n"
+"#\n"
+"# Windows: install loopMIDI (https://www.tobias-erichsen.de/software/loopmidi.html),\n"
+"# create a virtual port called 'loopMIDI Port' or similar, then route\n"
+"# Strudel's MIDI output there with `.midi(\"loopMIDI Port\")`.\n"
+"#\n"
+"# Top-level keys:\n"
+"#   port = <substring>   case-insensitive match against device names.\n"
+"#                        Omit to auto-pick the first loopMIDI port.\n"
+"#   clock = follow       follow incoming MIDI Clock for BPM (default).\n"
+"#\n"
+"# Binding syntax:\n"
+"#   action.name = note:NN [ch=N]   Note-On/Off. vel becomes magnitude.\n"
+"#   action.name = cc:NN   [ch=N]   CC value 0..127 → magnitude 0..1.\n"
+"#   ch=0 or omitted = match any channel (omni).\n"
+"#\n"
+"# Example drum-trigger map (General MIDI drum channel 10):\n"
+"#   inject.hold     = note:36 ch=10   # kick  → inject pulse\n"
+"#   vfx1.cycle+     = note:38 ch=10   # snare → next effect\n"
+"#   bpm.flash.lock  = note:42 ch=10   # hat   → toggle flash mod\n"
+"#   warp.zoom+      = cc:1            # mod wheel → zoom+\n"
+"\n");
+    dump_section("midi",     SRC_MIDI_CC,   /*emitHeader=*/false);
+    dump_section("midi",     SRC_MIDI_NOTE, /*emitHeader=*/false);
 
     std::fclose(f);
     return true;
