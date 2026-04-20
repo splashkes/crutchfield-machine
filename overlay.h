@@ -1,10 +1,12 @@
 #pragma once
 #include <GL/glew.h>
+#include <functional>
 #include <string>
 #include <vector>
 
-// Non-feedback overlay: cumulative HUD bottom-left + toggle-on-H help screen.
-// Drawn AFTER the recorder captures, so overlays never appear in the MP4.
+// Non-feedback overlay: cumulative HUD bottom-left + top-left drill-down
+// help panel. Drawn AFTER the recorder captures, so overlays never
+// appear in the MP4.
 
 class Overlay {
 public:
@@ -17,8 +19,6 @@ public:
 
     // Log a parameter change. `key` groups related presses so repeated taps
     // on Q accumulate into one HUD line showing total delta this burst.
-    // `label` is the displayed name, `deltaFormatted` is e.g. "+0.06 deg/pass",
-    // `valueFormatted` is e.g. "34.4 deg/s".
     void logParam(const std::string& key,
                   const std::string& label,
                   const std::string& deltaFormatted,
@@ -27,28 +27,51 @@ public:
     // Non-accumulable event (layer toggle, inject, clear, etc).
     void logEvent(const std::string& text);
 
-    // Help screen toggle.
-    void toggleHelp() { helpVisible_ = !helpVisible_; }
+    // ── Help panel ────────────────────────────────────────────────────
+    // Two levels: menu (list of sections) and section (one section's
+    // content). Panel is fixed top-left and does NOT dim the main view,
+    // so you can keep it open while driving the instrument.
+    //
+    // Host calls setHelpSections() once at startup with the ordered list
+    // of section names, and setHelpProvider() with a callback that returns
+    // the up-to-date body for a given section index. The overlay calls
+    // the provider every frame while a section is viewed — values stay
+    // live without the host having to push them.
+    using BodyProvider = std::function<std::string(int section)>;
+    void setHelpSections(std::vector<std::string> names);
+    void setHelpProvider(BodyProvider p) { provider_ = std::move(p); }
+
+    // Navigation. Meant to be wired to UI actions — host dispatches these
+    // when the help panel is visible.
+    void toggleHelp();
+    void helpUp();
+    void helpDown();
+    void helpEnter();
+    void helpBack();     // section → menu; menu → close
+
     bool helpVisible() const { return helpVisible_; }
 
-    // Update the text shown in the help overlay. Caller (main) should call
-    // this every frame while help is visible so live values stay current.
-    void setHelpText(const std::string& s) { helpText_ = s; }
-
 private:
+    enum View { VIEW_MENU, VIEW_SECTION };
+
     struct Line {
         std::string key;      // "" for discrete events
         std::string text;     // the formatted string to render
         double      lastTouch = 0.0;
     };
 
-    // A running delta accumulates per-key during a burst of activity. When
-    // the whole HUD has been quiet long enough to fully fade, we clear both.
     std::vector<Line> lines_;
     double lastActivity_ = 0.0;
     int    winW_ = 0, winH_ = 0;
+
+    // Help state
     bool   helpVisible_ = false;
-    std::string helpText_;
+    View   view_ = VIEW_MENU;
+    int    menuSel_ = 0;
+    int    sectionScroll_ = 0;
+    std::vector<std::string> sections_;
+    BodyProvider provider_;
+    std::string  cachedBody_;          // last snapshot from provider (debug)
 
     // GL resources for text rendering
     GLuint prog_ = 0, vbo_ = 0, vao_ = 0;
@@ -58,4 +81,11 @@ private:
                       unsigned char rgba[4], float alpha, float scale = 1.0f);
     void drawFilledRect(float x, float y, float w, float h,
                         unsigned char rgba[4], float alpha);
+
+    void drawHelpPanel();
+    void drawHelpMenu(float x, float y, float w, float h);
+    void drawHelpSection(float x, float y, float w, float h);
+
+    // Helper: split body text into lines for scroll handling.
+    static std::vector<std::string> splitLines(const std::string& s);
 };

@@ -758,180 +758,366 @@ static std::string preset_save_now() {
 static double g_lastFrameTime = 0.0;
 static double g_smoothedFps   = 60.0;
 
-// Build the in-window help text with current values and grey-out indicators
-// for every cycle-able quality. Re-built every frame the help is shown so
-// values track live as you turn the knobs with help open.
-static std::string build_help_text() {
+// Translate a GLFW key + mods back into a short human spec (e.g. "Ctrl+S",
+// "F1", "Q"). Mirror of input.cpp's key_spec_string, kept local so the
+// help panel can format binding summaries without exposing that helper.
+static std::string fmt_key(int key, int mods) {
+    std::string s;
+    if (mods & GLFW_MOD_CONTROL) s += "Ctrl+";
+    if (mods & GLFW_MOD_ALT)     s += "Alt+";
+    if (mods & GLFW_MOD_SHIFT)   s += "Shift+";
+    if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) { s += (char)('A' + (key - GLFW_KEY_A)); return s; }
+    if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) { s += (char)('0' + (key - GLFW_KEY_0)); return s; }
+    if (key >= GLFW_KEY_F1 && key <= GLFW_KEY_F12) {
+        char b[8]; snprintf(b, sizeof b, "F%d", 1 + (key - GLFW_KEY_F1));
+        return s + b;
+    }
+    if (key >= GLFW_KEY_KP_0 && key <= GLFW_KEY_KP_9) {
+        char b[8]; snprintf(b, sizeof b, "NP%d", (key - GLFW_KEY_KP_0));
+        return s + b;
+    }
+    switch (key) {
+        case GLFW_KEY_SPACE: return s + "Space";
+        case GLFW_KEY_ENTER: return s + "Enter";
+        case GLFW_KEY_ESCAPE: return s + "Esc";
+        case GLFW_KEY_TAB: return s + "Tab";
+        case GLFW_KEY_INSERT: return s + "Ins";
+        case GLFW_KEY_DELETE: return s + "Del";
+        case GLFW_KEY_HOME: return s + "Home";
+        case GLFW_KEY_END: return s + "End";
+        case GLFW_KEY_PAGE_UP: return s + "PgUp";
+        case GLFW_KEY_PAGE_DOWN: return s + "PgDn";
+        case GLFW_KEY_LEFT: return s + "Left";
+        case GLFW_KEY_RIGHT: return s + "Right";
+        case GLFW_KEY_UP: return s + "Up";
+        case GLFW_KEY_DOWN: return s + "Down";
+        case GLFW_KEY_LEFT_BRACKET: return s + "[";
+        case GLFW_KEY_RIGHT_BRACKET: return s + "]";
+        case GLFW_KEY_SEMICOLON: return s + ";";
+        case GLFW_KEY_APOSTROPHE: return s + "'";
+        case GLFW_KEY_COMMA: return s + ",";
+        case GLFW_KEY_PERIOD: return s + ".";
+        case GLFW_KEY_MINUS: return s + "-";
+        case GLFW_KEY_EQUAL: return s + "=";
+        case GLFW_KEY_SLASH: return s + "/";
+        case GLFW_KEY_BACKSLASH: return s + "\\";
+        case GLFW_KEY_GRAVE_ACCENT: return s + "`";
+    }
+    return s + "?";
+}
+
+// Return the keyboard binding for an action as "Q" or "Ctrl+S". Only the
+// first matching keyboard binding is returned (bindings.ini can add more).
+static std::string keys_for(ActionId a) {
+    for (const Binding& b : g_input.bindings()) {
+        if (b.action == a && b.source == SRC_KEY)
+            return fmt_key(b.code, b.modmask);
+    }
+    return "";
+}
+
+// "Q/A" for up/down pairs. Falls back to just one or the other if one is
+// unbound. If both show the same chord prefix we don't try to be clever —
+// the user just sees "Ctrl+Up / Ctrl+Dn" which is fine.
+static std::string keys_pair(ActionId up, ActionId dn) {
+    std::string a = keys_for(up), b = keys_for(dn);
+    if (a.empty()) return b;
+    if (b.empty()) return a;
+    return a + "/" + b;
+}
+
+// ── help section providers ──────────────────────────────────────────────
+// Ordered names shown in the top-level menu. The index is what gets passed
+// to the provider below.
+static const char* HELP_SECTIONS[] = {
+    "Status", "Layers", "Warp", "Optics", "Color",
+    "Dynamics", "Physics", "Thermal", "Inject",
+    "VFX-1", "VFX-2", "Output", "BPM",
+    "Quality", "App", "Bindings",
+};
+static constexpr int N_HELP_SECTIONS =
+    (int)(sizeof(HELP_SECTIONS) / sizeof(HELP_SECTIONS[0]));
+
+// Helpers used inside section builders
+static std::string onoff_s(bool b) { return b ? "ON " : "off"; }
+
+static std::string section_status() {
     const auto& p = S.p;
-    auto onoff = [](bool b) { return b ? "[ON] " : " off "; };
-
-    // Render a 2-or-3-option cycle as "[opt0] opt1  opt2" with the current
-    // one bracketed and the others shown as muted "alternatives." Since
-    // stb_easy_font has no greyed-out style, we use [brackets] and lowercase
-    // for the inactive options to convey "available but not picked".
-    auto cycle3 = [](int cur, const char* a, const char* b, const char* c) {
-        char buf[160];
-        snprintf(buf, sizeof buf, "%s%s %s%s %s%s",
-            cur==0?"[":" ", a, cur==0?"]":" ",
-            cur==1?"[":" ", b, cur==1?"]":" ");
-        // append c with bracket logic
-        char tail[64];
-        snprintf(tail, sizeof tail, " %s%s%s",
-                 cur==2?"[":" ", c, cur==2?"]":" ");
-        strncat(buf, tail, sizeof(buf) - strlen(buf) - 1);
-        return std::string(buf);
-    };
-    auto cycle2 = [](int cur, const char* a, const char* b) {
-        char buf[120];
-        snprintf(buf, sizeof buf, "%s%s%s   %s%s%s",
-            cur==0?"[":" ", a, cur==0?"]":" ",
-            cur==1?"[":" ", b, cur==1?"]":" ");
-        return std::string(buf);
-    };
-    auto cycleN = [](int cur, int n) {
-        char buf[80] = "";
-        for (int i = 1; i <= n; i++) {
-            char piece[16];
-            snprintf(piece, sizeof piece, "%s%d%s ",
-                     i==cur?"[":" ", i, i==cur?"]":" ");
-            strncat(buf, piece, sizeof(buf) - strlen(buf) - 1);
-        }
-        return std::string(buf);
-    };
-
-    static const char* patNames[] = { "H-bars", "V-bars", "dot", "checker", "gradient" };
-
-    // FPS / frame timing
     double now = glfwGetTime();
     double dt  = now - g_lastFrameTime;
     if (dt > 0.0 && dt < 1.0) {
         double inst = 1.0 / dt;
         g_smoothedFps = g_smoothedFps * 0.9 + inst * 0.1;
     }
-
-    char buf[6144];
-    snprintf(buf, sizeof buf,
-"=== video feedback ===                                       [ press H to close ]\n"
-"\n"
-"-- STATS --\n"
-"sim     : %d x %d   precision: RGBA%dF   vsync: %s\n"
-"window  : %d x %d   %s\n"
-"fps     : %.1f       iters/frame: %d   recording: %s\n"
-"preset  : %s\n"
-"\n"
-"-- LAYERS (toggle) --\n"
-"F1  warp     %s    F6  decay    %s\n"
-"F2  optics   %s    F7  noise    %s\n"
-"F3  gamma    %s    F8  couple   %s\n"
-"F4  color    %s    F9  external %s\n"
-"F5  contrast %s    F10 inject   %s\n"
-"Ins physics  %s    PgDn thermal %s\n"
-"\n"
-"-- QUALITY (cycle; current pick in [brackets]) --\n"
-"PgUp  blur kernel : %s\n"
-"F12   chrom. ab.  : %s\n"
-"Home  noise type  : %s\n"
-"End   coupled fld : %s\n"
-"\n"
-"-- ACTIONS --\n"
-"F11   toggle fullscreen / windowed\n"
-"`     start/stop recording (feedback_<timestamp>.mp4)\n"
-"\\     reload shaders from disk (live edit)\n"
-"Ctrl+S  save current settings as new preset (./presets/auto_*.ini)\n"
-"Ctrl+N  next preset       Ctrl+P  previous preset\n"
-"C     clear all fields to black\n"
-"P     pause/resume          (currently: %s)\n"
-"SPACE inject pattern (hold) (current: %s)\n"
-"1..5  pattern: H-bars, V-bars, dot, checker, gradient\n"
-"Esc   quit\n"
-"\n"
-"-- WARP --\n"
-"Q/A  zoom         : %.4f /pass   (1.000 = no zoom)\n"
-"W/S  rotation     : %+.4f rad/pass = %+.2f deg/sec @60fps\n"
-"arr  translate    : (%+.4f, %+.4f) /pass\n"
-"\n"
-"-- OPTICS --\n"
-"[/]  chrom. ab.   : %+.4f\n"
-";/'  blur-X       : %.2f px\n"
-",/.  blur-Y       : %.2f px\n"
-"-/=  blur-angle   : %+.3f rad\n"
-"\n"
-"-- COLOR / TONE --\n"
-"G/B  gamma        : %.3f\n"
-"E/D  hue rate     : %+.4f /pass = %+.2f rotations/sec @60fps\n"
-"R/F  saturation   : %.3f x\n"
-"T/Y  contrast     : %.3f x\n"
-"\n"
-"-- DYNAMICS --\n"
-"U/J  decay        : %.5f /pass\n"
-"N/M  noise        : %.4f\n"
-"K/I  couple amt   : %.3f\n"
-"O/L  external amt : %.3f\n"
-"\n"
-"-- PHYSICS (Crutchfield 1984 camera-side knobs) --\n"
-"V     luminance inv : %s\n"
-"Z/X   sensor gamma  : %.3f     (paper says 0.6..0.9; 1.0 = off)\n"
-"7/8   sat-knee      : %.3f     (0 = hard clip; 1 = full Reinhard)\n"
-"9/0   color-xtalk   : %.3f     (0 = RGB indep; 1 = full averaging)\n"
-"\n"
-"-- THERMAL (air turbulence between camera & monitor) --\n"
-"NP1/4 amplitude  : %.4f    (0=off, 0.015=shimmer, 0.1+=turbulent)\n"
-"NP2/5 scale      : %.2f     (1=wide rolls, 20+=fine grain)\n"
-"NP3/6 speed      : %.2f     (time evolution rate)\n"
-"NP7/8 rise       : %+.3f    (vertical heat advection)\n"
-"NP9/0 swirl      : %.3f     (0=translation, 1+=vortical)\n"
-"\n"
-"Hold SHIFT for 20x coarse steps on any parameter.",
-        S.simW, S.simH, g_cfg.precision, g_cfg.vsync ? "on" : "off",
-        S.winW, S.winH, S.isFullscreen ? "FULLSCREEN" : "windowed",
-        g_smoothedFps, g_cfg.iters,
-        S.rec.active()
-            ? (S.rec.queueDropped()
-                ? "REC (DROPS)"
-                : (S.rec.queueDepth() >= 3 ? "REC (slow)" : "REC"))
-            : "off",
-        g_presetFiles.empty() ? "(none in ./presets/)"
-                              : (g_currentPreset < 0 ? "(unsaved)"
-                                 : preset_current_name().c_str()),
-        onoff(S.enable & L_WARP),     onoff(S.enable & L_DECAY),
-        onoff(S.enable & L_OPTICS),   onoff(S.enable & L_NOISE),
-        onoff(S.enable & L_GAMMA),    onoff(S.enable & L_COUPLE),
-        onoff(S.enable & L_COLOR),    onoff(S.enable & L_EXTERNAL),
-        onoff(S.enable & L_CONTRAST), onoff(S.enable & L_INJECT),
-        onoff(S.enable & L_PHYSICS), onoff(S.enable & L_THERMAL),
-        cycle3(S.blurQ,  "5-tap cross", "9-tap gauss", "25-tap gauss").c_str(),
-        cycle3(S.caQ,    "3-sample", "5-sample ramp", "8-sample wavelen").c_str(),
-        cycle2(S.noiseQ, "white", "pink 1/f").c_str(),
-        cycleN(S.activeFields, 4).c_str(),
-        S.paused ? "PAUSED" : "running",
-        patNames[(unsigned)p.pattern % 5],
-        p.zoom,
-        p.theta, p.theta * 57.2958f * 60.0f,
-        p.transX, p.transY,
-        p.chroma,
-        p.blurX,
-        p.blurY,
-        p.blurAngle,
-        p.gamma,
-        p.hueRate, p.hueRate * 60.0f,
-        p.satGain,
-        p.contrast,
-        p.decay,
-        p.noise,
-        p.couple,
-        p.external,
-        p.invert ? "ON" : "off",
-        p.sensorGamma,
-        p.satKnee,
-        p.colorCross,
-        p.thermAmp,
-        p.thermScale,
-        p.thermSpeed,
-        p.thermRise,
-        p.thermSwirl);
     g_lastFrameTime = now;
-    return std::string(buf);
+
+    const char* patNames[] = { "H-bars","V-bars","dot","checker","gradient" };
+    const char* rec = S.rec.active()
+        ? (S.rec.queueDropped() ? "REC (DROPS)"
+            : (S.rec.queueDepth() >= 3 ? "REC (slow)" : "REC"))
+        : "off";
+    const std::string preset = g_presetFiles.empty() ? "(none)"
+                             : (g_currentPreset < 0 ? "(unsaved)"
+                                : preset_current_name());
+    char buf[2048];
+    snprintf(buf, sizeof buf,
+        "sim     : %d x %d  RGBA%dF\n"
+        "window  : %d x %d  %s\n"
+        "fps     : %.1f   iters: %d\n"
+        "recording: %s\n"
+        "paused  : %s\n"
+        "preset  : %s\n"
+        "pattern : %s\n"
+        "fields  : %d\n"
+        "\n"
+        "-- quick glance --\n"
+        "zoom %.4f  theta %+.3f rad/pass\n"
+        "decay %.4f  noise %.4f\n"
+        "couple %.3f  ext (cam) %.3f",
+        S.simW, S.simH, g_cfg.precision,
+        S.winW, S.winH, S.isFullscreen ? "FULLSCREEN" : "windowed",
+        g_smoothedFps, g_cfg.iters, rec,
+        S.paused ? "YES" : "no", preset.c_str(),
+        patNames[(unsigned)p.pattern % 5], S.activeFields,
+        p.zoom, p.theta, p.decay, p.noise,
+        p.couple, p.external);
+    return buf;
 }
+
+static std::string section_layers() {
+    char b[1024];
+    snprintf(b, sizeof b,
+        "F1  warp     %s\n"
+        "F2  optics   %s\n"
+        "F3  gamma    %s\n"
+        "F4  color    %s\n"
+        "F5  contrast %s\n"
+        "F6  decay    %s\n"
+        "F7  noise    %s\n"
+        "F8  couple   %s\n"
+        "F9  external %s\n"
+        "F10 inject   %s\n"
+        "Ins physics  %s\n"
+        "PgDn thermal %s\n",
+        onoff_s(S.enable & L_WARP).c_str(),     onoff_s(S.enable & L_OPTICS).c_str(),
+        onoff_s(S.enable & L_GAMMA).c_str(),    onoff_s(S.enable & L_COLOR).c_str(),
+        onoff_s(S.enable & L_CONTRAST).c_str(), onoff_s(S.enable & L_DECAY).c_str(),
+        onoff_s(S.enable & L_NOISE).c_str(),    onoff_s(S.enable & L_COUPLE).c_str(),
+        onoff_s(S.enable & L_EXTERNAL).c_str(), onoff_s(S.enable & L_INJECT).c_str(),
+        onoff_s(S.enable & L_PHYSICS).c_str(),  onoff_s(S.enable & L_THERMAL).c_str());
+    return b;
+}
+
+static std::string section_warp() {
+    const auto& p = S.p;
+    char b[1024];
+    snprintf(b, sizeof b,
+        "%-5s  zoom      : %.4f /pass\n"
+        "%-5s  rotation  : %+.4f rad/pass  (%+0.1f deg/s @60fps)\n"
+        "%-5s  translate : (%+.4f, %+.4f)\n"
+        "\n"
+        "Shift  coarse (20x step)\n"
+        "Gamepad: LStick translates; RStick-X rotates.",
+        keys_pair(ACT_ZOOM_UP, ACT_ZOOM_DN).c_str(), p.zoom,
+        keys_pair(ACT_THETA_UP, ACT_THETA_DN).c_str(), p.theta, p.theta * 57.2958f * 60.0f,
+        "arr", p.transX, p.transY);
+    return b;
+}
+
+static std::string section_optics() {
+    const auto& p = S.p;
+    char b[1024];
+    snprintf(b, sizeof b,
+        "%-5s  chroma    : %+.4f\n"
+        "%-5s  blur-X    : %.2f px\n"
+        "%-5s  blur-Y    : %.2f px\n"
+        "%-5s  blur-ang  : %+.3f rad",
+        keys_pair(ACT_CHROMA_UP, ACT_CHROMA_DN).c_str(), p.chroma,
+        keys_pair(ACT_BLURX_UP,  ACT_BLURX_DN ).c_str(), p.blurX,
+        keys_pair(ACT_BLURY_UP,  ACT_BLURY_DN ).c_str(), p.blurY,
+        keys_pair(ACT_BLURANG_UP,ACT_BLURANG_DN).c_str(), p.blurAngle);
+    return b;
+}
+
+static std::string section_color() {
+    const auto& p = S.p;
+    char b[1024];
+    snprintf(b, sizeof b,
+        "%-5s  gamma     : %.3f\n"
+        "%-5s  hue rate  : %+.4f /pass  (%+.2f rot/s)\n"
+        "%-5s  satur     : %.3f x\n"
+        "%-5s  contrast  : %.3f x",
+        keys_pair(ACT_GAMMA_UP,    ACT_GAMMA_DN   ).c_str(), p.gamma,
+        keys_pair(ACT_HUE_UP,      ACT_HUE_DN     ).c_str(), p.hueRate, p.hueRate * 60.0f,
+        keys_pair(ACT_SAT_UP,      ACT_SAT_DN     ).c_str(), p.satGain,
+        keys_pair(ACT_CONTRAST_UP, ACT_CONTRAST_DN).c_str(), p.contrast);
+    return b;
+}
+
+static std::string section_dynamics() {
+    const auto& p = S.p;
+    char b[1024];
+    snprintf(b, sizeof b,
+        "%-5s  decay     : %.5f /pass\n"
+        "%-5s  noise     : %.4f\n"
+        "%-5s  couple    : %.3f\n"
+        "%-5s  external  : %.3f",
+        keys_pair(ACT_DECAY_UP,    ACT_DECAY_DN   ).c_str(), p.decay,
+        keys_pair(ACT_NOISE_UP,    ACT_NOISE_DN   ).c_str(), p.noise,
+        keys_pair(ACT_COUPLE_UP,   ACT_COUPLE_DN  ).c_str(), p.couple,
+        keys_pair(ACT_EXTERNAL_UP, ACT_EXTERNAL_DN).c_str(), p.external);
+    return b;
+}
+
+static std::string section_physics() {
+    const auto& p = S.p;
+    char b[1024];
+    snprintf(b, sizeof b,
+        "Crutchfield 1984 camera-side knobs.\n"
+        "\n"
+        "%-5s  invert       : %s\n"
+        "%-5s  sensor gamma : %.3f (0.6..0.9 per paper)\n"
+        "%-5s  sat knee     : %.3f (0 clip, 1 Reinhard)\n"
+        "%-5s  color cross  : %.3f (0 indep, 1 full avg)",
+        keys_for(ACT_INVERT_TOGGLE).c_str(), p.invert ? "ON" : "off",
+        keys_pair(ACT_SENSORGAMMA_UP, ACT_SENSORGAMMA_DN).c_str(), p.sensorGamma,
+        keys_pair(ACT_SATKNEE_UP,     ACT_SATKNEE_DN    ).c_str(), p.satKnee,
+        keys_pair(ACT_COLORCROSS_UP,  ACT_COLORCROSS_DN ).c_str(), p.colorCross);
+    return b;
+}
+
+static std::string section_thermal() {
+    const auto& p = S.p;
+    char b[1024];
+    snprintf(b, sizeof b,
+        "Air turbulence between camera & monitor.\n"
+        "\n"
+        "%-7s amplitude  : %.4f\n"
+        "%-7s scale      : %.2f\n"
+        "%-7s speed      : %.2f\n"
+        "%-7s rise       : %+.3f\n"
+        "%-7s swirl      : %.3f",
+        keys_pair(ACT_THERMAMP_UP,   ACT_THERMAMP_DN  ).c_str(), p.thermAmp,
+        keys_pair(ACT_THERMSCALE_UP, ACT_THERMSCALE_DN).c_str(), p.thermScale,
+        keys_pair(ACT_THERMSPEED_UP, ACT_THERMSPEED_DN).c_str(), p.thermSpeed,
+        keys_pair(ACT_THERMRISE_UP,  ACT_THERMRISE_DN ).c_str(), p.thermRise,
+        keys_pair(ACT_THERMSWIRL_UP, ACT_THERMSWIRL_DN).c_str(), p.thermSwirl);
+    return b;
+}
+
+static std::string section_inject() {
+    const auto& p = S.p;
+    const char* patNames[] = { "H-bars", "V-bars", "dot", "checker", "gradient" };
+    char b[512];
+    snprintf(b, sizeof b,
+        "1..5    pick pattern (now: %s)\n"
+        "%-5s   inject (hold)\n"
+        "F10     toggle inject layer",
+        patNames[(unsigned)p.pattern % 5],
+        keys_for(ACT_INJECT_HOLD).c_str());
+    return b;
+}
+
+static std::string section_quality() {
+    const char* blur[] = {"5-tap cross","9-gauss","25-gauss"};
+    const char* ca[]   = {"3-sample","5-ramp","8-wavelen"};
+    const char* ns[]   = {"white","pink 1/f"};
+    char b[512];
+    snprintf(b, sizeof b,
+        "%-5s  blur kernel : %s\n"
+        "%-5s  CA sampler  : %s\n"
+        "%-5s  noise type  : %s\n"
+        "%-5s  fields      : %d",
+        keys_for(ACT_BLURQ_CYCLE).c_str(),  blur[S.blurQ],
+        keys_for(ACT_CAQ_CYCLE  ).c_str(),  ca[S.caQ],
+        keys_for(ACT_NOISEQ_CYCLE).c_str(), ns[S.noiseQ],
+        keys_for(ACT_FIELDS_CYCLE).c_str(), S.activeFields);
+    return b;
+}
+
+static std::string section_app() {
+    char b[1024];
+    snprintf(b, sizeof b,
+        "%-8s  quit\n"
+        "%-8s  pause/resume\n"
+        "%-8s  clear fields\n"
+        "%-8s  fullscreen\n"
+        "%-8s  help toggle\n"
+        "%-8s  reload shaders\n"
+        "%-8s  recording start/stop\n"
+        "%-8s  preset save\n"
+        "%-8s  next preset\n"
+        "%-8s  prev preset",
+        keys_for(ACT_QUIT).c_str(),
+        keys_for(ACT_PAUSE).c_str(),
+        keys_for(ACT_CLEAR).c_str(),
+        keys_for(ACT_FULLSCREEN).c_str(),
+        keys_for(ACT_HELP).c_str(),
+        keys_for(ACT_RELOAD_SHADERS).c_str(),
+        keys_for(ACT_REC_TOGGLE).c_str(),
+        keys_for(ACT_PRESET_SAVE).c_str(),
+        keys_for(ACT_PRESET_NEXT).c_str(),
+        keys_for(ACT_PRESET_PREV).c_str());
+    return b;
+}
+
+static std::string section_vfx(int slot) {
+    (void)slot;
+    return "(VFX slot — wired in C4)\n"
+           "next/prev/off + param +/- + B-source cycle";
+}
+static std::string section_output() {
+    return "(Output fade — wired in C6)\n"
+           "Bipolar fade: left=black, right=white.\n"
+           "Keyboard: Ctrl+Up/Dn.  Gamepad: right-stick Y.";
+}
+static std::string section_bpm() {
+    return "(BPM sync — wired in C7)\n"
+           "Tap tempo, beat divisions, and 5 beat-locked modulations:\n"
+           "  inject-on-beat, strobe-rate lock, vfx auto-cycle,\n"
+           "  fade flash, decay dip.";
+}
+
+static std::string section_bindings() {
+    std::string s;
+    s += "All current keyboard bindings.\n";
+    s += "Edit bindings.ini next to the exe to customize.\n\n";
+    for (const Binding& b : g_input.bindings()) {
+        if (b.source != SRC_KEY) continue;
+        const ActionInfo* info = action_info(b.action);
+        if (!info) continue;
+        char row[160];
+        snprintf(row, sizeof row, "%-10s %-22s %s\n",
+                 fmt_key(b.code, b.modmask).c_str(),
+                 info->name, info->desc);
+        s += row;
+    }
+    return s;
+}
+
+// Master dispatcher — maps overlay section index to the builder above.
+static std::string help_section_body(int i) {
+    switch (i) {
+        case 0:  return section_status();
+        case 1:  return section_layers();
+        case 2:  return section_warp();
+        case 3:  return section_optics();
+        case 4:  return section_color();
+        case 5:  return section_dynamics();
+        case 6:  return section_physics();
+        case 7:  return section_thermal();
+        case 8:  return section_inject();
+        case 9:  return section_vfx(0);
+        case 10: return section_vfx(1);
+        case 11: return section_output();
+        case 12: return section_bpm();
+        case 13: return section_quality();
+        case 14: return section_app();
+        case 15: return section_bindings();
+    }
+    return "";
+}
+
 
 // ── keyboard ──────────────────────────────────────────────────────────────
 static GLuint progFeedback = 0, progBlit = 0;
@@ -1014,6 +1200,36 @@ namespace step {
 
 static void apply_action(ActionId id, float mag) {
     auto& p = S.p;
+
+    // When the help panel is open, UP/DOWN/ENTER/ESC are hijacked for menu
+    // navigation. They stay bound to their normal actions (translate, quit)
+    // so the binding table doesn't need a mode-aware layer; we just
+    // intercept those few conflicting ids here.
+    if (S.ov.helpVisible()) {
+        switch (id) {
+            case ACT_HELP_UP:    S.ov.helpUp();    return;
+            case ACT_HELP_DN:    S.ov.helpDown();  return;
+            case ACT_HELP_ENTER: S.ov.helpEnter(); return;
+            case ACT_HELP_BACK:  S.ov.helpBack();  return;
+            // Suppress conflicting shared bindings while help has focus.
+            case ACT_TRANS_UP: case ACT_TRANS_DN:
+            case ACT_TRANS_LEFT: case ACT_TRANS_RIGHT:
+            case ACT_QUIT:
+                return;
+            default: break;  // everything else keeps working during navigation
+        }
+    } else {
+        // Help not visible — help-nav actions are no-ops (Enter/Esc wired
+        // elsewhere if needed).
+        switch (id) {
+            case ACT_HELP_UP: case ACT_HELP_DN:
+            case ACT_HELP_ENTER: case ACT_HELP_BACK:
+                // Esc still quits via ACT_QUIT (a separate binding). Enter
+                // has no default action outside help.
+                return;
+            default: break;
+        }
+    }
 
     // Toggle layers via a small table lookup — replaces the old in-cb loop.
     auto toggle_layer = [&](int bit, const char* name) {
@@ -1313,9 +1529,13 @@ static void apply_action(ActionId id, float mag) {
             p.decay = fmaxf(0.9f, fminf(1.0f, p.decay + step::decay * mag));
             return;
 
-        // ── actions not yet implemented — land in C3/C4/C6/C7 ─────
+        // Help-nav actions are intercepted at the top of apply_action;
+        // if we reach here it's because help was closed — no-op.
         case ACT_HELP_UP: case ACT_HELP_DN:
         case ACT_HELP_ENTER: case ACT_HELP_BACK:
+            return;
+
+        // ── actions not yet implemented — land in C4/C6/C7 ─────
         case ACT_VFX1_CYCLE_FWD: case ACT_VFX1_CYCLE_BACK: case ACT_VFX1_OFF:
         case ACT_VFX1_PARAM_UP:  case ACT_VFX1_PARAM_DN:  case ACT_VFX1_BSRC_CYCLE:
         case ACT_VFX2_CYCLE_FWD: case ACT_VFX2_CYCLE_BACK: case ACT_VFX2_OFF:
@@ -1840,6 +2060,16 @@ int main(int argc, char** argv) {
     // on first run so users have something to edit.
     g_input.installDefaults();
     g_input.setHandler(apply_action);
+
+    // Help panel: ordered section list + provider. Each section's body is
+    // rebuilt on every frame it's visible so live values stay fresh.
+    {
+        std::vector<std::string> names;
+        names.reserve(N_HELP_SECTIONS);
+        for (int i = 0; i < N_HELP_SECTIONS; i++) names.emplace_back(HELP_SECTIONS[i]);
+        S.ov.setHelpSections(std::move(names));
+        S.ov.setHelpProvider(help_section_body);
+    }
     {
         std::string bindingsPath = g_shader_base.empty()
             ? std::string("bindings.ini")
@@ -1974,7 +2204,8 @@ int main(int argc, char** argv) {
         // so recordings get the full internal quality regardless of window size.
         if (S.rec.active()) S.rec.capture(latest.fbo);
 
-        if (S.ov.helpVisible()) S.ov.setHelpText(build_help_text());
+        // Help provider is pulled per-frame from inside Overlay::draw, so
+        // values shown in a section stay live. Nothing to push here.
         S.ov.draw();
 
         glfwSwapBuffers(win);
