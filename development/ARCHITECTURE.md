@@ -34,13 +34,24 @@ thread pools. Everything else is single-threaded.
 ```
 feedback-GBPS/
 ├── main.cpp             ~2500 lines. Window, main loop, CLI, state, apply_action.
-├── input.cpp/h          ~700 lines. Action registry, binding table, kbd/pad/MIDI dispatch.
+├── input.cpp/h          ~750 lines. Action registry, binding table, kbd/pad/MIDI dispatch.
 ├── recorder.cpp/h       ~400 lines. 3-stage capture pipeline.
 ├── overlay.cpp/h        ~500 lines. HUD + drill-down help panel + section legend.
 ├── camera.cpp/h         ~300 lines. Windows Media Foundation webcam.
+├── music.cpp/h          ~550 lines. Embedded JS runtime + pattern scheduler +
+│                        preset manager + fb.* scalar bridge.
+├── audio.cpp/h          ~500 lines. miniaudio backend, voice pool, sampler,
+│                        synth voices, biquad LPF/HPF, delay bus, Freeverb.
+├── js/engine.js         ~280 lines. Clean-room Strudel-syntax pattern engine
+│                        (Pattern class, mini-notation parser, combinators).
+├── music/*.strudel      User-editable pattern presets (5 shipped + metronome).
+├── samples/*.wav        Optional user drum pack — overrides synth fallbacks.
 ├── exr_write.h          Self-contained EXR writer (half-float ZIP + none).
 ├── stb_image_write.h    Vendored (PNG screenshot).
 ├── stb_easy_font.h      Vendored (overlay text rendering).
+├── vendor/
+│   ├── quickjs/         QuickJS-ng JS runtime (MIT, pure C, ES2020).
+│   └── miniaudio.h      Single-header audio library (MIT/public-domain).
 ├── shaders/
 │   ├── main.vert        Full-screen triangle.
 │   ├── main.frag        Orchestrator — #includes every layer.
@@ -56,7 +67,7 @@ feedback-GBPS/
 ├── Makefile             MSYS2/MinGW build + `make dist` target.
 ├── build_msvc.bat       MSVC/vcpkg alternate (less maintained).
 └── development/         You are here.
-    └── plans/           Forward-looking planning docs (Strudel MIDI sync, etc.).
+    └── plans/           Forward-looking planning docs.
 ```
 
 ## Components
@@ -243,6 +254,58 @@ or RGB24. Converts to RGB and uploads to `S.camTex` each frame via
 `S.cam.grab()` in the main loop. If no camera or no compatible format,
 the `external` layer becomes a no-op. Graceful degradation.
 
+### Music + audio engine
+
+**Files:** `music.cpp/h`, `audio.cpp/h`, `js/engine.js`, `music/*.strudel`.
+
+**Purpose:** native pattern-driven audio so feedback makes music without
+requiring an external DAW, and so live visual state can modulate the
+music in real time (the "closed loop" use case). Strudel syntax is
+supported through a clean-room JS reimplementation — see ADR-0012 for
+why not to embed Strudel itself.
+
+**Three layers:**
+
+1. **JS runtime (QuickJS)** — `music.cpp::init()` spins up a JSRuntime
+   + JSContext at startup, loads `js/engine.js` once. The engine
+   exposes `Pattern`, `s()`, `note()`, `stack`, `cat`, mini-notation
+   `parseMini`, and chainable effect setters (`.lpf`, `.delay`,
+   `.room`, `.attack`, `.release`, …). See ADR-0010.
+2. **Scheduler (music.cpp)** — `Music::update(now, dt, bpm)` runs once
+   per render frame. Advances a cycle clock by frame `dt` (not wall
+   time — see ADR-0013). Each frame queries the active pattern over
+   a ~250 ms lookahead window, dedupes events by `hap.whole.begin`,
+   translates each event's onset into a wall-clock delay, and pushes
+   it to the audio module's pending queue.
+3. **Audio engine (audio.cpp)** — miniaudio callback thread runs a
+   24-voice pool at 48 kHz stereo. Each voice is either a sample
+   (WAV/FLAC/MP3 via ma_decoder) or a synth (sine/saw/square/tri
+   with ADSR). Per-voice biquad LPF + HPF; global delay and reverb
+   busses with per-voice send amounts.
+
+**Preset lifecycle:**
+- `Music::scanPresets("music")` sorts `*.strudel` files alphabetically.
+- `Music::loadPreset(i)` reads the file fresh each time and sets the
+  active pattern string. First preset auto-loads at boot.
+- `Music::pollPresetReload()` stat()s the active file every ~250 ms;
+  on mtime change it re-reads and re-sets. Hot-reload for live edits.
+- `Music::pushMomentaryPreset("breakbeat")` / `popMomentaryPreset()`
+  power the hold-Space live gesture — switches to a named preset for
+  the duration of a press and restores on release.
+
+**Video ↔ music bridge:** `Music::setScalar(name, value)` updates a
+property on the JS `fb` global. `main.cpp` publishes 12 scalars per
+frame (`fb.zoom`, `fb.theta`, `fb.decay`, `fb.contrast`, `fb.chroma`,
+`fb.blur`, `fb.noise`, `fb.inject`, `fb.outFade`, `fb.paused`,
+`fb.beatPhase`, `fb.hueRate`). Patterns read them as plain numbers.
+
+**MIDI integration** (separate from the native engine but part of the
+music story): `Input::pollMidi()` in `input.cpp` registers
+feedback.exe as a virtual MIDI *input* port via the teVirtualMIDI
+driver (`virtualMIDICreatePortEx2`). Strudel's Web MIDI output sees
+the port, sends Clock / Start / Stop / Note-On / CC. MIDI Clock drives
+BPM when live. See ADR-0011.
+
 ### Distribution build (Makefile `dist` target)
 
 See [RUNBOOK.md](RUNBOOK.md) for the full procedure. Key: static links
@@ -312,7 +375,11 @@ then lower `--iters`, then lower sim resolution.
 | Change recording format | `exr_write.h` + `recorder.cpp` encoder loop. |
 | Add another CPU capture card | `camera.cpp` (Media Foundation). |
 | Port to Linux/macOS | `linux/` and `macOS/` subdirs (separate main.cpp currently). |
-| Add real MIDI support | Implement `Input::pollMidi` on top of winmm. Plan captured in `development/plans/strudel_midi_sync.md`. |
+| Add a music preset | Drop a `.strudel` file into `music/`. Edit any number at runtime and save — hot-reloads within ~250 ms. |
+| Add a Pattern combinator | Add a method on `Pattern.prototype` in `js/engine.js`. For a no-op safety net instead of real logic, add the name to `_UNIMPL_METHODS`. |
+| Add a new audio effect | Extend `audio.cpp` with DSP + optional `Voice` fields, add `TriggerOpts`/`NoteOpts` field, marshal from `Event` in `music.cpp`'s scheduler. |
+| Publish a new video→music scalar | Call `Music::setScalar("name", val)` each frame in `main.cpp`. Document the name in the README and the Music help section. |
+| Add a MIDI-driven action | Wire the binding in `bindings.ini [midi]` (see `note:N ch=N` / `cc:N ch=N`). Existing actions work with any MIDI source. |
 
 ## Invariants the code relies on
 
@@ -334,7 +401,8 @@ Break these and things go subtly wrong:
 6. **`CTX_SEC_STATUS + N == section N` in HELP_SECTIONS[].** The
    input layer's context enum and the overlay's section index use the
    same ordinal. Reordering `HELP_SECTIONS[]` breaks gamepad dispatch
-   silently.
+   silently. The array has 17 entries as of v0.1.3 (Music added
+   between BPM and Quality).
 7. **`apply_action` is the only writer to `S.p` in response to user
    input.** Keyboard, gamepad, MIDI, overlay navigation — all go
    through it. If you add a side path (e.g. a demo scheduler), call
@@ -345,6 +413,18 @@ Break these and things go subtly wrong:
    The user's `p.outFade` and `p.decay` are the setpoints; BPM
    modulations ride on top without mutating them. Don't confuse the
    two in preset save/load.
+9. **The music scheduler fires on `hap.whole.begin`, not `part.begin`.**
+   Strudel's queryArc returns every hap whose *part* overlaps the
+   query arc. Firing on `part.begin` re-triggers every frame the
+   window slides across a hap — producing dense "avant garde"
+   noise. The scheduler filters to events where `whole.begin ∈
+   [qStart, qEnd)`. Don't change this back.
+10. **The music cycle clock advances on frame `dt`, not wall time.**
+    Wall-time advancement plus the OS throttling the render thread
+    during alt-tab produced huge cycle jumps and event bursts on
+    refocus. Dt-coupling also gives us "sim slows → music slows"
+    for free. Clamp dt to 100 ms per frame; anything bigger is an
+    execution stall we should skip, not replay.
 
 ## Where the system is brittle
 

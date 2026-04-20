@@ -86,3 +86,7 @@ Use git commits for those — the history is their ADR.
 | [0007](0007-action-registry-and-bindings-ini.md) | Action registry + `bindings.ini` as the unified input layer | Accepted | 2026-04-19 |
 | [0008](0008-edirol-v4-single-bus-integration.md) | Edirol V-4 as single-bus effect slots, not a full A/B mixer port | Accepted | 2026-04-19 |
 | [0009](0009-contextual-gamepad-per-help-section.md) | Gamepad controls rebind per help section; menu navigation is the only reserved surface | Accepted | 2026-04-19 |
+| [0010](0010-embedded-quickjs-music-engine.md) | Embedded QuickJS as the music-engine runtime (no WebView) | Accepted | 2026-04-20 |
+| [0011](0011-virtual-midi-port-not-loopmidi-launch.md) | Register as a virtual MIDI port (teVirtualMIDI) instead of launching loopMIDI's GUI | Accepted | 2026-04-20 |
+| [0012](0012-clean-room-pattern-engine.md) | Clean-room pattern engine, not Strudel's AGPL source | Accepted | 2026-04-20 |
+| [0013](0013-dt-coupled-music-scheduler.md) | Music scheduler advances on frame dt, not wall time | Accepted | 2026-04-20 |

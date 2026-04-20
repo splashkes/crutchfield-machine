@@ -273,8 +273,8 @@ Everything else — all parameter nudges, V-4 slots, output fade, BPM
 modulations, gamepad maps — is in the help panel and in `bindings.ini`.
 
 Top-level sections: Status · Layers · Warp · Optics · Color · Dynamics ·
-Physics · Thermal · Inject · VFX-1 · VFX-2 · Output · BPM · Quality · App ·
-Bindings.
+Physics · Thermal · Inject · VFX-1 · VFX-2 · Output · BPM · Music ·
+Quality · App · Bindings.
 
 Hold `Shift` for 20× coarse steps on any parameter nudge.
 
@@ -317,6 +317,58 @@ combination of these modulations fires on each beat:
 - decay-dip (decay drops to 0.90 for ~80 ms post-beat)
 
 Beat division cycles x2 / x1 / ÷2 / ÷4 via `Alt+Tab`.
+
+External MIDI Clock (e.g. from Strudel) overrides both manual BPM and
+tap-tempo while it's streaming — the BPM section flips to `LOCKED`.
+When the upstream stops, tap takes over again.
+
+### Music engine
+
+feedback.exe ships with a native pattern engine and audio output — no
+external DAW needed to get sound out of it. Pattern syntax follows
+Strudel's mini-notation ([strudel.cc](https://strudel.cc) is the online
+reference). `music/*.strudel` files are plain text; edit and save while
+running to hot-reload within ~250 ms.
+
+| Key | Action |
+|---|---|
+| `Ctrl+Alt+N` / `P` | Next / prev music preset |
+| `Ctrl+Alt+Space` | Music play / pause |
+| `Space` (hold) | Jumps to `01_breakbeat` while held (also injects visual pattern) |
+
+Five electronic presets ship: `01_breakbeat`, `02_climb`, `03_dub_pulse`,
+`04_acid`, `05_pad_drift`. Plus `00_metronome` for scheduler sanity
+checks.
+
+Each preset reads live feedback scalars (`fb.zoom`, `fb.theta`,
+`fb.decay`, etc.) so turning the visual knobs reshapes the music:
+
+- `fb.zoom` flips chord-progression direction and swells gain
+- `fb.theta` modulates synth filter cutoff (turn `W` / `S` to sweep)
+
+Example file content (paste into any `music/NN_name.strudel`):
+
+```js
+stack(
+  s("bd ~ sn ~").room(0.12),
+  s("hh*8").gain(0.4),
+  note("<c2 eb2 g2 bb2>")
+    .s("saw")
+    .lpf(500 + fb.theta * 2800)
+    .gain(0.3)
+)
+```
+
+Drop WAV files named `bd.wav`, `sn.wav`, `hh.wav`, etc. into a
+`samples/` folder next to the exe to override the built-in synth drums
+with your own pack.
+
+**Strudel ↔ feedback**: feedback.exe registers itself as a virtual
+MIDI port called `feedback` (via loopMIDI's teVirtualMIDI driver). In
+Strudel: `.midi("feedback")` routes pattern events into us.
+`midicmd("clock*24,<start stop>/2").midi("feedback")` drives BPM.
+First-run setup happens via `Ctrl+M` or the picker's Music mode —
+winget-installs loopMIDI, virtual port appears automatically.
 
 ### Output fade
 

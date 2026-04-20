@@ -50,8 +50,10 @@ make clean && make dist
 
 This runs:
 1. Clean + rebuild.
-2. Stage `feedback.exe + shaders/ + presets/ + README + LICENSE + CREDITS`
-   into `feedback-windows-x64/`.
+2. Stage `feedback.exe + shaders/ + presets/ + js/ + music/ + samples/
+   (if present) + README + LICENSE + CREDITS` into
+   `feedback-windows-x64/`. The `js/engine.js` and `music/*.strudel`
+   files must be present at runtime — don't strip them from the zip.
 3. Run `objdump -p feedback.exe | grep "DLL Name:"` — the import table
    check. **Verify the output contains only Windows system DLLs:**
 
@@ -201,6 +203,43 @@ What to verify after a change, in order:
     to the exe. Edit a keyboard binding (e.g. change `warp.zoom+ = Q`
     to `warp.zoom+ = Z`), restart, confirm new binding works.
 
+**Since the `music` branch (v0.1.3) also verify:**
+
+19. **Audio output.** Launch prints `[audio] … @ 48000 Hz, 24 voice
+    pool, fx online`. Default `01_breakbeat.strudel` preset plays
+    audibly within a second — kick on beat 1, snare on beat 3, 8
+    hats, saw bass.
+20. **Pattern engine loaded.** Stdout shows `[music] QuickJS 0.14.0
+    runtime up` and `[js] [engine] pattern engine v0.1 loaded`.
+21. **Preset cycling.** `Ctrl+Alt+N` / `Ctrl+Alt+P` steps through the
+    5 music presets + `00_metronome`. HUD toast shows the name.
+22. **Hot-reload.** Edit `music/01_breakbeat.strudel` externally
+    (change a number), save. Stdout prints `[music] hot-reloaded
+    '01_breakbeat'` within ~250 ms; audio reflects the edit.
+23. **Momentary breakbeat.** Hold `Space` — music jumps to
+    `01_breakbeat`, releases back to previous preset on key-up.
+    Visual inject also fires (existing behaviour).
+24. **Scheduler sanity.** Cycle to `00_metronome`. Should sound
+    steady: boom — tap — boom — tap at 120 BPM. If it's
+    irregular or bursty, the scheduler regressed (see ADR-0013).
+25. **Virtual MIDI port.** Log line `[midi] teVirtualMIDI port
+    'feedback' created — visible to Strudel et al`. Open any MIDI
+    monitor (MidiView, MIDI-OX) — `feedback` appears as an output
+    device.
+26. **Strudel sync.** Open strudel.cc, run:
+    ```
+    stack(
+      s("bd sn").midi("feedback"),
+      midicmd("clock*24,<start stop>/2").midi("feedback"),
+    )
+    ```
+    Hit play. Drill H → BPM. Should flip from `no clock (tap
+    active)` to `LOCKED` with the tempo Strudel is running.
+27. **fb.X scalars.** Drill H → Music. Move zoom (A/Q) and rotation
+    (W/S) — the `fb.zoom`, `fb.theta` values in the panel update
+    every frame; audible chord direction / filter sweep in the
+    current preset changes with them.
+
 Adding an automated smoke test (headless launch, render one frame,
 exit) is a P0 item.
 
@@ -251,6 +290,54 @@ compile failure.
 Log line: `[camera] couldn't negotiate NV12, YUY2, or RGB24`. Expected
 if no camera attached or the camera only offers MJPG. The `external`
 layer becomes a no-op; app still runs. Not a bug.
+
+### No audio
+
+Check stdout for `[audio] … fx online`. If the audio block is missing
+the app failed to open the default output device.
+
+- **Wrong device selected** in Windows audio output settings. miniaudio
+  opens the default. Switch the default device, relaunch.
+- **Exclusive-mode hold** — another app (some DAWs, Zoom under certain
+  configs) grabbed the device in WASAPI exclusive mode. Close that
+  app or change its audio output.
+- **`[audio] ma_device_init failed`** — miniaudio couldn't open any
+  backend. Very rare on Windows; try `--no-audio` if we add one. For
+  now, the app continues running silently.
+
+### Music pattern sounds random / bursty
+
+- After a long alt-tab: recent versions clamp dt to 100 ms per frame,
+  so this should not happen. If it does, scheduler dt coupling
+  regressed — see ADR-0013.
+- `FEEDBACK_MUSIC_DEBUG=1 ./feedback.exe` prints one `[sched]` line
+  per triggered event with cycle time and delay. If the same
+  `wbeg=0.xyz` fires multiple times, the `hap.whole.begin` dedupe
+  broke — see ARCHITECTURE invariant #9.
+
+### Strudel can't see the `feedback` MIDI port
+
+- Driver not installed: `Ctrl+M` in-app runs `winget install
+  TobiasErichsen.loopMIDI`. UAC prompt must be accepted. Log line
+  `[midi] teVirtualMIDI port 'feedback' created` confirms success.
+- Driver installed but port still absent: reboot once (the driver
+  registration sometimes needs a restart on first install).
+- Strudel running in a browser that blocks Web MIDI (some Firefox
+  configs): use Chrome/Edge, or go to `about:config` and enable
+  `dom.webmidi.enabled`. Strudel needs to have been granted MIDI
+  permission for the origin.
+
+### Music preset plays but no sound matches the name
+
+- `.strudel` file may reference samples that don't exist. Unknown
+  names auto-synthesize if they match `bd/sn/hh/oh/cp/rim/cb`; others
+  produce silence. Drop WAVs into `samples/` with the name referenced.
+- Preset uses a combinator we haven't implemented yet. Check stdout
+  for `[engine] '.methodName()' not yet implemented — skipped`. See
+  ADR-0012 and the `_UNIMPL_METHODS` list in `js/engine.js`.
+- Pattern uses `.range(lo, hi)`, `.add`, `.sub`, or `.zoom` — these
+  deliberately error rather than no-op (ADR-0012). Look for a
+  `[js] exception` message.
 
 ### Tried `--preset NAME` but values seem unchanged
 

@@ -137,44 +137,47 @@ capture card loop currently have to drag the window manually.
 
 ## P2 — valuable, no rush
 
-### [P2] Audio reactivity (WASAPI loopback)
+### [P2] Audio → feedback coupling (music → visuals)
 
-**Why:** Feedback systems pair naturally with sound. An RMS envelope
-from system audio driving `uZoom`, `uHueRate`, or `uInject` would
-open up live-performance use cases and create gorgeous music-video
-output.
-**Where:** new `audio.cpp/h` (WASAPI loopback client). Expose a
-uniform like `uAudioLevel` in main.frag; let users bind which param
-it modulates via a CLI flag or preset key.
+**Why:** We now generate music inside feedback.exe (music.cpp +
+audio.cpp). The inverse of the current `fb.X` bridge would be music
+influencing visuals: RMS envelope of the mix driving `p.inject`, band
+splits driving `p.hueRate` / `p.zoom` per frequency range, transients
+triggering visual patterns. Closes the bidirectional loop Simon
+described ("ratios of colors feeding back into the music system" —
+music already reads `fb.hue`; reverse would be visual parameters
+reading music features).
+**Where:** extend `audio.cpp` with an analysis ring (RMS + 3-band
+split) on the master bus. Expose via `Audio::levels()` returning a
+POD consumable from `main.cpp`. Apply to a `Params` field as
+modulation (not replacement — mix against user setpoint).
 **Done when:**
-- Audio level readable from any shader layer as a `float` uniform in [0,1].
-- Flag to enable: `--audio-reactive zoom` or similar.
-- Works on Windows via WASAPI; Linux/macOS paths deferred.
+- `Audio::levels()` returns `{rms, bassRms, midRms, highRms, onset}`.
+- Help panel exposes enable/disable toggles for which params receive
+  modulation.
+- An example preset (`music/06_selfmodulated.strudel` plus visual
+  preset tweaks) demonstrates the closed loop.
 **Effort:** medium.
+**Reference:** ADR-0010 explains why we picked QuickJS + native
+audio; this is the remaining half of the loop.
 
-### [P1] Real MIDI input (for Strudel sync + hardware controllers)
+### [P2] Euclidean rhythms in the pattern engine
 
-**Why:** The action-registry refactor (ADR-0007) already put a
-`[midi]` section in `bindings.ini` and a stub `Input::pollMidi`.
-Strudel integration needs real MIDI-in to follow its clock and fire
-visual events on drum hits. Same plumbing unlocks physical MIDI
-controllers (Launchpad, nanoKONTROL) at no extra cost.
-**Where:** `input.cpp::pollMidi`. Use winmm (`midiInOpen`,
-`midiInStart`) — already linked for the recorder; no new dependency.
-Thread-safe queue: callback pushes bytes, main thread drains.
+**Why:** `.euclid(3, 8)` is one of Strudel's most-used combinators.
+Our `_UNIMPL_METHODS` safety net currently no-ops it, which means
+pasted snippets that depend on it produce silence instead of the
+expected drums. Low effort, high compat payoff.
+**Where:** `js/engine.js`. Implement as a Pattern method that returns
+a new Pattern whose query generates N hits spread Euclideanly across
+the cycle's M steps.
 **Done when:**
-- MIDI Clock (0xF8) at 24 PPQN derives BPM; Start/Stop anchors phase.
-- Note-On events bind to any ActionId via `bindings.ini`
-  (`bpm.flash = note:36 ch=10` etc.).
-- CC events drive continuous parameters via the existing axis/rate
-  dispatch path.
-- A new `MIDI` help section shows port status, derived BPM, last
-  note, last CC.
-- Works alongside loopMIDI (Windows virtual MIDI) so a Strudel
-  browser session can drive the feedback app.
-**Effort:** medium.
-**Reference:** full plan in `development/plans/strudel_midi_sync.md`.
-**Blockers:** PR #1 (`roland-v4` branch) merged into main first.
+- `s("bd").euclid(3, 8)` and `s("bd").euclid(5, 8)` produce the
+  expected Bjorklund distributions.
+- `.euclidLegato(...)` and `.euclidRot(...)` also land (common
+  variants).
+- Removed from `_UNIMPL_METHODS`.
+**Effort:** small.
+**Reference:** ADR-0012 (what we didn't ship from Strudel).
 
 ### [P2] `--record-on-start`
 
@@ -233,6 +236,42 @@ shaders.
 ---
 
 ## P3 — backlog
+
+### [P3] GPU-side scalars published to `fb.*`
+
+**Why:** Current `fb.*` scalars come from `Params` (user-set values).
+Real visual state — mean luminance, dominant hue, motion energy,
+histogram peaks — lives in the shader textures. Getting them into JS
+means reading back from the GPU. Mipmap-based approach (1×1 mip = mean)
+is cheap but adds a pipeline hop. Worth the latency tradeoff?
+**Where:** `main.cpp` render loop after blit; extra mipmap generate on
+the sim FBO, read 1×1 level via `glGetTexImage` into a CPU buffer, call
+`Music::setScalar("meanL", …)`.
+**Done when:**
+- At least `fb.meanR/G/B/L`, `fb.motionEnergy` exposed to JS patterns.
+- Example preset demonstrates dominant-hue → chord color mapping.
+- Measured cost < 0.5 ms/frame at 4K.
+**Effort:** medium.
+
+### [P3] Value-transforming pattern combinators (`.range`, `.add`, `.sub`)
+
+**Why:** Intentionally left as crash rather than no-op (ADR-0012) —
+users get an explicit error instead of silently wrong output. Proper
+implementation would let patterns do things like `sine.range(200,
+1000).lpf(pat)` which Strudel users expect.
+**Where:** `js/engine.js`. Requires value-pattern support — the pattern
+itself produces numeric values at query time, consumed by a setter
+that accepts either a Pattern or a scalar.
+**Effort:** medium (requires rethinking the value model).
+
+### [P3] Master gain / soft limiter
+
+**Why:** Current audio has no headroom protection. Triggering lots of
+simultaneous synth voices can clip audibly. A cheap soft-knee limiter
+on the master bus prevents this without colour.
+**Where:** `audio.cpp` after the dry/delay/reverb sum, before the
+device write.
+**Effort:** small.
 
 ### [P3] Preset browser + search
 
@@ -323,6 +362,30 @@ needed now that the help panel surfaces presets but has no meta.
 ## Recently completed
 
 *Remove from this list after ~2 releases.*
+
+**Landed in PR #6 (`music`) — merged 2026-04-20, released as v0.1.3:**
+
+- Strudel-compatible native music engine inside feedback.exe: embedded
+  QuickJS + clean-room pattern DSL + miniaudio backend + 24-voice
+  pool with sampler, synth (sine/saw/square/tri + ADSR), biquad LPF/
+  HPF, delay bus, Freeverb-style reverb.
+- `music/*.strudel` preset system with hot-reload (~250 ms after save).
+  5 shipped presets: breakbeat, climb, dub_pulse, acid, pad_drift.
+- Virtual MIDI port `feedback` via teVirtualMIDI driver (ADR-0011).
+  First-run experience: Ctrl+M or picker option #7 auto-installs
+  loopMIDI via winget, port appears silently.
+- Strudel → feedback MIDI Clock sync drives BPM when live (24 PPQN
+  rolling average), Note-On fires mapped actions, CC drives
+  continuous params via existing binding syntax.
+- Video→JS scalar bridge: 12 `fb.*` globals readable from patterns
+  (`fb.zoom`, `fb.theta`, `fb.decay`, etc.) so visuals modulate
+  music in real time.
+- Live gesture: holding Space jumps to the breakbeat preset while
+  held and restores on release (combined with the existing
+  inject-pattern visual trigger).
+- New Music help section (ADR-0013 locked in the dt-coupled scheduler).
+- ADRs: 0010 (QuickJS), 0011 (virtual MIDI), 0012 (clean-room pattern
+  engine), 0013 (dt-coupled scheduler).
 
 **Landed in PR #1 (`roland-v4`) — merged 2026-04-20:**
 
