@@ -1,43 +1,85 @@
-# macOS port notes
+# macOS / Apple Silicon
 
-This subdirectory holds notes and shaders toward a macOS port. There is
-**no runnable app in this subdirectory yet** — just documents and the shared
-shader tree.
+This subtree keeps the macOS build isolated from the Windows-first app at
+the repo root.
 
-If you received a separate `feedback-macos-arm64` bundle outside this repo,
-that artifact may run today, but it is currently not self-contained on a
-fresh Apple Silicon machine. The shipped `feedback` binary links against
-Homebrew's `glfw` and `glew` dylibs, so first launch requires:
+## Shared-source rule
+
+The macOS build does **not** check in near-duplicate copies of the root
+Windows sources. Instead, `macOS/scripts/prepare_sources.py` transforms the
+shared root `main.cpp` and `camera.h` into `build/generated/` at build time,
+then compiles those generated files together with the macOS-specific camera
+backend.
+
+Shared at build time:
+
+- `../main.cpp`
+- `../camera.h`
+- `../input.cpp`
+- `../overlay.cpp`
+- `../recorder.cpp`
+- `../shaders/`
+- `../presets/`
+
+Mac-specific in this directory:
+
+- `camera_avfoundation.mm`
+- `Makefile`
+- `Info.plist`
+- `scripts/prepare_sources.py`
+
+## Prereqs
 
 ```bash
-brew install glfw glew
+brew install glfw glew pkg-config
 ```
 
-If `dyld` reports `Library not loaded` for
-`/opt/homebrew/opt/glfw/lib/libglfw.3.dylib` or
-`/opt/homebrew/opt/glew/lib/libGLEW.2.3.dylib`, the machine is missing those
-runtime dependencies. `pkg-config` is only needed for source builds, not for
-running a prebuilt binary.
+## Build
 
-## What's here
+```bash
+cd macOS
+make
+```
 
-- `shaders/` — same shader source as the Windows build.
-- `NOTES.md`, `PHILOSOPHY.md`, `CREDITS.md` — context material.
+This produces `macOS/feedback.app`.
 
-## What's missing
+## Package
 
-Everything else. No `main.cpp`, no build system, no camera capture code.
+```bash
+cd macOS
+make dist
+```
 
-## Planned approach
+This produces `macOS/feedback-macos-arm64.zip`.
 
-- GL 4.1 core profile (the highest Apple ships; no compute shaders).
-- AVFoundation for camera capture instead of Media Foundation / V4L2.
-- GLFW for window + input — same as Windows.
-- Recorder pipeline ported with minor changes (same EXR code should work;
-  PBO behavior identical on desktop GL).
+## Launch
 
-## Status
+Double-click `feedback.app` in Finder, or:
 
-This tracked repo subtree is still **not started** as a complete macOS source
-port. If you want to help, see `../CONTRIBUTING.md`. The Windows build at the
-repo root is the reference.
+```bash
+cd macOS
+open feedback.app
+```
+
+The app bundle embeds:
+
+- `shaders/` and `presets/` in `Contents/Resources`
+- `libglfw.3.dylib` and `libGLEW.2.3.dylib` in `Contents/Frameworks`
+
+At runtime the app uses:
+
+`~/Library/Application Support/Crutchfield Machine`
+
+for `bindings.ini`, user presets, screenshots, and recordings, so Finder
+launches do not depend on the shell working directory.
+
+## Camera
+
+- On first launch, macOS should ask for camera permission.
+- If access was denied, re-enable it for `feedback` under
+  System Settings -> Privacy & Security -> Camera.
+
+## Note
+
+This still needs normal signing/notarization work if you want Gatekeeper to
+trust a downloaded release zip on other machines without manual override.
