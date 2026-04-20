@@ -1,7 +1,23 @@
-# macOS port — very early work in progress
+# macOS port notes
 
 This subdirectory holds notes and shaders toward a macOS port. There is
-**no runnable app here yet** — just documents and the shared shader tree.
+**no runnable app in this subdirectory yet** — just documents and the shared
+shader tree.
+
+If you received a separate `feedback-macos-arm64` bundle outside this repo,
+that artifact may run today, but it is currently not self-contained on a
+fresh Apple Silicon machine. The shipped `feedback` binary links against
+Homebrew's `glfw` and `glew` dylibs, so first launch requires:
+
+```bash
+brew install glfw glew
+```
+
+If `dyld` reports `Library not loaded` for
+`/opt/homebrew/opt/glfw/lib/libglfw.3.dylib` or
+`/opt/homebrew/opt/glew/lib/libGLEW.2.3.dylib`, the machine is missing those
+runtime dependencies. `pkg-config` is only needed for source builds, not for
+running a prebuilt binary.
 
 ## What's here
 
@@ -22,5 +38,6 @@ Everything else. No `main.cpp`, no build system, no camera capture code.
 
 ## Status
 
-Port is **not started**. If you want to help, see `../CONTRIBUTING.md`.
-The Windows build at the repo root is the reference.
+This tracked repo subtree is still **not started** as a complete macOS source
+port. If you want to help, see `../CONTRIBUTING.md`. The Windows build at the
+repo root is the reference.

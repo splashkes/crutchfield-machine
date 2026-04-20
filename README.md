@@ -29,6 +29,26 @@ picker so scripted launches still work.
 
 If you want to build from source, read on.
 
+## Apple Silicon note
+
+This repo's tracked source tree is still Windows-first. If you're using a
+separately-packaged `feedback-macos-arm64` binary, note that the current
+macOS artifact is **not self-contained** on a fresh machine: it links against
+Homebrew's `glfw` and `glew` dylibs at runtime.
+
+On a new Apple Silicon Mac, install:
+
+```bash
+brew install glfw glew
+```
+
+`pkg-config` is only needed for building a macOS binary from source. It is
+not required just to run an already-built `feedback` executable.
+
+If the app aborts at launch with a `dyld: Library not loaded` error pointing
+at `/opt/homebrew/opt/glfw/...` or `/opt/homebrew/opt/glew/...`, that's the
+missing first-run prerequisite.
+
 ## Two ways to build
 
 ### Option A: MSYS2 / MinGW (fastest, recommended)
