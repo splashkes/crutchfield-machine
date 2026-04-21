@@ -756,6 +756,7 @@ static bool preset_write(const std::string& path) {
 "\n"
 "[trigger]\n"
 "# pattern: 0=H-bars 1=V-bars 2=dot 3=checker 4=gradient\n"
+"#          5=noise 6=rings 7=spiral 8=polka 9=starburst 10=bouncer\n"
 "pattern  = %d\n"
 "\n"
 "[physics]\n"
@@ -941,7 +942,7 @@ static bool preset_load(const std::string& path) {
             else if (k == "external") p.external = fv;
         } else if (section == "trigger") {
             int n = atoi(v.c_str());
-            if (k == "pattern" && n>=0 && n<=4) p.pattern = n;
+            if (k == "pattern" && n>=0 && n<N_PATTERNS) p.pattern = n;
         } else if (section == "physics") {
             if      (k == "invert")       p.invert       = (atoi(v.c_str()) ? 1 : 0);
             else if (k == "invertPeriod") { int n = atoi(v.c_str()); if (n >= 1) p.invertPeriod = n; }
@@ -3588,16 +3589,24 @@ int main(int argc, char** argv) {
     else
         printf("[fps] vsync %s, uncapped\n", g_cfg.vsync ? "on" : "off");
 
-    // Boot seed — pick a random inject pattern and fire one. Without this
-    // the field is black on startup and you have to know to press a
-    // pattern key + Space. The existing main-loop fade `inject *= 0.85`
-    // takes it to ~0 over ~20 frames, so it's a quick smear at boot.
+    // Boot seed — fire a one-shot inject so the field isn't black on open.
+    // If the user specified --preset, use THAT preset's pattern (don't
+    // stomp it with a random pick). Otherwise pick a random pattern.
     {
-        unsigned int seed = (unsigned int)(glfwGetTime() * 1e6) ^ 0x9e3779b9u;
-        S.p.pattern = (int)(seed % N_PATTERNS);
-        S.p.inject  = 1.0f;
-        printf("[boot-inject] pattern=%s\n", PATTERN_NAMES[S.p.pattern]);
+        if (g_cfg.preset.empty()) {
+            unsigned int seed = (unsigned int)(glfwGetTime() * 1e6) ^ 0x9e3779b9u;
+            S.p.pattern = (int)(seed % N_PATTERNS);
+        }
+        S.p.inject = 1.0f;
+        printf("[boot-inject] pattern=%s%s\n", PATTERN_NAMES[S.p.pattern],
+               g_cfg.preset.empty() ? " (random)" : " (from preset)");
     }
+
+    // If the preset loaded with BPM sync already on, anchor the beat
+    // origin to the current moment so phase math doesn't run from stale
+    // time. (Otherwise beatOrigin is 0.0, and the first beat phase
+    // computation uses a large `since` value.)
+    if (S.p.bpmSyncOn) S.p.beatOrigin = glfwGetTime();
 
     double prevFrameStart = glfwGetTime();
     while (!glfwWindowShouldClose(win)) {
