@@ -93,3 +93,5 @@ Use git commits for those — the history is their ADR.
 | [0014](0014-platform-transforms-for-mac-and-linux.md) | Platform ports live as build-time transforms, not forks | Accepted | 2026-04-20 |
 | [0015](0015-pipeline-order-and-float-preservation.md) | Preserve float headroom through the loop, and reorder the feedback-write tail | Accepted | 2026-04-20 |
 | [0016](0016-nan-inf-sanitize-at-output.md) | Sanitize NaN/Inf at `output_fade`, never anywhere else | Accepted | 2026-04-20 |
+| [0017](0017-pixelate-as-alternate-sample.md) | Pixelate takes over the sample stage; optics is bypassed when active | Accepted | 2026-04-20 |
+| [0018](0018-music-to-visual-trigger-bridge.md) | Music → visual bridge: classify at trigger, envelope per bucket | Accepted | 2026-04-20 |

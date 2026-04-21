@@ -714,6 +714,24 @@ bool synthesizeDrum(const std::string& name) {
     return true;
 }
 
+// Music → visual bridge. Accumulators bumped on every trigger, drained
+// from the render loop once per frame via consumeTriggerPulses().
+static std::mutex g_pulsesMu;
+static TriggerPulses g_pulses;
+
+// Classify a sample name into a kick/snare/hat/other bucket. Prefix match
+// on the short-names Strudel conventions use; fall through to "other".
+static void classify_sample(const std::string& name, float gain) {
+    std::lock_guard<std::mutex> lk(g_pulsesMu);
+    // Start with the common short-form drum kit names.
+    if      (name == "bd" || name == "kick")                   g_pulses.kick  += gain;
+    else if (name == "sn" || name == "sd" || name == "snare"
+          || name == "cp" || name == "rim")                    g_pulses.snare += gain;
+    else if (name == "hh" || name == "oh" || name == "ch"
+          || name == "hat"|| name == "cb")                     g_pulses.hat   += gain;
+    else                                                        g_pulses.other += gain;
+}
+
 bool trigger(const std::string& sampleName, const TriggerOpts& opts) {
     if (!g_deviceOk) return false;
     const Sample* sp = nullptr;
@@ -723,6 +741,7 @@ bool trigger(const std::string& sampleName, const TriggerOpts& opts) {
         if (it == g_samples.end()) return false;
         sp = &it->second;
     }
+    classify_sample(sampleName, opts.gain);
     PendingTrigger t;
     t.mode        = VM_SAMPLE;
     t.sample      = sp;
@@ -745,6 +764,13 @@ bool trigger(const std::string& sampleName, const TriggerOpts& opts) {
 
 bool trigger_note(const NoteOpts& opts) {
     if (!g_deviceOk) return false;
+    // Classify synth notes by frequency: below 200 Hz counts as "bass".
+    // Everything else is a musical "other" event.
+    {
+        std::lock_guard<std::mutex> lk(g_pulsesMu);
+        if (opts.freqHz > 0 && opts.freqHz < 200.0f) g_pulses.bass  += opts.gain;
+        else                                          g_pulses.other += opts.gain;
+    }
     PendingTrigger t;
     t.mode        = VM_SYNTH;
     uint64_t nowF = g_deviceFrame.load(std::memory_order_relaxed);
@@ -827,6 +853,13 @@ int activeVoices() {
     int n = 0;
     for (const Voice& v : g_voices) if (v.active) n++;
     return n;
+}
+
+TriggerPulses consumeTriggerPulses() {
+    std::lock_guard<std::mutex> lk(g_pulsesMu);
+    TriggerPulses out = g_pulses;
+    g_pulses = TriggerPulses{};
+    return out;
 }
 
 } // namespace Audio

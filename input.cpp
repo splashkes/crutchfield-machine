@@ -109,6 +109,12 @@ static const ActionInfo ACTIONS[] = {
     { ACT_PATTERN_DOT,     "pattern.dot",     AK_DISCRETE, "Inject", "pattern: dot" },
     { ACT_PATTERN_CHECKER, "pattern.checker", AK_DISCRETE, "Inject", "pattern: checker" },
     { ACT_PATTERN_GRAD,    "pattern.grad",    AK_DISCRETE, "Inject", "pattern: gradient" },
+    { ACT_PATTERN_NOISE,   "pattern.noise",   AK_DISCRETE, "Inject", "pattern: noise field" },
+    { ACT_PATTERN_RINGS,   "pattern.rings",   AK_DISCRETE, "Inject", "pattern: concentric rings" },
+    { ACT_PATTERN_SPIRAL,  "pattern.spiral",  AK_DISCRETE, "Inject", "pattern: spiral" },
+    { ACT_PATTERN_POLKA,   "pattern.polka",   AK_DISCRETE, "Inject", "pattern: polka dots" },
+    { ACT_PATTERN_STARBURST,"pattern.starburst",AK_DISCRETE,"Inject", "pattern: starburst" },
+    { ACT_PATTERN_ANIM_BOUNCER,"pattern.bouncer",AK_DISCRETE,"Inject", "pattern: bouncer (10s animated box)" },
     { ACT_INJECT_HOLD,     "inject.hold",     AK_TRIGGER,  "Inject", "inject (hold)" },
 
     // app
@@ -130,6 +136,9 @@ static const ActionInfo ACTIONS[] = {
     { ACT_CAQ_CYCLE,        "q.ca",               AK_DISCRETE, "Quality", "cycle CA sampler" },
     { ACT_NOISEQ_CYCLE,     "q.noise",            AK_DISCRETE, "Quality", "cycle noise type" },
     { ACT_FIELDS_CYCLE,     "q.fields",           AK_DISCRETE, "Quality", "cycle coupled fields" },
+    { ACT_PIXELATE_STYLE_CYCLE, "q.pixelate",     AK_DISCRETE, "Quality", "cycle pixelate style" },
+    { ACT_PIXELATE_BLEED_CYCLE, "q.pixelateBleed",AK_DISCRETE, "Quality", "cycle pixelate bleed (CRT feel)" },
+    { ACT_PIXELATE_BURN_RESEED, "q.pixelateBurnReseed", AK_DISCRETE, "Quality", "reroll burned pixel pattern (preset 'burned')" },
     { ACT_QUALITY_CURSOR_UP,"q.cursor.up",        AK_DISCRETE, "Quality", "cursor prev" },
     { ACT_QUALITY_CURSOR_DN,"q.cursor.dn",        AK_DISCRETE, "Quality", "cursor next" },
     { ACT_QUALITY_FIRE_ARMED,"q.cycleArmed",      AK_DISCRETE, "Quality", "cycle armed quality" },
@@ -156,6 +165,8 @@ static const ActionInfo ACTIONS[] = {
     { ACT_OUTFADE_UP,   "outfade.up",   AK_STEP,     "Output", "fade toward white" },
     { ACT_OUTFADE_DN,   "outfade.down", AK_STEP,     "Output", "fade toward black" },
     { ACT_OUTFADE_AXIS, "outfade.axis", AK_RATE,     "Output", "fade (axis -1..+1)" },
+    { ACT_BRIGHTNESS_UP,"brightness+",  AK_STEP,     "Output", "display brightness +" },
+    { ACT_BRIGHTNESS_DN,"brightness-",  AK_STEP,     "Output", "display brightness -" },
 
     // bipolar axis variants (gamepad sticks)
     { ACT_ZOOM_AXIS,    "warp.zoom.axis",   AK_RATE, "Warp",     "zoom (axis)" },
@@ -174,6 +185,12 @@ static const ActionInfo ACTIONS[] = {
     { ACT_BPM_VFXCYCLE_TOGGLE,   "bpm.vfxCycle",      AK_DISCRETE, "BPM", "toggle vfx auto-cycle on beat" },
     { ACT_BPM_FLASH_TOGGLE,      "bpm.flash",         AK_DISCRETE, "BPM", "toggle fade-flash on beat" },
     { ACT_BPM_DECAYDIP_TOGGLE,   "bpm.decayDip",      AK_DISCRETE, "BPM", "toggle decay-dip on beat" },
+    { ACT_BPM_HUEJUMP_TOGGLE,    "bpm.hueJump",       AK_DISCRETE, "BPM", "toggle hue-jump on beat" },
+    { ACT_BPM_HUEJUMP_STEP_UP,   "bpm.hueJumpStep+",  AK_STEP,     "BPM", "hue-jump step +" },
+    { ACT_BPM_HUEJUMP_STEP_DN,   "bpm.hueJumpStep-",  AK_STEP,     "BPM", "hue-jump step -" },
+    { ACT_BPM_INVERT_TOGGLE,     "bpm.invert",        AK_DISCRETE, "BPM", "toggle beat-driven invert flip" },
+    { ACT_BPM_INVERT_DIV_UP,     "bpm.invertDiv+",    AK_STEP,     "BPM", "invert flip divisor +" },
+    { ACT_BPM_INVERT_DIV_DN,     "bpm.invertDiv-",    AK_STEP,     "BPM", "invert flip divisor -" },
 
     { ACT_LAUNCH_LOOPMIDI,       "music.installMidiDriver", AK_DISCRETE, "BPM", "install MIDI driver (Windows)" },
     { ACT_MUSIC_NEXT,            "music.next",      AK_DISCRETE, "BPM", "next music preset" },
@@ -298,6 +315,12 @@ void Input::installDefaults() {
     K(in, ACT_PATTERN_DOT,     GLFW_KEY_3);
     K(in, ACT_PATTERN_CHECKER, GLFW_KEY_4);
     K(in, ACT_PATTERN_GRAD,    GLFW_KEY_5);
+    K(in, ACT_PATTERN_NOISE,   GLFW_KEY_6);
+    K(in, ACT_PATTERN_RINGS,   GLFW_KEY_7);
+    K(in, ACT_PATTERN_SPIRAL,  GLFW_KEY_8);
+    K(in, ACT_PATTERN_POLKA,   GLFW_KEY_9);
+    K(in, ACT_PATTERN_STARBURST,GLFW_KEY_0);
+    K(in, ACT_PATTERN_ANIM_BOUNCER, GLFW_KEY_B, GLFW_MOD_ALT);
     K(in, ACT_INJECT_HOLD,     GLFW_KEY_SPACE);
 
     // App
@@ -316,6 +339,9 @@ void Input::installDefaults() {
     K(in, ACT_CAQ_CYCLE,         GLFW_KEY_F12);
     K(in, ACT_NOISEQ_CYCLE,      GLFW_KEY_HOME);
     K(in, ACT_FIELDS_CYCLE,      GLFW_KEY_END);
+    K(in, ACT_PIXELATE_STYLE_CYCLE, GLFW_KEY_DELETE);
+    K(in, ACT_PIXELATE_BLEED_CYCLE, GLFW_KEY_DELETE, GLFW_MOD_CONTROL);
+    K(in, ACT_PIXELATE_BURN_RESEED, GLFW_KEY_DELETE, GLFW_MOD_ALT);
     K(in, ACT_PRINT_HELP_STDOUT, GLFW_KEY_SLASH);  // '?' / shifted slash
 
     // Help navigation (also consumes the main-panel arrow keys when the
@@ -346,6 +372,9 @@ void Input::installDefaults() {
     // Output fade — Ctrl+Up/Down as keyboard fallback (gamepad right-stick in C2).
     K(in, ACT_OUTFADE_UP, GLFW_KEY_UP,   GLFW_MOD_CONTROL);
     K(in, ACT_OUTFADE_DN, GLFW_KEY_DOWN, GLFW_MOD_CONTROL);
+    // Brightness — Alt+Up/Down (display-only, doesn't feed back).
+    K(in, ACT_BRIGHTNESS_UP, GLFW_KEY_UP,   GLFW_MOD_ALT);
+    K(in, ACT_BRIGHTNESS_DN, GLFW_KEY_DOWN, GLFW_MOD_ALT);
 
     // BPM
     K(in, ACT_BPM_TAP,              GLFW_KEY_TAB);
@@ -356,6 +385,12 @@ void Input::installDefaults() {
     K(in, ACT_BPM_VFXCYCLE_TOGGLE,  GLFW_KEY_V,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_BPM_FLASH_TOGGLE,     GLFW_KEY_F,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_BPM_DECAYDIP_TOGGLE,  GLFW_KEY_D,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_BPM_HUEJUMP_TOGGLE,   GLFW_KEY_H,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_BPM_HUEJUMP_STEP_UP,  GLFW_KEY_EQUAL,     GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_BPM_HUEJUMP_STEP_DN,  GLFW_KEY_MINUS,     GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_BPM_INVERT_TOGGLE,    GLFW_KEY_V,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_BPM_INVERT_DIV_UP,    GLFW_KEY_PERIOD,        GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    K(in, ACT_BPM_INVERT_DIV_DN,    GLFW_KEY_COMMA,         GLFW_MOD_CONTROL | GLFW_MOD_ALT);
 
     // Music / MIDI: Ctrl+M launches loopMIDI.
     K(in, ACT_LAUNCH_LOOPMIDI,      GLFW_KEY_M,         GLFW_MOD_CONTROL);

@@ -96,4 +96,19 @@ bool is_synth_name(const std::string& name);
 // Runtime stats (for HUD).
 int  activeVoices();
 
+// Music → visual bridge. Each sample trigger is classified by its name
+// prefix into one of four buckets (kick/snare/hat/bass), everything else
+// lands in `other`. Each field accumulates trigger gains since the last
+// consume, so `consumeTriggerPulses()` returns the total energy-per-bucket
+// that fired this frame and resets the accumulators. Read from the render
+// loop to drive shader uniforms (noise dropout mode responds per bucket).
+struct TriggerPulses {
+    float kick  = 0.0f;
+    float snare = 0.0f;
+    float hat   = 0.0f;
+    float bass  = 0.0f;
+    float other = 0.0f;
+};
+TriggerPulses consumeTriggerPulses();
+
 } // namespace Audio

@@ -255,6 +255,29 @@ or RGB24. Converts to RGB and uploads to `S.camTex` each frame via
 `S.cam.grab()` in the main loop. If no camera or no compatible format,
 the `external` layer becomes a no-op. Graceful degradation.
 
+### Music → visual trigger bridge
+
+Closes half of the bi-directional loop (the other half being the
+existing `fb.*` video → JS scalars). `audio.cpp::trigger()` and
+`trigger_note()` each classify the event into a bucket (kick / snare
+/ hat / bass / other) via sample-name prefix and synth frequency.
+The classifier writes into a mutex-guarded accumulator which the
+render loop drains once per frame via `Audio::consumeTriggerPulses()`.
+Each drained pulse feeds a per-bucket decaying envelope (~0.88 per
+frame, ~150 ms half-life) in `State`; envelopes are pushed as
+`uMusKick/Snare/Hat/Bass/Other` uniforms to the feedback shader.
+
+Consumers so far: the `noise` layer's `dropout` archetype (mode 4).
+Each bucket produces a distinct glitch flavour — see
+[LAYERS.md §Music → visual bridge](LAYERS.md#music--visual-bridge-dropout-noise)
+and [ADR-0018](ADR/0018-music-to-visual-trigger-bridge.md) for the
+rationale.
+
+Classification is intentionally lightweight (prefix match on sample
+name, frequency threshold for synths). It is NOT trying to be a
+signal-processing analyser — that would be an additional feature on
+top (mentioned in TODO as audio-reactivity via RMS/bands).
+
 ### Music + audio engine
 
 **Files:** `music.cpp/h`, `audio.cpp/h`, `js/engine.js`, `music/*.strudel`.
@@ -369,6 +392,10 @@ then lower `--iters`, then lower sim resolution.
 | You want to... | ...touch this |
 |---|---|
 | Add a new visual behavior | `shaders/layers/<name>.glsl` + wiring in `main.frag` + host-side uniform plumb in `main.cpp`. See [CONTRIBUTING.md](../CONTRIBUTING.md). |
+| Add a new pixelate style or CRT-bleed preset | Decode in `shaders/layers/pixelate.glsl` (`pixelate_decode_bleed` for bleed; the shape/size decode for style). Update `PIXELATE_NAMES` / `PIXELATE_BLEED_NAMES` in `main.cpp`. |
+| Add a new noise archetype | New `if (uNoiseQuality == N)` branch in `shaders/layers/noise.glsl`. Extend `NOISE_NAMES` in `main.cpp` (name auto-appears in the cycle via `N_NOISE_TYPES`). |
+| Add a new inject pattern | New `if (id == N)` branch in `inject.glsl::pattern_gen` returning `vec4(rgb, alpha)`. Extend `PATTERN_NAMES` in `main.cpp`. Static patterns return alpha 1.0; sparse / animated patterns return 0.0 for background pixels. Optional: pair with a key binding and an `injectHoldTimer` for long-duration animated patterns. |
+| Add a new music → visual signal | In `audio.cpp::classify_sample()` / `trigger_note()` bucket the event into one of the 5 existing envelopes (kick/snare/hat/bass/other) — or add a new bucket to `TriggerPulses` + `consumeTriggerPulses()`. Shader uniform plumb in `main.cpp`, consume in `noise.glsl` or elsewhere. |
 | Add a new CLI flag | `Cfg` struct, `parse_cli`, help text, `State S` application in `main()`. |
 | Add a new user action | `ActionId` entry in `input.h`; table row in `input.cpp::ACTIONS[]`; default binding in `Input::installDefaults`; `case` in `apply_action` in main.cpp; row in the relevant `section_*` builder. |
 | Rebind an existing action | Edit `bindings.ini` next to the exe — no recompile. |
@@ -398,6 +425,24 @@ Break these and things go subtly wrong:
    never as range compression. See
    [ADR-0015](ADR/0015-pipeline-order-and-float-preservation.md) and
    [LAYERS.md §float-precision invariant](LAYERS.md#float-precision-invariant).
+2b. **Sample stage is either optics OR pixelate, never both in the
+   same frame.** When `uPixelateStyle != 0`, `pixelate_apply` takes
+   over the uPrev read — hard block edges can't survive a blur
+   kernel. See [ADR-0017](ADR/0017-pixelate-as-alternate-sample.md).
+2c. **Pattern alpha governs inject sparsity.** `pattern_gen()` returns
+   `vec4(rgb, alpha)` where alpha is the per-pixel inject mask.
+   Animated patterns (e.g. the bouncer) MUST return alpha 0 outside
+   their shape or they'll wipe the feedback field with black.
+2d. **Music-envelope decay is host-owned.** `S.musKick/Snare/Hat/
+   Bass/Other` decay in the main loop after `Audio::
+   consumeTriggerPulses()`. The shader reads them as unvarying
+   uniforms for that frame. If you add a new envelope, own its
+   decay in the same place.
+2e. **Brightness is display-only.** The `uBrightness` multiplier
+   lives in `blit.frag`, NOT in the feedback write. Applying it in
+   the loop would cause cascading feedback explosion (brightness
+   >1 would blow up over N frames). The recorder captures the sim
+   FBO before the blit, so EXR output is brightness-independent.
 3. **`S.p` is the single source of truth for per-layer parameters.**
    Uniforms read from it; presets write from/to it; `apply_action`
    modifies it.

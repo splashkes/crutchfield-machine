@@ -135,6 +135,51 @@ way the existing fields are handled.
 - No multi-line comment blocks inside layer bodies. If a step needs
   explaining, one short comment on the relevant line is enough.
 
+## Authoring a pattern (for the Inject layer)
+
+Patterns (the things injected when you hold Space or press a pattern
+key) live in `shaders/layers/inject.glsl`. `pattern_gen(uv, id)`
+returns `vec4(rgb, alpha)` — alpha is the per-pixel *injection mask*:
+
+- `alpha = 1.0` → fully inject this pixel's colour.
+- `alpha = 0.0` → leave the underlying `col` unchanged.
+
+Static patterns (a filled H-bars grid, for example) return 1.0
+everywhere. Sparse or animated patterns (the pong-ball "bouncer"
+lives in id=10) return 0.0 outside their shape so the feedback
+field keeps evolving around them rather than getting wiped.
+
+For patterns that need to RUN for longer than the default ~20-frame
+inject fade (e.g. a bouncing box, a trail, a longer animation),
+pair the pattern with a host-side `injectHoldTimer`: set it to the
+duration in seconds when the pattern is triggered, and the main
+loop will override the normal `inject *= 0.85` fadeout for that
+long. See `case ACT_PATTERN_ANIM_BOUNCER` in `main.cpp` for the
+template.
+
+## Authoring a pixelate / bleed preset
+
+Two axes: **style** (shape × size — see `pixelate_apply`) and
+**bleed** (the CRT-character presets — see
+`pixelate_decode_bleed`). Each bleed preset picks a dominant
+aspect among (jitter / chromatic offset / edge softening / intra-
+cell vignette) rather than scaling all four together, so stepping
+through the cycle gives visually distinct looks. Add a new preset
+by extending `pixelate_decode_bleed()` with a new `else if (idx ==
+N)` branch + a new name in `PIXELATE_BLEED_NAMES` in `main.cpp`
+(bumped `N_PIXELATE_BLEED_PRESETS` via `sizeof()` auto-propagates).
+
+## Music → visual bridge contributions
+
+The bridge in `audio.cpp::classify_sample()` buckets trigger events
+into kick / snare / hat / bass / other. The noise layer's `dropout`
+mode is the sole consumer today — each bucket produces a distinct
+glitch flavour. To add a new consumer (e.g. a layer that responds
+to snare hits), read the `uMusSnare` uniform already published by
+`main.cpp`. To add a new *bucket*, extend `TriggerPulses` +
+`consumeTriggerPulses()` + the classifier + the uniform push. See
+ADR-0018.
+
 ## Contribution ideas
 
 Shader layers we'd love PRs for:

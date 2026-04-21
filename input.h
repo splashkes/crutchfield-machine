@@ -77,6 +77,9 @@ enum ActionId : int {
     // ── Patterns + inject ────────────────────────────────────────────
     ACT_PATTERN_HBARS, ACT_PATTERN_VBARS, ACT_PATTERN_DOT,
     ACT_PATTERN_CHECKER, ACT_PATTERN_GRAD,
+    ACT_PATTERN_NOISE, ACT_PATTERN_RINGS, ACT_PATTERN_SPIRAL,
+    ACT_PATTERN_POLKA, ACT_PATTERN_STARBURST,
+    ACT_PATTERN_ANIM_BOUNCER,
     ACT_INJECT_HOLD,      // TRIGGER: 1.0 on press, 0.0 on release
 
     // ── App-level actions ────────────────────────────────────────────
@@ -90,6 +93,9 @@ enum ActionId : int {
     ACT_SCREENSHOT,
     ACT_PRESET_SAVE, ACT_PRESET_NEXT, ACT_PRESET_PREV,
     ACT_BLURQ_CYCLE, ACT_CAQ_CYCLE, ACT_NOISEQ_CYCLE, ACT_FIELDS_CYCLE,
+    ACT_PIXELATE_STYLE_CYCLE,
+    ACT_PIXELATE_BLEED_CYCLE,
+    ACT_PIXELATE_BURN_RESEED,
     // Cursor-based quality navigation (D-pad L/R + A in Quality section)
     ACT_QUALITY_CURSOR_UP, ACT_QUALITY_CURSOR_DN, ACT_QUALITY_FIRE_ARMED,
     // Cursor-based pattern navigation (D-pad L/R in Inject section)
@@ -108,6 +114,8 @@ enum ActionId : int {
     // ── Output fade (C6) ─────────────────────────────────────────────
     ACT_OUTFADE_UP, ACT_OUTFADE_DN,
     ACT_OUTFADE_AXIS,   // RATE/AXIS: absolute value in [-1, +1]
+    // Display-only brightness multiplier (applied in blit, not feedback).
+    ACT_BRIGHTNESS_UP, ACT_BRIGHTNESS_DN,
 
     // ── Bipolar axis variants (signed magnitude; gamepad sticks) ─────
     // For sticks, mag is -1..+1 each frame. apply_action scales by the
@@ -137,6 +145,10 @@ enum ActionId : int {
     ACT_BPM_VFXCYCLE_TOGGLE,
     ACT_BPM_FLASH_TOGGLE,
     ACT_BPM_DECAYDIP_TOGGLE,
+    ACT_BPM_HUEJUMP_TOGGLE,
+    ACT_BPM_HUEJUMP_STEP_UP, ACT_BPM_HUEJUMP_STEP_DN,
+    ACT_BPM_INVERT_TOGGLE,
+    ACT_BPM_INVERT_DIV_UP, ACT_BPM_INVERT_DIV_DN,
 
     ACT__COUNT
 };

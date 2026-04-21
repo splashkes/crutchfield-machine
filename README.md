@@ -153,6 +153,31 @@ the dynamics* if used as the feedback path, not just the output.
 Compare side-by-side with `--precision 16` to see how much of the apparent
 subtlety lives in the extra bits.
 
+### Noise archetype picker
+
+```
+# White noise — balanced, decorrelated per pixel.
+./feedback.exe --noise-q 0
+
+# Pink 1/f — closer to real-CMOS sensor floor.
+./feedback.exe --noise-q 1
+
+# Heavy static — coarse chunky grain, "broken analog TV".
+./feedback.exe --noise-q 2
+
+# VCR — rolling horizontal bright band + chroma-heavy streaking.
+./feedback.exe --noise-q 3
+
+# Dropout — sparse magenta/green block corruption. Glitch flavour
+# shifts per music trigger (kick / snare / hat / bass / synth) — see
+# the Music→visuals section below.
+./feedback.exe --noise-q 4
+```
+
+Amplitude via `uNoise` (key `N` / `M`). Dropout mode specifically
+reads the music-engine's per-trigger envelopes; if the audio engine
+is playing, each drum fires a distinctly flavoured glitch.
+
 ### Iteration count (sub-frames per displayed frame)
 
 ```
@@ -262,7 +287,19 @@ Essentials for quick reference:
 | `H` | Toggle help panel (drill-down, live values) |
 | `F1..F10` / `Ins` / `PgDn` | Toggle layers |
 | `Space` (hold) | Inject current pattern |
-| `1..5` | Pattern select (H-bars, V-bars, dot, checker, gradient) |
+| `1..5` | Pattern select — H-bars / V-bars / dot / checker / gradient |
+| `6..0` | Pattern select — noise / rings / spiral / polka / starburst |
+| `Alt+B` | Trigger bouncer (10-second animated pong ball) |
+| `Home` | Cycle noise archetype (white / pink / heavy static / VCR / dropout) |
+| `Delete` | Cycle pixelate style (off / dots / hard squares / rounded × s/m/l) |
+| `Ctrl+Delete` | Cycle pixelate CRT bleed (off / soft / CRT / melt / fried / burned) |
+| `Alt+Delete` | Reroll the "burned" dead-pixel pattern |
+| `Alt+Up` / `Alt+Down` | Display-only brightness ± |
+| `Ctrl+Up` / `Ctrl+Down` | Output fade — toward white / toward black (feeds back) |
+| `Ctrl+Alt+H` | Toggle beat-driven hue jump |
+| `Ctrl+Alt+=` / `Ctrl+Alt+-` | Hue-jump step ± (0–100; 25 = quarter rotation per beat, 50 = complement) |
+| `Ctrl+Alt+V` | Toggle beat-driven invert flip |
+| `Ctrl+Alt+,` / `Ctrl+Alt+.` | Invert-flip divisor ± (flip every N beats) |
 | `` ` `` | Start / stop EXR recording (writes `./recordings/feedback_<ts>/`) |
 | `PrtSc` | Screenshot — PNG at sim resolution, no HUD (writes `./screenshots/`) |
 | `Ctrl+S` | Save current state as preset |
@@ -271,8 +308,8 @@ Essentials for quick reference:
 | `Tab` | Tap tempo |
 | `Ctrl+Tab` | BPM sync on/off |
 | `C` | Clear fields |
-| `P` | Pause |
-| `Esc` | Quit |
+| `P` | Pause (couples to music; remembers pre-pause music state on resume) |
+| `Esc` | Quit (first press arms confirm: `Y` / second `Esc` = quit, `N` = cancel) |
 
 Everything else — all parameter nudges, V-4 slots, output fade, BPM
 modulations, gamepad maps — is in the help panel and in `bindings.ini`.
@@ -416,6 +453,36 @@ no duplicated shaders. Each port applies a small set of targeted patches
 via Python scripts, plus a platform-specific camera backend. See
 [ADR-0014](development/ADR/0014-platform-transforms-for-mac-and-linux.md)
 for the rationale and the README in each platform dir for build steps.
+
+### Music → visual coupling
+
+Two directions of coupling between the music engine and the feedback
+pipeline:
+
+**Visuals → music (`fb.*` scalars, read from patterns):** covered in
+the Music engine section above. `fb.zoom`, `fb.theta`, etc. are live
+numeric globals that `music/*.strudel` patterns can reference to make
+sound respond to what's on screen.
+
+**Music → visuals (per-trigger bridge, auto-flavours dropout noise):**
+every time a sample or synth fires, it's classified into one of five
+buckets (kick / snare / hat / bass / other) by sample-name prefix and
+synth frequency. Each bucket drives a decaying envelope uniform
+(`uMusKick`, etc.) in the shader. The noise layer's **dropout**
+archetype (`Home` until "dropout") reads these and produces a
+distinct visual glitch per drum type:
+
+- **Kick** (`bd`, `kick`) → wide 48-texel blocks pulled to black
+- **Snare** (`sn`, `sd`, `cp`, `rim`) → sharp narrow white flashes
+- **Hat** (`hh`, `oh`, `ch`, `cb`) → tiny 4-texel green-tinted speckle
+- **Bass** (synth notes < 200 Hz) → medium blocks tinted with a
+  slowly-rotating hue
+- **Other** → rare wide rainbow-coloured glitches
+
+So: set noise type to dropout, start music, watch drums punch visible
+glitches through the feedback in their own flavour. See
+[development/LAYERS.md](development/LAYERS.md#music--visual-bridge-dropout-noise)
+for the full mechanics.
 
 ## Background
 

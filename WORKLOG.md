@@ -1,3 +1,118 @@
+# Worklog — 2026-04-20 extended session (performance-layer expansion)
+
+Continuation of the same day. Scope was initially a small colour-quality
+pass; grew into a broad performance-layer expansion once the pipeline
+rework exposed how much more expressive room the float-preserved path
+could carry.
+
+## Shader-layer additions
+
+- **Pixelate** (new, `shaders/layers/pixelate.glsl`). In-loop spatial
+  quantizer. When active (`uPixelateStyle != 0`) it **replaces** the
+  sample stage (takes over from `optics_sample`). 9 styles = 3 shapes
+  (dots / hard squares / rounded squares) × 3 sizes (small / med /
+  large). Cell sizes scale with sim resolution (`uRes.x / 1280` reference)
+  so "small" reads the same at 720p and 4K. Cell centres re-apply
+  warp + thermal so pixelated content propagates through the dynamics
+  instead of freezing into a static grid. See ADR-0017.
+- **Pixelate CRT bleed** (inside the same layer). Orthogonal axis to
+  style — a 6-entry cycle (off / soft / CRT / melt / fried / burned),
+  each with a *dominant* aesthetic (not gradual same-axis variation).
+  - `off` rigid
+  - `soft` edge glow only
+  - `CRT` vignette + chromatic convergence error (Trinitron feel)
+  - `melt` sinusoidal jitter — pixels swim
+  - `fried` time-varying chromatic drift + strobing vignette
+  - `burned` seed-tinted dead-pixel groups; alpha ~7%; reseed rerolls
+- **Noise archetypes** extended from 2 → 5: `white`, `pink 1/f`,
+  `heavy static`, `VCR rolling bar`, `dropout`. Amplitudes tuned so
+  each reads at default `uNoise ≈ 0.002`.
+- **Pattern sparsity** via alpha channel: `pattern_gen()` now returns
+  `vec4` (rgb + alpha). Most existing patterns return alpha 1.0
+  (no behaviour change); new animated / sparse patterns use alpha 0
+  for non-content pixels so the feedback field continues evolving
+  around them.
+- **Inject patterns 5-9**: noise field, concentric rings, spiral,
+  polka dots, starburst (keys `6-0`).
+- **Inject pattern 10 — bouncer**: 1/20-cell quantized pong ball,
+  triangle-wave bounce, ~2 s period. Alt+B triggers a 10-second hold
+  (`injectHoldTimer` bypasses normal inject fade).
+
+## Host / audio
+
+- **Music → visual trigger bridge** (`audio.cpp`). Each
+  `Audio::trigger()` and `trigger_note()` classifies the event into
+  kick / snare / hat / bass / other. Host drains
+  `consumeTriggerPulses()` per frame into decaying envelopes
+  (0.88 per frame), published as `uMusKick/Snare/Hat/Bass/Other`
+  uniforms. Noise dropout mode reads these and produces **per-bucket
+  glitch flavours** — kick = wide black holes, snare = white flashes,
+  hat = tiny green speckle, bass = rotating-hue blocks, other =
+  rainbow glitches. See ADR-0018.
+- **Beat-driven hue jump** (6th BPM modulation). Each beat kicks
+  `hueBeatKick` to `step × 0.001`; decays 0.9/frame so the total
+  rotation sums to `step/100` per beat, distributed across ~20
+  frames. Step range 0-100 with progressive nudge. On by default
+  at step 12 (1/8 rotation per beat).
+- **Beat-driven invert flip** (7th BPM modulation). Every Nth beat,
+  flips `p.invert`. Default div = 4 (once per bar in 4/4). Pairs
+  with the frame-level `invertPeriod` that still controls *how often*
+  the invert op runs once invert is "on".
+- **Invert frame-divider** fix for the 60 Hz seizure-strobe.
+  `uInvertPeriod` defaults to 20 (3 Hz flip instead of 60 Hz).
+- **Boot-time random inject**. After preset load, pick one of 11
+  patterns and set `inject = 1.0`. Normal fade takes it out over
+  ~20 frames; no more black-screen start.
+- **Pause ↔ music coupling**. `P` now pauses both visuals and music
+  together, remembering pre-pause music state so unpausing respects
+  whatever the user had before.
+- **Default enable = `L_ALL`**. All 12 layers on at startup. Physics
+  and thermal defaults are near-identity so this doesn't explode.
+- **Default BPM modulations retuned**: `bpmInject` OFF (was ON),
+  `bpmHueJump` ON at step 12.
+- **Brightness knob** (display-only). `uBrightness` in `blit.frag`,
+  bound to `Alt+Up`/`Alt+Down`, range 0-4.0. Does NOT feed back —
+  sim dynamics are unchanged, only the blit-to-window multiplies.
+  Recording EXR is captured before the blit, so recordings are
+  unaffected.
+- **Exit confirmation**. First `Esc` arms; second `Esc` or `Y`
+  quits; `N` or any other key cancels.
+- **Layer-off warnings**. `apply_action` consults an `ACTION_REQS`
+  table and posts a HUD hint when a parameter is nudged while its
+  layer is off (e.g. "contrast set — layer off, F5 to activate").
+- **Help panel redesign**. Removed the full-panel opaque dim.
+  Per-line dark backing via `drawTextBacked` so feedback shows
+  through between rows. Preserves legibility without hiding the
+  image.
+
+## Docs
+
+- `development/LAYERS.md` updated: pixelate added to pipeline
+  diagram as the alternate sample stage; noise archetype list; music
+  bridge mention.
+- `development/ARCHITECTURE.md`: music-viz bridge component;
+  pixelate and brightness extension points; new invariants around
+  pattern alpha and music-envelope decay ownership.
+- `development/TODO.md`: marked completed items; added follow-ups
+  (retune curated presets against new default-ON layers, Spout GPU
+  texture share for OBS).
+- ADR-0017 (pixelate as alternate sample); ADR-0018 (music → visual
+  trigger bridge). ADR index updated.
+- `README.md`: new keybindings, brightness, exit-confirm, new
+  noise/inject/pixelate entries in the CLI flag cookbook.
+
+## Known follow-ups
+
+- Curated presets (`01_*`–`05_*`) were all saved before
+  `L_ALL`-default + clamp-removals; their visual character shifted.
+  Needs an aesthetic retuning pass (not blocking).
+- Spout GPU-texture-share for live-feed to OBS at float precision.
+  Scoped informally during session; not implemented.
+- Exit-confirmation HUD text is just a toast; a dedicated modal
+  panel would be clearer UX.
+
+---
+
 # Worklog — 2026-04-20 session (pipeline order + float preservation)
 
 Short audit of `shaders/main.frag` and the layer files surfaced two

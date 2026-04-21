@@ -81,7 +81,7 @@ static void print_cli_help() {
       "                       (8 = unorm — simulates 8-bit HDMI capture in the feedback loop)\n"
       "  --blur-q 0|1|2      blur kernel: 5-tap / 9-tap / 25-tap gaussian (default: 1)\n"
       "  --ca-q   0|1|2      chromatic aberration: 3 / 5 / 8 samples (default: 1)\n"
-      "  --noise-q 0|1       sensor noise: white / pink-1/f (default: 1)\n"
+      "  --noise-q 0..4      sensor noise: 0=white 1=pink 1/f 2=heavy-static 3=VCR 4=dropout (default: 1)\n"
       "  --fields 1|2|3|4    coupled feedback fields (default: 2)\n"
       "  --iters N           feedback iterations per displayed frame, 1-32 (default: 1)\n"
       "  --vsync on|off      vsync (default: on)\n"
@@ -114,7 +114,7 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--precision"))    { int p = atoi(next()); if (p==8||p==16||p==32) c.precision = p; }
         else if (eq("--blur-q"))       { int q = atoi(next()); if (q>=0&&q<=2) c.blurQ = q; }
         else if (eq("--ca-q"))         { int q = atoi(next()); if (q>=0&&q<=2) c.caQ = q; }
-        else if (eq("--noise-q"))      { int q = atoi(next()); if (q>=0&&q<=1) c.noiseQ = q; }
+        else if (eq("--noise-q"))      { int q = atoi(next()); if (q>=0&&q<=4) c.noiseQ = q; }
         else if (eq("--fields"))       { int f = atoi(next()); if (f>=1&&f<=4) c.fields = f; }
         else if (eq("--iters"))        { c.iters = atoi(next()); if (c.iters < 1) c.iters = 1;
                                           if (c.iters > 32) c.iters = 32; }
@@ -202,8 +202,17 @@ struct Params {
     // inject
     float inject = 0.0f;
     int   pattern = 0;
+    // Long-duration inject hold. While > 0, the main-loop fadeout
+    // (`inject *= 0.85`) is skipped and inject is forced to 1.0. Decremented
+    // by dt each frame. Set by animated-pattern triggers (Alt+B → bouncer).
+    float injectHoldTimer = 0.0f;
     // physics (Crutchfield camera-side knobs)
     int   invert      = 0;       // 0 = off, 1 = on (Crutchfield's "s")
+    int   invertPeriod = 20;     // apply the invert op every Nth frame
+                                 //   1  = every frame (legacy — seizure-y)
+                                 //   20 ≈ 3 Hz flip at 60 fps
+                                 //   60 = 1 Hz slow flip
+                                 // Only meaningful when invert == 1.
     float sensorGamma = 1.0f;    // 1.0 = no-op; Crutchfield: 0.6..0.9
     float satKnee     = 0.0f;    // 0 = hard clip; 1 = full Reinhard
     float colorCross  = 0.0f;    // 0 = independent RGB; 1 = full averaging
@@ -225,6 +234,10 @@ struct Params {
 
     // Output fade — bipolar, -1 = full black, 0 = pass-through, +1 = white.
     float outFade = 0.0f;
+    // Display-only brightness multiplier, applied in blit.frag (NOT in the
+    // feedback loop). 1.0 = pass-through. Scaling here is safe because it
+    // doesn't feed back; the sim keeps running at its own dynamics.
+    float brightness = 1.0f;
 
     // BPM sync. Tap tempo fills taps[]; bpm is smoothed across the
     // last few taps. beatPhase in [0, 1) is the fractional position
@@ -237,15 +250,24 @@ struct Params {
                                  // 2 = half-tempo
                                  // 3 = quarter-tempo
     bool  bpmSyncOn    = false;
-    bool  bpmInject    = true;   // inject on beat (starts on once sync on)
+    bool  bpmInject    = false;  // inject-on-beat: off by default (can fight hue-jump)
     bool  bpmStrobe    = true;   // strobe rate lock
     bool  bpmVfxCycle  = false;  // auto-cycle vfx slot 1
     bool  bpmFlash     = false;  // flash fade on beat
     bool  bpmDecayDip  = false;  // momentary decay dip
+    bool  bpmHueJump   = true;   // hue-jump on beat: on by default (gentle step)
+    float hueJumpStep  = 12.0f;  // ~1/8 rotation per beat → full cycle over 8 beats
+    // Beat-driven invert flipper. Every `bpmInvertDiv` beats, flip p.invert.
+    // Paired with the frame-level invertPeriod (which controls how often
+    // the invert op runs once `invert` is "on"), this gives a slow
+    // musical on-off cadence keyed to the tempo.
+    bool  bpmInvert    = false;
+    int   bpmInvertDiv = 4;      // flip every Nth beat (default = 1 bar in 4/4)
 
     // Transients driven by beat events. Not user-facing.
     float decayDipTimer = 0.0f;  // seconds remaining in active dip
     float flashDecay    = 0.0f;  // decaying flash magnitude (signed)
+    float hueBeatKick   = 0.0f;  // one-frame additive boost to hueRate; cleared after render
 };
 
 // BPM division multipliers (applied to the 60/bpm base period).
@@ -265,6 +287,45 @@ static const char* VFX_NAMES[] = {
 static constexpr int VFX_COUNT = (int)(sizeof(VFX_NAMES) / sizeof(VFX_NAMES[0]));
 
 static const char* VFX_BSRC_NAMES[] = { "camera", "self-reproc" };
+
+// Noise archetypes — keep in sync with shaders/layers/noise.glsl's
+// dispatch. Index is uNoiseQuality.
+static const char* NOISE_NAMES[] = {
+    "white", "pink 1/f", "heavy static", "VCR", "dropout",
+};
+static constexpr int N_NOISE_TYPES =
+    (int)(sizeof(NOISE_NAMES) / sizeof(NOISE_NAMES[0]));
+
+// Inject patterns — keep in sync with shaders/layers/inject.glsl's
+// pattern_gen() dispatch. Index is uPattern.
+static const char* PATTERN_NAMES[] = {
+    "H-bars", "V-bars", "dot", "checker", "gradient",
+    "noise", "rings", "spiral", "polka", "starburst",
+    "bouncer",   // animated — pairs with injectHoldTimer for long-duration inject
+};
+static constexpr int N_PATTERNS =
+    (int)(sizeof(PATTERN_NAMES) / sizeof(PATTERN_NAMES[0]));
+
+// Pixelate styles — keep in sync with shaders/layers/pixelate.glsl.
+// Index 0 = off; 1..9 = (shape × size) per the layer comment.
+static const char* PIXELATE_NAMES[] = {
+    "off",
+    "dots small",     "dots med",     "dots large",
+    "squares small",  "squares med",  "squares large",
+    "rounded small",  "rounded med",  "rounded large",
+};
+static constexpr int N_PIXELATE_STYLES =
+    (int)(sizeof(PIXELATE_NAMES) / sizeof(PIXELATE_NAMES[0]));
+
+// Pixelate CRT bleed presets — orthogonal to style. Each preset maps to a
+// set of four strengths inside the shader (jitter / chroma / edge-soften /
+// vignette). Names shown in the HUD. "melt" and "fried" are the far-out
+// modes that time-modulate their strengths.
+static const char* PIXELATE_BLEED_NAMES[] = {
+    "off", "soft", "CRT", "melt", "fried", "burned",
+};
+static constexpr int N_PIXELATE_BLEED_PRESETS =
+    (int)(sizeof(PIXELATE_BLEED_NAMES) / sizeof(PIXELATE_BLEED_NAMES[0]));
 
 // ── framebuffer-object helper ─────────────────────────────────────────────
 struct FBO { GLuint fbo = 0, tex = 0; int w = 0, h = 0; };
@@ -415,8 +476,11 @@ struct State {
     FBO field[4][2];                   // field[i][0] and field[i][1]
     bool writeA = true;                // toggles which slot we're writing to
 
-    int  enable = L_WARP | L_OPTICS | L_COLOR | L_CONTRAST
-                | L_DECAY | L_NOISE | L_INJECT;
+    // Default = all layers on. Per-layer "off-equivalent" parameter
+    // defaults (physics knobs at 1.0/0.0, thermal amp at 0.015, etc.)
+    // keep this from blowing up on boot; user tears layers off with
+    // the F-keys as needed.
+    int  enable = L_ALL;
     Params p;
     bool paused = false;
     int  selectedLayer = 0;
@@ -426,6 +490,25 @@ struct State {
     // Runtime quality toggles (initialised from g_cfg in main()).
     int  blurQ = 1, caQ = 1, noiseQ = 1;
     int  activeFields = 2;             // 1..4; 1 = no coupling, 4 = full CML
+    // Music → visual envelopes (decaying per-frame; see main loop). Each
+    // rises on a trigger of the matching bucket, decays ~0.88/frame.
+    // Consumed by shaders/layers/noise.glsl in dropout mode.
+    float musKick = 0.0f, musSnare = 0.0f, musHat = 0.0f;
+    float musBass = 0.0f, musOther = 0.0f;
+
+    // Pixelate style 0..9. 0 = off (dispatch gated in main.frag).
+    //   1..3 = dots           (small / medium / large)
+    //   4..6 = hard squares   (small / medium / large)
+    //   7..9 = rounded squares (small / medium / large)
+    int  pixelateStyle = 0;
+    // Pixelate CRT bleed character (orthogonal to style). Default = soft
+    // so pixelation never reads as perfectly rigid unless the user asks.
+    // 0 off, 1 soft, 2 CRT, 3 melt (far-out), 4 fried (far-out), 5 burned (dead/stuck cells).
+    int  pixelateBleedIdx = 1;
+    // Burn-pattern seed — used only by bleed preset 5 ("burned"). Re-roll
+    // via Alt+Delete (ACT_PIXELATE_BURN_RESEED). Each value gives a
+    // distinct distribution of burned groups and a distinct tint hue.
+    int  pixelateBurnSeed = 0;
 
     Camera  cam;
     GLuint  camTex = 0;
@@ -453,6 +536,10 @@ struct State {
     // Screenshot request — set by key handler, consumed in render loop.
     bool screenshotPending = false;
 
+    // Exit-confirm modal. First Esc sets this, second Esc / Y confirms,
+    // N / any other key cancels. Prevents accidental quits mid-performance.
+    bool quitConfirmPending = false;
+
     // Auto-demo mode. Zero = disabled; positive = seconds between firings.
     // `demoLastPreset` / `demoLastInject` track the last time each fired.
     float demoPresetSec = 0.0f;
@@ -471,8 +558,11 @@ static void print_help() {
       " F11      toggle fullscreen / windowed\n"
       " PgUp     cycle blur kernel (5-tap / 9-gauss / 25-gauss)\n"
       " F12      cycle chromatic aberration (3 / 5 / 8 samples)\n"
-      " Home     cycle noise (white / pink 1/f)\n"
+      " Home     cycle noise (white / pink / heavy static / VCR / dropout)\n"
       " End      cycle coupled fields (1 / 2 / 3 / 4)\n"
+      " Delete   cycle pixelate (off / dots / squares / rounded, s·m·l)\n"
+      " Ctrl+Del cycle pixelate bleed (off / soft / CRT / melt / fried / burned)\n"
+      " Alt+Del  reroll burn pattern (only audible when bleed = burned)\n"
       " H        toggle help overlay (in-window)\n"
       " `        start/stop recording (feedback_<timestamp>.mp4)\n"
       " PrtSc    screenshot (PNG, sim resolution, no HUD)\n"
@@ -605,14 +695,19 @@ static bool preset_write(const std::string& path) {
 "thermal  = %s\n"
 "\n"
 "[quality]\n"
-"# blur:  0=5-tap cross   1=9-tap gauss   2=25-tap gauss\n"
-"# ca:    0=3-sample      1=5-sample ramp 2=8-sample wavelen\n"
-"# noise: 0=white          1=pink 1/f\n"
-"# fields: 1..4 coupled feedback fields\n"
-"blur     = %d\n"
-"ca       = %d\n"
-"noise    = %d\n"
-"fields   = %d\n"
+"# blur:     0=5-tap cross   1=9-tap gauss   2=25-tap gauss\n"
+"# ca:       0=3-sample      1=5-sample ramp 2=8-sample wavelen\n"
+"# noise:    0=white  1=pink 1/f  2=heavy static  3=VCR  4=dropout\n"
+"# fields:   1..4 coupled feedback fields\n"
+"# pixelate: 0=off  1..3=dots s/m/l  4..6=squares s/m/l  7..9=rounded s/m/l\n"
+"# pixelateBleed: 0=off  1=soft  2=CRT  3=melt  4=fried\n"
+"blur          = %d\n"
+"ca            = %d\n"
+"noise         = %d\n"
+"fields        = %d\n"
+"pixelate      = %d\n"
+"pixelateBleed = %d\n"
+"pixelateBurnSeed = %d\n"
 "\n"
 "[warp]\n"
 "zoom     = %.6f\n"
@@ -647,13 +742,15 @@ static bool preset_write(const std::string& path) {
 "[physics]\n"
 "# Crutchfield 1984 camera-side knobs (see shaders/layers/physics.glsl).\n"
 "# invert: 0 or 1 — Crutchfield's s parameter; inverts all channels.\n"
+"# invertPeriod: apply the invert every Nth frame. 1=legacy strobe, 20≈3Hz, 60≈1Hz.\n"
 "# sensorGamma: photoconductor response curve, 1.0 = no-op; paper says 0.6..0.9.\n"
 "# satKnee: 0 = hard clip; 1 = full Reinhard rolloff.\n"
 "# colorCross: 0 = RGB independent; 1 = all channels become mean.\n"
-"invert      = %d\n"
-"sensorGamma = %.6f\n"
-"satKnee     = %.6f\n"
-"colorCross  = %.6f\n"
+"invert       = %d\n"
+"invertPeriod = %d\n"
+"sensorGamma  = %.6f\n"
+"satKnee      = %.6f\n"
+"colorCross   = %.6f\n"
 "\n"
 "[thermal]\n"
 "# Air turbulence between camera and monitor — noise-driven UV displacement.\n"
@@ -679,7 +776,9 @@ static bool preset_write(const std::string& path) {
 "\n"
 "[output]\n"
 "# Output fade: bipolar, -1=black, 0=through, +1=white.\n"
-"fade     = %.6f\n"
+"# Brightness: display-only multiplier (not in feedback loop). 1=identity.\n"
+"fade       = %.6f\n"
+"brightness = %.6f\n"
 "\n"
 "[bpm]\n"
 "# Tempo + 5 beat-locked modulations. divIdx: 0=x2, 1=x1, 2=÷2, 3=÷4.\n"
@@ -690,29 +789,37 @@ static bool preset_write(const std::string& path) {
 "strobe   = %s\n"
 "vfxCycle = %s\n"
 "flash    = %s\n"
-"decayDip = %s\n",
+"decayDip = %s\n"
+"hueJump  = %s\n"
+"hueJumpStep = %.6f\n"
+"invert   = %s\n"
+"invertDiv = %d\n",
         ts,
         io(L_WARP), io(L_OPTICS), io(L_GAMMA), io(L_COLOR), io(L_CONTRAST),
         io(L_DECAY), io(L_NOISE), io(L_COUPLE), io(L_EXTERNAL), io(L_INJECT),
         io(L_PHYSICS), io(L_THERMAL),
-        S.blurQ, S.caQ, S.noiseQ, S.activeFields,
+        S.blurQ, S.caQ, S.noiseQ, S.activeFields, S.pixelateStyle, S.pixelateBleedIdx, S.pixelateBurnSeed,
         p.zoom, p.theta, p.pivotX, p.pivotY, p.transX, p.transY,
         p.chroma, p.blurX, p.blurY, p.blurAngle,
         p.gamma, p.hueRate, p.satGain, p.contrast,
         p.decay, p.noise, p.couple, p.external,
         p.pattern,
-        p.invert, p.sensorGamma, p.satKnee, p.colorCross,
+        p.invert, p.invertPeriod, p.sensorGamma, p.satKnee, p.colorCross,
         p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl,
         p.vfxSlot[0], p.vfxParam[0], p.vfxBSource[0],
         p.vfxSlot[1], p.vfxParam[1], p.vfxBSource[1],
-        p.outFade,
+        p.outFade, p.brightness,
         p.bpm, p.divIdx,
         p.bpmSyncOn   ? "on" : "off",
         p.bpmInject   ? "on" : "off",
         p.bpmStrobe   ? "on" : "off",
         p.bpmVfxCycle ? "on" : "off",
         p.bpmFlash    ? "on" : "off",
-        p.bpmDecayDip ? "on" : "off");
+        p.bpmDecayDip ? "on" : "off",
+        p.bpmHueJump  ? "on" : "off",
+        p.hueJumpStep,
+        p.bpmInvert   ? "on" : "off",
+        p.bpmInvertDiv);
     fclose(f);
     return true;
 }
@@ -769,7 +876,10 @@ static bool preset_load(const std::string& path) {
             int n = atoi(v.c_str());
             if      (k == "blur")   { if (n>=0 && n<=2) S.blurQ = n; }
             else if (k == "ca")     { if (n>=0 && n<=2) S.caQ   = n; }
-            else if (k == "noise")  { if (n>=0 && n<=1) S.noiseQ = n; }
+            else if (k == "noise")  { if (n>=0 && n<N_NOISE_TYPES) S.noiseQ = n; }
+            else if (k == "pixelate") { if (n>=0 && n<N_PIXELATE_STYLES) S.pixelateStyle = n; }
+            else if (k == "pixelateBleed") { if (n>=0 && n<N_PIXELATE_BLEED_PRESETS) S.pixelateBleedIdx = n; }
+            else if (k == "pixelateBurnSeed") { S.pixelateBurnSeed = n; }
             else if (k == "fields") {
                 if (n>=1 && n<=4) {
                     S.activeFields = n;
@@ -814,7 +924,8 @@ static bool preset_load(const std::string& path) {
             int n = atoi(v.c_str());
             if (k == "pattern" && n>=0 && n<=4) p.pattern = n;
         } else if (section == "physics") {
-            if (k == "invert") p.invert = (atoi(v.c_str()) ? 1 : 0);
+            if      (k == "invert")       p.invert       = (atoi(v.c_str()) ? 1 : 0);
+            else if (k == "invertPeriod") { int n = atoi(v.c_str()); if (n >= 1) p.invertPeriod = n; }
             else {
                 float fv = (float)atof(v.c_str());
                 if      (k == "sensorGamma") p.sensorGamma = fv;
@@ -840,7 +951,8 @@ static bool preset_load(const std::string& path) {
             else if (k == "bsource2") p.vfxBSource[1] = (n & 1);
         } else if (section == "output") {
             float fv = (float)atof(v.c_str());
-            if (k == "fade") p.outFade = fmaxf(-1.f, fminf(1.f, fv));
+            if      (k == "fade")       p.outFade    = fmaxf(-1.f, fminf(1.f, fv));
+            else if (k == "brightness") p.brightness = fmaxf( 0.f, fminf(4.f, fv));
         } else if (section == "bpm") {
             if      (k == "bpm")     p.bpm = fmaxf(30.f, fminf(300.f, (float)atof(v.c_str())));
             else if (k == "divIdx")  { int n = atoi(v.c_str()); if (n>=0 && n<N_BPM_DIVS) p.divIdx = n; }
@@ -850,6 +962,10 @@ static bool preset_load(const std::string& path) {
             else if (k == "vfxCycle")p.bpmVfxCycle = parse_bool_onoff(v);
             else if (k == "flash")   p.bpmFlash    = parse_bool_onoff(v);
             else if (k == "decayDip")p.bpmDecayDip = parse_bool_onoff(v);
+            else if (k == "hueJump") p.bpmHueJump  = parse_bool_onoff(v);
+            else if (k == "hueJumpStep") p.hueJumpStep = fmaxf(0.f, fminf(100.f, (float)atof(v.c_str())));
+            else if (k == "invert")  p.bpmInvert   = parse_bool_onoff(v);
+            else if (k == "invertDiv") { int n = atoi(v.c_str()); if (n >= 1 && n <= 64) p.bpmInvertDiv = n; }
         }
     }
     fclose(f);
@@ -1262,7 +1378,6 @@ static std::string section_status() {
     }
     g_lastFrameTime = now;
 
-    const char* patNames[] = { "H-bars","V-bars","dot","checker","gradient" };
     const char* rec = S.rec.active()
         ? (S.rec.queueDropped() ? "REC (DROPS)"
             : (S.rec.queueDepth() >= 3 ? "REC (slow)" : "REC"))
@@ -1289,7 +1404,7 @@ static std::string section_status() {
         S.winW, S.winH, S.isFullscreen ? "FULLSCREEN" : "windowed",
         g_smoothedFps, g_cfg.iters, rec,
         S.paused ? "YES" : "no", preset.c_str(),
-        patNames[(unsigned)p.pattern % 5], S.activeFields,
+        PATTERN_NAMES[(unsigned)p.pattern % N_PATTERNS], S.activeFields,
         p.zoom, p.theta, p.decay, p.noise,
         p.couple, p.external);
     return buf;
@@ -1416,41 +1531,60 @@ static std::string section_thermal() {
 
 static std::string section_inject() {
     const auto& p = S.p;
-    const char* patNames[] = { "H-bars", "V-bars", "dot", "checker", "gradient" };
     auto cur = [&](int i) { return i == p.pattern ? "\x10" : " "; };
     char b[1024];
     snprintf(b, sizeof b,
-        "%s  1  H-bars\n"
-        "%s  2  V-bars\n"
-        "%s  3  dot\n"
-        "%s  4  checker\n"
-        "%s  5  gradient\n"
+        "%s  1  %s\n"
+        "%s  2  %s\n"
+        "%s  3  %s\n"
+        "%s  4  %s\n"
+        "%s  5  %s\n"
+        "%s  6  %s\n"
+        "%s  7  %s\n"
+        "%s  8  %s\n"
+        "%s  9  %s\n"
+        "%s  0  %s\n"
+        "%s Alt+B %s   (hold %.1f s)\n"
         "\n"
         "DP-L/R cursor   A tap-inject   LT/RT hold\n"
         "%-5s  inject (hold)     F10  toggle inject layer",
-        cur(0), cur(1), cur(2), cur(3), cur(4),
+        cur(0), PATTERN_NAMES[0],
+        cur(1), PATTERN_NAMES[1],
+        cur(2), PATTERN_NAMES[2],
+        cur(3), PATTERN_NAMES[3],
+        cur(4), PATTERN_NAMES[4],
+        cur(5), PATTERN_NAMES[5],
+        cur(6), PATTERN_NAMES[6],
+        cur(7), PATTERN_NAMES[7],
+        cur(8), PATTERN_NAMES[8],
+        cur(9), PATTERN_NAMES[9],
+        cur(10), PATTERN_NAMES[10], p.injectHoldTimer,
         keys_for(ACT_INJECT_HOLD).c_str());
-    (void)patNames;
     return b;
 }
 
 static std::string section_quality() {
     const char* blur[] = {"5-tap cross","9-gauss","25-gauss"};
     const char* ca[]   = {"3-sample","5-ramp","8-wavelen"};
-    const char* ns[]   = {"white","pink 1/f"};
     auto cur = [&](int i) { return i == S.armedQuality ? "\x10" : " "; };
     char b[1024];
     snprintf(b, sizeof b,
-        "%s  %-5s  blur kernel : %s\n"
-        "%s  %-5s  CA sampler  : %s\n"
-        "%s  %-5s  noise type  : %s\n"
-        "%s  %-5s  fields      : %d\n"
+        "%s  %-8s  blur kernel : %s\n"
+        "%s  %-8s  CA sampler  : %s\n"
+        "%s  %-8s  noise type  : %s\n"
+        "%s  %-8s  fields      : %d\n"
+        "%s  %-8s  pixelate    : %s\n"
+        "%s  %-8s  bleed       : %s\n"
         "\n"
         "DP-L/R move cursor   A cycle armed",
         cur(0), keys_for(ACT_BLURQ_CYCLE).c_str(),  blur[S.blurQ],
         cur(1), keys_for(ACT_CAQ_CYCLE  ).c_str(),  ca[S.caQ],
-        cur(2), keys_for(ACT_NOISEQ_CYCLE).c_str(), ns[S.noiseQ],
-        cur(3), keys_for(ACT_FIELDS_CYCLE).c_str(), S.activeFields);
+        cur(2), keys_for(ACT_NOISEQ_CYCLE).c_str(), NOISE_NAMES[S.noiseQ],
+        cur(3), keys_for(ACT_FIELDS_CYCLE).c_str(), S.activeFields,
+        cur(4), keys_for(ACT_PIXELATE_STYLE_CYCLE).c_str(),
+                PIXELATE_NAMES[S.pixelateStyle],
+        cur(5), keys_for(ACT_PIXELATE_BLEED_CYCLE).c_str(),
+                PIXELATE_BLEED_NAMES[S.pixelateBleedIdx]);
     return b;
 }
 
@@ -1588,6 +1722,8 @@ static std::string section_bpm() {
         "%-10s vfx auto-cycle     : %s\n"
         "%-10s fade-flash         : %s\n"
         "%-10s decay-dip          : %s\n"
+        "%-10s hue-jump           : %s  (step %.2f / 100, C-A--/= nudge)\n"
+        "%-10s invert-flip        : %s  (every %d beats, C-A-,/. nudge)\n"
         "\n"
         "beat phase: %.2f",
         p.bpm, BPM_DIV_NAMES[p.divIdx],
@@ -1602,6 +1738,10 @@ static std::string section_bpm() {
         keys_for(ACT_BPM_VFXCYCLE_TOGGLE).c_str(), p.bpmVfxCycle  ? "ON" : "off",
         keys_for(ACT_BPM_FLASH_TOGGLE).c_str(),    p.bpmFlash     ? "ON" : "off",
         keys_for(ACT_BPM_DECAYDIP_TOGGLE).c_str(), p.bpmDecayDip  ? "ON" : "off",
+        keys_for(ACT_BPM_HUEJUMP_TOGGLE).c_str(),  p.bpmHueJump   ? "ON" : "off",
+        p.hueJumpStep,
+        keys_for(ACT_BPM_INVERT_TOGGLE).c_str(),   p.bpmInvert    ? "ON" : "off",
+        p.bpmInvertDiv,
         p.beatPhase);
     return b;
 }
@@ -1821,6 +1961,13 @@ static void update_bpm(double now, float dt) {
         p.decayDipTimer -= dt;
         if (p.decayDipTimer < 0.0f) p.decayDipTimer = 0.0f;
     }
+    // Hue-jump pulse decays each frame — distributes the total rotation
+    // across ~20 frames so a step=100 beat (1 full wheel) plays out as a
+    // visible colour sweep rather than a single-frame teleport.
+    if (p.hueBeatKick > 0.0f) {
+        p.hueBeatKick *= 0.90f;
+        if (p.hueBeatKick < 0.0005f) p.hueBeatKick = 0.0f;
+    }
 
     // ── MIDI Clock override ──────────────────────────────────────────────
     // If Strudel (or any upstream) is streaming MIDI Clock, its tempo wins
@@ -1884,6 +2031,30 @@ static void update_bpm(double now, float dt) {
     }
     if (p.bpmDecayDip) {
         p.decayDipTimer = 0.08f;   // ~5 frames at 60fps
+    }
+    if (p.bpmHueJump) {
+        // Start a decaying pulse that distributes the total rotation across
+        // ~20 frames, so at step=50 you SEE the colour sweep halfway around
+        // the wheel instead of a one-frame teleport. The total added to
+        // hueRate across the decay envelope equals hueJumpStep / 100 (so
+        // step=100 → 1 full rotation per beat, 50 → half, 25 → quarter).
+        //
+        // Decay sum = 1/(1-0.9) = 10, so kick_start * 10 = step*0.01 →
+        // kick_start = step * 0.001.
+        p.hueBeatKick = p.hueJumpStep * 0.001f;
+    }
+    // Beat-driven invert toggle. Every bpmInvertDiv beats, flip p.invert.
+    // Gives a slow musical on-off invert cadence — darker half-bar, lighter
+    // half-bar at default div = 4.
+    {
+        static int beatCounter = 0;
+        beatCounter++;
+        if (p.bpmInvert && p.bpmInvertDiv > 0
+            && (beatCounter % p.bpmInvertDiv) == 0) {
+            p.invert = p.invert ? 0 : 1;
+            printf("[beat+invert] flip → %s (div=%d)\n",
+                   p.invert ? "ON" : "off", p.bpmInvertDiv);
+        }
     }
 }
 
@@ -1951,8 +2122,81 @@ namespace step {
     constexpr float thermSwirl = 0.02f;
 }
 
+// ── Layer-dependency warnings ──────────────────────────────────────────
+// Many parameter actions only produce a visible effect when their layer
+// is enabled. When the user nudges e.g. contrast but the contrast layer
+// is off, the param changes silently in the background and nothing on
+// screen responds — confusing. This table maps each param action to the
+// layer it depends on + the key that toggles that layer, so apply_action
+// can post a hint to the HUD.
+struct ActionLayerReq { ActionId id; int layer; const char* name; const char* key; };
+static const ActionLayerReq ACTION_REQS[] = {
+    { ACT_ZOOM_UP,       L_WARP,     "zoom",        "F1" },
+    { ACT_ZOOM_DN,       L_WARP,     "zoom",        "F1" },
+    { ACT_THETA_UP,      L_WARP,     "rotation",    "F1" },
+    { ACT_THETA_DN,      L_WARP,     "rotation",    "F1" },
+    { ACT_TRANS_LEFT,    L_WARP,     "translate",   "F1" },
+    { ACT_TRANS_RIGHT,   L_WARP,     "translate",   "F1" },
+    { ACT_TRANS_UP,      L_WARP,     "translate",   "F1" },
+    { ACT_TRANS_DN,      L_WARP,     "translate",   "F1" },
+    { ACT_CHROMA_UP,     L_OPTICS,   "chroma",      "F2" },
+    { ACT_CHROMA_DN,     L_OPTICS,   "chroma",      "F2" },
+    { ACT_BLURX_UP,      L_OPTICS,   "blur X",      "F2" },
+    { ACT_BLURX_DN,      L_OPTICS,   "blur X",      "F2" },
+    { ACT_BLURY_UP,      L_OPTICS,   "blur Y",      "F2" },
+    { ACT_BLURY_DN,      L_OPTICS,   "blur Y",      "F2" },
+    { ACT_BLURANG_UP,    L_OPTICS,   "blur angle",  "F2" },
+    { ACT_BLURANG_DN,    L_OPTICS,   "blur angle",  "F2" },
+    { ACT_GAMMA_UP,      L_GAMMA,    "gamma",       "F3" },
+    { ACT_GAMMA_DN,      L_GAMMA,    "gamma",       "F3" },
+    { ACT_HUE_UP,        L_COLOR,    "hue rate",    "F4" },
+    { ACT_HUE_DN,        L_COLOR,    "hue rate",    "F4" },
+    { ACT_SAT_UP,        L_COLOR,    "saturation",  "F4" },
+    { ACT_SAT_DN,        L_COLOR,    "saturation",  "F4" },
+    { ACT_CONTRAST_UP,   L_CONTRAST, "contrast",    "F5" },
+    { ACT_CONTRAST_DN,   L_CONTRAST, "contrast",    "F5" },
+    { ACT_DECAY_UP,      L_DECAY,    "decay",       "F6" },
+    { ACT_DECAY_DN,      L_DECAY,    "decay",       "F6" },
+    { ACT_NOISE_UP,      L_NOISE,    "noise",       "F7" },
+    { ACT_NOISE_DN,      L_NOISE,    "noise",       "F7" },
+    { ACT_COUPLE_UP,     L_COUPLE,   "couple",      "F8" },
+    { ACT_COUPLE_DN,     L_COUPLE,   "couple",      "F8" },
+    { ACT_EXTERNAL_UP,   L_EXTERNAL, "external",    "F9" },
+    { ACT_EXTERNAL_DN,   L_EXTERNAL, "external",    "F9" },
+    { ACT_SENSORGAMMA_UP,L_PHYSICS,  "sensorGamma", "Ins" },
+    { ACT_SENSORGAMMA_DN,L_PHYSICS,  "sensorGamma", "Ins" },
+    { ACT_SATKNEE_UP,    L_PHYSICS,  "satKnee",     "Ins" },
+    { ACT_SATKNEE_DN,    L_PHYSICS,  "satKnee",     "Ins" },
+    { ACT_COLORCROSS_UP, L_PHYSICS,  "colorCross",  "Ins" },
+    { ACT_COLORCROSS_DN, L_PHYSICS,  "colorCross",  "Ins" },
+    { ACT_THERMAMP_UP,   L_THERMAL,  "thermal amp",   "PgDn" },
+    { ACT_THERMAMP_DN,   L_THERMAL,  "thermal amp",   "PgDn" },
+    { ACT_THERMSCALE_UP, L_THERMAL,  "thermal scale", "PgDn" },
+    { ACT_THERMSCALE_DN, L_THERMAL,  "thermal scale", "PgDn" },
+    { ACT_THERMSPEED_UP, L_THERMAL,  "thermal speed", "PgDn" },
+    { ACT_THERMSPEED_DN, L_THERMAL,  "thermal speed", "PgDn" },
+    { ACT_THERMRISE_UP,  L_THERMAL,  "thermal rise",  "PgDn" },
+    { ACT_THERMRISE_DN,  L_THERMAL,  "thermal rise",  "PgDn" },
+    { ACT_THERMSWIRL_UP, L_THERMAL,  "thermal swirl", "PgDn" },
+    { ACT_THERMSWIRL_DN, L_THERMAL,  "thermal swirl", "PgDn" },
+    { ACT_INJECT_HOLD,   L_INJECT,   "inject",        "F10" },
+};
+
 static void apply_action(ActionId id, float mag) {
     auto& p = S.p;
+
+    // Warn when a parameter action fires but its layer is off. We still
+    // apply the change (so presets remain consistent) — just hint at the
+    // HUD that turning the layer on is the fix.
+    for (const auto& r : ACTION_REQS) {
+        if (r.id == id && !(S.enable & r.layer)) {
+            char wbuf[96];
+            snprintf(wbuf, sizeof wbuf,
+                     "%s set — layer off, %s to activate", r.name, r.key);
+            S.ov.logEvent(wbuf);
+            break;
+        }
+    }
 
     // When the help panel is open, UP/DOWN/ENTER/ESC are hijacked for menu
     // navigation. They stay bound to their normal actions (translate, quit)
@@ -2028,16 +2272,16 @@ static void apply_action(ActionId id, float mag) {
             return;
         }
 
-        // Quality cursor — 4 entries: blur, ca, noise, fields.
+        // Quality cursor — 6 entries: blur, ca, noise, fields, pixelate, bleed.
         case ACT_QUALITY_CURSOR_UP:
-            S.armedQuality = (S.armedQuality - 1 + 4) % 4;
-            { static const char* N[] = {"blur","CA","noise","fields"};
+            S.armedQuality = (S.armedQuality - 1 + 6) % 6;
+            { static const char* N[] = {"blur","CA","noise","fields","pixelate","bleed"};
               char b[64]; snprintf(b, sizeof b, "quality armed: %s", N[S.armedQuality]);
               S.ov.logEvent(b); }
             return;
         case ACT_QUALITY_CURSOR_DN:
-            S.armedQuality = (S.armedQuality + 1) % 4;
-            { static const char* N[] = {"blur","CA","noise","fields"};
+            S.armedQuality = (S.armedQuality + 1) % 6;
+            { static const char* N[] = {"blur","CA","noise","fields","pixelate","bleed"};
               char b[64]; snprintf(b, sizeof b, "quality armed: %s", N[S.armedQuality]);
               S.ov.logEvent(b); }
             return;
@@ -2047,21 +2291,22 @@ static void apply_action(ActionId id, float mag) {
                 case 1: apply_action(ACT_CAQ_CYCLE,    1.0f); break;
                 case 2: apply_action(ACT_NOISEQ_CYCLE, 1.0f); break;
                 case 3: apply_action(ACT_FIELDS_CYCLE, 1.0f); break;
+                case 4: apply_action(ACT_PIXELATE_STYLE_CYCLE, 1.0f); break;
+                case 5: apply_action(ACT_PIXELATE_BLEED_CYCLE, 1.0f); break;
             }
             return;
 
-        // Pattern cursor — 5 entries. Modifies p.pattern directly; the
-        // Inject section's body highlights whichever p.pattern points at.
+        // Pattern cursor — 10 entries (see PATTERN_NAMES). Modifies
+        // p.pattern directly; the Inject section's body highlights the
+        // current pattern. Keep PATTERN_NAMES in sync with inject.glsl.
         case ACT_PATTERN_CURSOR_UP:
-            p.pattern = (p.pattern - 1 + 5) % 5;
-            { static const char* N[] = {"H-bars","V-bars","dot","checker","gradient"};
-              char b[64]; snprintf(b, sizeof b, "pattern: %s", N[p.pattern]);
+            p.pattern = (p.pattern - 1 + N_PATTERNS) % N_PATTERNS;
+            { char b[64]; snprintf(b, sizeof b, "pattern: %s", PATTERN_NAMES[p.pattern]);
               S.ov.logEvent(b); }
             return;
         case ACT_PATTERN_CURSOR_DN:
-            p.pattern = (p.pattern + 1) % 5;
-            { static const char* N[] = {"H-bars","V-bars","dot","checker","gradient"};
-              char b[64]; snprintf(b, sizeof b, "pattern: %s", N[p.pattern]);
+            p.pattern = (p.pattern + 1) % N_PATTERNS;
+            { char b[64]; snprintf(b, sizeof b, "pattern: %s", PATTERN_NAMES[p.pattern]);
               S.ov.logEvent(b); }
             return;
 
@@ -2205,22 +2450,36 @@ static void apply_action(ActionId id, float mag) {
             hud_post("tSwi","therm-swirl", d, p.thermSwirl, 1.f,"", 1.f,""); break; }
 
         // ── patterns / inject ─────────────────────────────────────
-        case ACT_PATTERN_HBARS:   p.pattern = 0; printf("[pattern] H-bars\n");
-            S.ov.logEvent("pattern: H-bars"); return;
-        case ACT_PATTERN_VBARS:   p.pattern = 1; printf("[pattern] V-bars\n");
-            S.ov.logEvent("pattern: V-bars"); return;
-        case ACT_PATTERN_DOT:     p.pattern = 2; printf("[pattern] dot\n");
-            S.ov.logEvent("pattern: dot"); return;
-        case ACT_PATTERN_CHECKER: p.pattern = 3; printf("[pattern] checker\n");
-            S.ov.logEvent("pattern: checker"); return;
-        case ACT_PATTERN_GRAD:    p.pattern = 4; printf("[pattern] gradient\n");
-            S.ov.logEvent("pattern: gradient"); return;
+        case ACT_PATTERN_HBARS:   p.pattern = 0; goto pattern_set;
+        case ACT_PATTERN_VBARS:   p.pattern = 1; goto pattern_set;
+        case ACT_PATTERN_DOT:     p.pattern = 2; goto pattern_set;
+        case ACT_PATTERN_CHECKER: p.pattern = 3; goto pattern_set;
+        case ACT_PATTERN_GRAD:    p.pattern = 4; goto pattern_set;
+        case ACT_PATTERN_NOISE:   p.pattern = 5; goto pattern_set;
+        case ACT_PATTERN_RINGS:   p.pattern = 6; goto pattern_set;
+        case ACT_PATTERN_SPIRAL:  p.pattern = 7; goto pattern_set;
+        case ACT_PATTERN_POLKA:   p.pattern = 8; goto pattern_set;
+        case ACT_PATTERN_STARBURST: p.pattern = 9; goto pattern_set;
+        case ACT_PATTERN_ANIM_BOUNCER:
+            // Pick the animated pattern AND start a 10-second hold so the
+            // ball inject doesn't fade out after the usual ~20 frames.
+            // Pattern alpha is sparse (only the ball itself has alpha=1),
+            // so the feedback field continues evolving around the ball.
+            p.pattern        = 10;
+            p.injectHoldTimer = 10.0f;
+            p.inject          = 1.0f;
+            printf("[pattern] bouncer (10 s hold)\n");
+            S.ov.logEvent("pattern: bouncer (10 s animated)");
+            return;
+        pattern_set:
+            printf("[pattern] %s\n", PATTERN_NAMES[p.pattern]);
+            { char b[64]; snprintf(b, sizeof b, "pattern: %s", PATTERN_NAMES[p.pattern]);
+              S.ov.logEvent(b); } return;
         case ACT_INJECT_HOLD: {
             if (mag > 0.5f) {
                 p.inject = 1.0f;
-                static const char* names[] = {"H-bars","V-bars","dot","checker","gradient"};
                 printf("[inject pattern=%d]\n", p.pattern);
-                char buf[64]; snprintf(buf, sizeof buf, "inject: %s", names[p.pattern]);
+                char buf[64]; snprintf(buf, sizeof buf, "inject: %s", PATTERN_NAMES[p.pattern]);
                 S.ov.logEvent(buf);
                 // Live-gesture coupling: hold Space to jump the music
                 // engine to a breakbeat, release to return to whatever
@@ -2234,12 +2493,35 @@ static void apply_action(ActionId id, float mag) {
         }
 
         // ── app ───────────────────────────────────────────────────
-        case ACT_QUIT: glfwSetWindowShouldClose(S.win, 1); return;
+        case ACT_QUIT:
+            if (S.quitConfirmPending) {
+                // Second Esc confirms.
+                glfwSetWindowShouldClose(S.win, 1);
+            } else {
+                S.quitConfirmPending = true;
+                S.ov.logEvent("Really quit? Y / N   (Esc again also = yes)");
+                printf("[quit-confirm] pending — Y=yes, N=no, Esc=yes\n");
+            }
+            return;
         case ACT_CLEAR: S.needClear = true; printf("[cleared]\n");
             S.ov.logEvent("cleared"); return;
-        case ACT_PAUSE: S.paused = !S.paused;
+        case ACT_PAUSE: {
+            // Couple visual pause with music playback so the whole system
+            // freezes together. Remember the pre-pause playing state so
+            // resuming doesn't start music that the user had already
+            // paused manually (Ctrl+Alt+Space).
+            static bool musicWasPlaying = false;
+            S.paused = !S.paused;
+            if (S.paused) {
+                musicWasPlaying = Music::playing();
+                if (musicWasPlaying) Music::setPlaying(false);
+            } else if (musicWasPlaying) {
+                Music::setPlaying(true);
+            }
             printf("[%s]\n", S.paused ? "paused" : "running");
-            S.ov.logEvent(S.paused ? "paused" : "running"); return;
+            S.ov.logEvent(S.paused ? "paused" : "running");
+            return;
+        }
         case ACT_HELP: S.ov.toggleHelp();
             printf("[help] %s\n", S.ov.helpVisible() ? "shown" : "hidden"); return;
         case ACT_RELOAD_SHADERS: reload_shaders();
@@ -2316,10 +2598,29 @@ static void apply_action(ActionId id, float mag) {
             S.ov.logEvent(b); return;
         }
         case ACT_NOISEQ_CYCLE: {
-            S.noiseQ = (S.noiseQ + 1) % 2;
-            const char* n[] = {"white","pink 1/f"};
-            printf("[noise-q] %s\n", n[S.noiseQ]);
-            char b[64]; snprintf(b, sizeof b, "noise: %s", n[S.noiseQ]);
+            S.noiseQ = (S.noiseQ + 1) % N_NOISE_TYPES;
+            printf("[noise-q] %s\n", NOISE_NAMES[S.noiseQ]);
+            char b[64]; snprintf(b, sizeof b, "noise: %s", NOISE_NAMES[S.noiseQ]);
+            S.ov.logEvent(b); return;
+        }
+        case ACT_PIXELATE_STYLE_CYCLE: {
+            S.pixelateStyle = (S.pixelateStyle + 1) % N_PIXELATE_STYLES;
+            printf("[pixelate] %s\n", PIXELATE_NAMES[S.pixelateStyle]);
+            char b[64]; snprintf(b, sizeof b, "pixelate: %s", PIXELATE_NAMES[S.pixelateStyle]);
+            S.ov.logEvent(b); return;
+        }
+        case ACT_PIXELATE_BLEED_CYCLE: {
+            S.pixelateBleedIdx = (S.pixelateBleedIdx + 1) % N_PIXELATE_BLEED_PRESETS;
+            printf("[pixelate-bleed] %s\n", PIXELATE_BLEED_NAMES[S.pixelateBleedIdx]);
+            char b[64]; snprintf(b, sizeof b, "bleed: %s", PIXELATE_BLEED_NAMES[S.pixelateBleedIdx]);
+            S.ov.logEvent(b); return;
+        }
+        case ACT_PIXELATE_BURN_RESEED: {
+            // Increment by a prime so consecutive values produce visibly
+            // different patterns and tints, not just adjacent hash buckets.
+            S.pixelateBurnSeed += 17;
+            printf("[burn-seed] %d\n", S.pixelateBurnSeed);
+            char b[64]; snprintf(b, sizeof b, "burn seed: %d", S.pixelateBurnSeed);
             S.ov.logEvent(b); return;
         }
         case ACT_FIELDS_CYCLE: {
@@ -2427,6 +2728,18 @@ static void apply_action(ActionId id, float mag) {
             // centers when the stick is released.
             p.outFade = fmaxf(-1.0f, fminf(1.0f, mag));
             return;
+        case ACT_BRIGHTNESS_UP: {
+            float d = 0.05f * mag;
+            p.brightness = fmaxf(0.0f, fminf(4.0f, p.brightness + d));
+            hud_post("bri","brightness", d, p.brightness, 100.f,"%", 100.f,"%");
+            break;
+        }
+        case ACT_BRIGHTNESS_DN: {
+            float d = -0.05f * mag;
+            p.brightness = fmaxf(0.0f, fminf(4.0f, p.brightness + d));
+            hud_post("bri","brightness", d, p.brightness, 100.f,"%", 100.f,"%");
+            break;
+        }
 
         // ── BPM sync + tap tempo ──────────────────────────────────
         case ACT_BPM_TAP: bpm_tap(glfwGetTime()); return;
@@ -2463,6 +2776,56 @@ static void apply_action(ActionId id, float mag) {
             p.bpmDecayDip = !p.bpmDecayDip;
             S.ov.logEvent(p.bpmDecayDip ? "bpm decay-dip: ON"
                                         : "bpm decay-dip: off"); return;
+        case ACT_BPM_HUEJUMP_TOGGLE:
+            p.bpmHueJump = !p.bpmHueJump;
+            if (p.bpmHueJump && !p.bpmSyncOn) {
+                S.ov.logEvent("hue-jump ON (but BPM sync is OFF — press Ctrl+Tab)");
+                printf("[hue-jump] ON but bpmSyncOn=false — no beats will fire. "
+                       "Press Ctrl+Tab to enable sync, then Tab a few times to tap tempo.\n");
+            } else {
+                S.ov.logEvent(p.bpmHueJump ? "bpm hue-jump: ON"
+                                           : "bpm hue-jump: off");
+            }
+            return;
+        case ACT_BPM_INVERT_TOGGLE:
+            p.bpmInvert = !p.bpmInvert;
+            S.ov.logEvent(p.bpmInvert ? "bpm invert flip: ON"
+                                      : "bpm invert flip: off");
+            return;
+        case ACT_BPM_INVERT_DIV_UP:
+        case ACT_BPM_INVERT_DIV_DN: {
+            int delta = (id == ACT_BPM_INVERT_DIV_UP) ? +1 : -1;
+            // Progressive would be overkill for a small integer range —
+            // user is picking musical divisions, usually powers of 2.
+            p.bpmInvertDiv += delta;
+            if (p.bpmInvertDiv < 1)   p.bpmInvertDiv = 1;
+            if (p.bpmInvertDiv > 64)  p.bpmInvertDiv = 64;
+            char b[64]; snprintf(b, sizeof b, "invert flip every %d beat(s)", p.bpmInvertDiv);
+            S.ov.logEvent(b);
+            return;
+        }
+        case ACT_BPM_HUEJUMP_STEP_UP:
+        case ACT_BPM_HUEJUMP_STEP_DN: {
+            // Progressive step: small increments at low values so fine
+            // tuning near 0..1 is precise; larger increments higher up so
+            // traversing toward the 100 ceiling doesn't take forever.
+            //   0..1    step 0.05   (20 presses to cross 1)
+            //   1..10   step 0.5    (18 presses to cross to 10)
+            //   10..30  step 2      (10 presses)
+            //   30..100 step 5      (14 presses)
+            float s = p.hueJumpStep;
+            float step;
+            if      (s < 1.0f)  step = 0.05f;
+            else if (s < 10.0f) step = 0.5f;
+            else if (s < 30.0f) step = 2.0f;
+            else                step = 5.0f;
+            float sign = (id == ACT_BPM_HUEJUMP_STEP_UP) ? +1.0f : -1.0f;
+            p.hueJumpStep += sign * step * mag;
+            if (p.hueJumpStep < 0.0f)   p.hueJumpStep = 0.0f;
+            if (p.hueJumpStep > 100.0f) p.hueJumpStep = 100.0f;
+            char b[64]; snprintf(b, sizeof b, "hue-jump step: %.2f", p.hueJumpStep);
+            S.ov.logEvent(b); return;
+        }
 
         case ACT_LAUNCH_LOOPMIDI:
             S.ov.logEvent("installing MIDI driver...");
@@ -2498,8 +2861,28 @@ static void apply_action(ActionId id, float mag) {
 }
 
 static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
-    // Input routes to apply_action via the handler installed in main().
-    // Kept as a thin forward so gamepad/MIDI (C2+) plug in the same way.
+    // Exit-confirm modal intercept. When the first Esc puts us in
+    // "really quit?" mode, capture Y / N here BEFORE the normal binding
+    // dispatch so we don't also fire the usual Y/N keybinds.
+    if (S.quitConfirmPending && action == GLFW_PRESS) {
+        if (key == GLFW_KEY_Y) {
+            glfwSetWindowShouldClose(S.win, 1);
+            return;
+        }
+        if (key == GLFW_KEY_N) {
+            S.quitConfirmPending = false;
+            S.ov.logEvent("exit cancelled");
+            return;
+        }
+        // Any non-Y/N key falls through and cancels the confirm too.
+        // Esc is the exception (handled via ACT_QUIT dispatch, which
+        // re-checks pending and exits on the second press).
+        if (key != GLFW_KEY_ESCAPE) {
+            S.quitConfirmPending = false;
+            S.ov.logEvent("exit cancelled");
+            // Fall through so the key still does its normal thing.
+        }
+    }
     g_input.onKey(key, scancode, action, mods);
 }
 
@@ -2545,7 +2928,10 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1i("uBlurQuality", S.blurQ);
     U1i("uCAQuality",   S.caQ);
     U1f("uGamma", p.gamma);
-    U1f("uHueRate", p.hueRate); U1f("uSatGain", p.satGain);
+    // hueBeatKick is a one-frame additive on the beat; cleared in the main
+    // loop after every active field has rendered (so all fields see the same
+    // kick on a given beat frame, not just the first).
+    U1f("uHueRate", p.hueRate + p.hueBeatKick); U1f("uSatGain", p.satGain);
     U1f("uContrast", p.contrast);
     // Beat-driven transients are composed here so p.* values stay the
     // user's "set point". Flash adds/subtracts to outFade (clamped); dip
@@ -2555,7 +2941,17 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1f("uDecay", effDecay);
     U1f("uNoise", p.noise);
     U1i("uNoiseQuality", S.noiseQ);
+    // Music → visual envelopes for dropout flavouring.
+    U1f("uMusKick",  S.musKick);
+    U1f("uMusSnare", S.musSnare);
+    U1f("uMusHat",   S.musHat);
+    U1f("uMusBass",  S.musBass);
+    U1f("uMusOther", S.musOther);
+    U1i("uPixelateStyle", S.pixelateStyle);
+    U1i("uPixelateBleedIdx", S.pixelateBleedIdx);
+    U1i("uPixelateBurnSeed", S.pixelateBurnSeed);
     U1i("uInvert",      p.invert);
+    U1i("uInvertPeriod",p.invertPeriod);
     U1f("uSensorGamma", p.sensorGamma);
     U1f("uSatKnee",     p.satKnee);
     U1f("uColorCross",  p.colorCross);
@@ -3060,11 +3456,12 @@ int main(int argc, char** argv) {
 
     const char* blurNames[]  = { "5-tap cross", "9-tap gauss", "25-tap gauss" };
     const char* caNames[]    = { "3-sample", "5-sample ramp", "8-sample wavelen" };
-    const char* noiseNames[] = { "white", "pink 1/f" };
     printf("[sim] %dx%d  precision=%s  iters=%d\n",
            S.simW, S.simH, precision_label(g_cfg.precision), g_cfg.iters);
-    printf("[quality] blur=%s  ca=%s  noise=%s  fields=%d\n",
-           blurNames[S.blurQ], caNames[S.caQ], noiseNames[S.noiseQ], S.activeFields);
+    printf("[quality] blur=%s  ca=%s  noise=%s  fields=%d  pixelate=%s  bleed=%s\n",
+           blurNames[S.blurQ], caNames[S.caQ], NOISE_NAMES[S.noiseQ],
+           S.activeFields, PIXELATE_NAMES[S.pixelateStyle],
+           PIXELATE_BLEED_NAMES[S.pixelateBleedIdx]);
 
     // Input: build default keyboard map, then overlay bindings.ini if present.
     // bindings.ini lives next to the executable (or at CWD) — we write a default
@@ -3167,6 +3564,17 @@ int main(int argc, char** argv) {
     else
         printf("[fps] vsync %s, uncapped\n", g_cfg.vsync ? "on" : "off");
 
+    // Boot seed — pick a random inject pattern and fire one. Without this
+    // the field is black on startup and you have to know to press a
+    // pattern key + Space. The existing main-loop fade `inject *= 0.85`
+    // takes it to ~0 over ~20 frames, so it's a quick smear at boot.
+    {
+        unsigned int seed = (unsigned int)(glfwGetTime() * 1e6) ^ 0x9e3779b9u;
+        S.p.pattern = (int)(seed % N_PATTERNS);
+        S.p.inject  = 1.0f;
+        printf("[boot-inject] pattern=%s\n", PATTERN_NAMES[S.p.pattern]);
+    }
+
     double prevFrameStart = glfwGetTime();
     while (!glfwWindowShouldClose(win)) {
         const double frameStart = glfwGetTime();
@@ -3224,6 +3632,25 @@ int main(int argc, char** argv) {
         Music::setScalar("paused",    S.paused ? 1.0 : 0.0);
         Music::setScalar("beatPhase", S.p.beatPhase);
 
+        // Music → visual bridge: drain the per-trigger accumulators from
+        // the audio engine and fold them into decaying envelopes. Noise
+        // mode 4 (dropout) reads these as uMusKick/Snare/Hat/Bass/Other
+        // and flavours its corruption per source.
+        {
+            auto p = Audio::consumeTriggerPulses();
+            // Envelope: rise to trigger gain on hit, decay ~0.88/frame
+            // (≈ 150 ms half-life at 60 fps).
+            auto env = [&](float& e, float hit) {
+                e *= 0.88f;
+                if (hit > e) e = fminf(hit, 1.0f);
+            };
+            env(S.musKick,  p.kick);
+            env(S.musSnare, p.snare);
+            env(S.musHat,   p.hat);
+            env(S.musBass,  p.bass);
+            env(S.musOther, p.other);
+        }
+
         glBindVertexArray(mainVAO);
 
         if (S.needClear) {
@@ -3275,6 +3702,7 @@ int main(int argc, char** argv) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, latest.tex);
         glUniform1i(glGetUniformLocation(progBlit, "uSrc"), 0);
+        glUniform1f(glGetUniformLocation(progBlit, "uBrightness"), S.p.brightness);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         // Record from the sim-resolution texture (not the display framebuffer)
@@ -3293,8 +3721,19 @@ int main(int argc, char** argv) {
 
         glfwSwapBuffers(win);
 
-        S.p.inject *= 0.85f;
-        if (S.p.inject < 0.001f) S.p.inject = 0.0f;
+        if (S.p.injectHoldTimer > 0.0f) {
+            // Animated-pattern hold — keep inject at full while the timer
+            // is warm. The pattern itself drives motion via uTime.
+            S.p.injectHoldTimer -= dt;
+            S.p.inject = 1.0f;
+            if (S.p.injectHoldTimer <= 0.0f) {
+                S.p.injectHoldTimer = 0.0f;
+                printf("[bouncer] hold expired — resuming normal fade\n");
+            }
+        } else {
+            S.p.inject *= 0.85f;
+            if (S.p.inject < 0.001f) S.p.inject = 0.0f;
+        }
 
         // Pace the loop. Vsync alone lets the GPU race ahead on high-refresh
         // monitors; during recording the readback path tends to settle around

@@ -179,6 +179,33 @@ void Overlay::drawTextLine(float x, float y, const std::string& text,
     }
 }
 
+void Overlay::drawTextBacked(float x, float y, const std::string& text,
+                             unsigned char fg[4], float scale)
+{
+    // Per-line dark strip sized to the text's stb_easy_font_width. Skips
+    // empty lines so gaps between rows let the feedback show through.
+    unsigned char bg[4] = { 0, 0, 0, 255 };
+    const float lineAdvance = 12.0f * scale;
+    float py = y;
+    size_t i = 0;
+    while (true) {
+        size_t nl = text.find('\n', i);
+        std::string line = (nl == std::string::npos)
+                             ? text.substr(i) : text.substr(i, nl - i);
+        if (!line.empty()) {
+            int tw = stb_easy_font_width((char*)line.c_str());
+            float sw = tw * scale;
+            drawFilledRect(x - 3.0f, py - 2.0f,
+                           sw + 6.0f, 10.0f * scale + 3.0f,
+                           bg, 0.60f);
+        }
+        if (nl == std::string::npos) break;
+        i = nl + 1;
+        py += lineAdvance;
+    }
+    drawTextLine(x, y, text, fg, 1.0f, scale);
+}
+
 void Overlay::drawFilledRect(float x, float y, float w, float h,
                              unsigned char rgba[4], float alpha)
 {
@@ -339,10 +366,9 @@ void Overlay::drawHelpPanel() {
     const float panelH    = (winH_ >= 1080) ? 620.0f
                           : (winH_ >= 720)  ? 520.0f : 420.0f;
 
-    unsigned char boxBG[4] = { 10, 10, 14, 235 };
-    unsigned char border[4] = { 70, 72, 82, 255 };
-    drawFilledRect(panelX - 1, panelY - 1, panelW + 2, panelH + 2, border, 0.9f);
-    drawFilledRect(panelX, panelY, panelW, panelH, boxBG, 0.92f);
+    // Panel background removed — each text line now gets its own tight
+    // dark backing via drawTextBacked, so feedback shows through between
+    // rows instead of behind an opaque block.
 
     if (view_ == VIEW_MENU) drawHelpMenu(panelX + pad, panelY + pad,
                                          panelW - pad*2, panelH - pad*2);
@@ -363,9 +389,9 @@ void Overlay::drawHelpMenu(float x, float y, float w, float /*h*/) {
     const float rowS   = 1.6f;
     const float rowH   = 12.0f * rowS + 4.0f;
 
-    drawTextLine(x, y, "help   [H close]", title, 1.0f, titleS);
-    drawTextLine(x, y + 12.0f * titleS + 4.0f,
-                 "Up/Down select   Enter drill in", hint, 1.0f, hintS);
+    drawTextBacked(x, y, "help   [H close]", title, titleS);
+    drawTextBacked(x, y + 12.0f * titleS + 4.0f,
+                   "Up/Down select   Enter drill in", hint, hintS);
 
     float rowY = y + 12.0f * titleS + 4.0f + 12.0f * hintS + 10.0f;
     for (int i = 0; i < (int)sections_.size(); i++) {
@@ -375,7 +401,7 @@ void Overlay::drawHelpMenu(float x, float y, float w, float /*h*/) {
                            rowH, sel, 0.85f);
             drawTextLine(x, rowY, sections_[i], selFG, 1.0f, rowS);
         } else {
-            drawTextLine(x, rowY, sections_[i], fg, 1.0f, rowS);
+            drawTextBacked(x, rowY, sections_[i], fg, rowS);
         }
         rowY += rowH;
     }
@@ -396,10 +422,10 @@ void Overlay::drawHelpSection(float x, float y, float w, float h) {
                                 ? sections_[menuSel_] : std::string();
     char tbuf[128];
     snprintf(tbuf, sizeof tbuf, "\x10 %s", secName.c_str());
-    drawTextLine(x, y, tbuf, title, 1.0f, titleS);
-    drawTextLine(x, y + 12.0f * titleS + 4.0f,
-                 "Up/Down scroll   Esc back   H close",
-                 hint, 1.0f, hintS);
+    drawTextBacked(x, y, tbuf, title, titleS);
+    drawTextBacked(x, y + 12.0f * titleS + 4.0f,
+                   "Up/Down scroll   Esc back   H close",
+                   hint, hintS);
 
     float bodyY = y + 12.0f * titleS + 4.0f + 12.0f * hintS + 10.0f;
     const float bodyH = h - (bodyY - y);
@@ -427,7 +453,7 @@ void Overlay::drawHelpSection(float x, float y, float w, float h) {
     for (int i = start; i < end && shown < visibleLines; i++, shown++) {
         // Rows starting with "-- " are section headings inside the body.
         bool isHead = (lines[i].size() >= 3 && lines[i].compare(0, 3, "-- ") == 0);
-        drawTextLine(colX, lineY, lines[i], isHead ? title : fg, 1.0f, bodyS);
+        drawTextBacked(colX, lineY, lines[i], isHead ? title : fg, bodyS);
         lineY += lineH;
     }
 
@@ -445,7 +471,7 @@ void Overlay::drawHelpSection(float x, float y, float w, float h) {
             // Soft separator.
             unsigned char sep[4] = { 70, 75, 90, 255 };
             drawFilledRect(x, legY - 6.0f, w, 1.0f, sep, 0.6f);
-            drawTextLine(x, legY, leg, hint, 1.0f, legS);
+            drawTextBacked(x, legY, leg, hint, legS);
         }
     }
 

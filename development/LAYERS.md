@@ -12,7 +12,8 @@ architecture see [ARCHITECTURE.md](ARCHITECTURE.md). For *intent* see
 UV-space          ┌── warp          (geometric transform of sample UV)
                   └── thermal        (heat-shimmer perturbation of sample UV)
                              │
-sample            ── optics         (anisotropic blur + chromatic aberration)
+sample            ┌── optics         (anisotropic blur + chromatic aberration)
+                  └── pixelate       (grid quantization of the sample — takes over when style != 0)
                              │
 camera-side      ┌── invert         (always-on; Crutchfield s parameter)
                   └── physics        (sensor gamma, saturation knee, RGB cross-couple)
@@ -26,7 +27,7 @@ feedback write   ┌── decay          (per-frame attenuation of the loop sig
                   ├── couple         (blend in partner field — Kaneko CML)
                   ├── external       (blend in live camera)
                   ├── inject         (pattern perturbation — triggered)
-                  └── noise          (sensor floor; rides on top of everything)
+                  └── noise          (sensor floor; 5 archetypes white..dropout)
                              │
 post             ┌── vfx_slot[0]    (V-4-style effect — dispatched by slot 0 id)
                   ├── vfx_slot[1]    (V-4-style effect — dispatched by slot 1 id)
@@ -57,12 +58,26 @@ on the warped coordinate system, which feels right for "air between the
 rig" — but thermal-before-warp is also defensible and would produce
 shimmer that appears in untransformed image space.
 
-### Sample — `optics`
+### Sample — `optics` or `pixelate`
 
-Optics is the single read from `uPrev`. It fuses anisotropic blur and
+Optics is the normal read from `uPrev`. It fuses anisotropic blur and
 chromatic aberration into one sampling operation because both are
 spatial-kernel sums over texture reads. Splitting them would cost 2×
 the samples for no benefit.
+
+Pixelate **takes over** the sampling stage when `uPixelateStyle != 0`,
+replacing optics (hard blocks do not want a blur kernel smearing
+across cell edges). Each screen-space cell samples `uPrev` once at its
+own `warp+thermal`-perturbed cell-centre position; dots / rounded
+modes additionally fetch a per-pixel gap sample and mask between the
+two. Because the cell-centre re-runs warp and thermal, pixelated
+content propagates through the dynamics: as warp zooms the image,
+next frame's cell reads the current frame's grid-warped equivalent,
+which is exactly the "blocky attractor evolving through the loop"
+behaviour we want. An earlier post-sample placement (which overwrote
+the processed colour with a raw `texture()` read) broke this — the
+pipeline's work downstream of pixelate was ignored by the cell
+samples and the effect failed to propagate.
 
 ### Camera-side — `invert`, `physics`
 
@@ -113,7 +128,11 @@ aesthetically load-bearing part of the pipeline. Current order:
    "synthetic" against the noisy feedback they land into.
 4. **`noise` last** (before post). Matches physical sensor behaviour:
    thermal noise is the final thing added to the signal before the
-   frame is committed.
+   frame is committed. Five archetypes cycle via `Home`: white, pink
+   1/f, heavy static, VCR, dropout. Amplitude (`uNoise`) scales them
+   all so archetype × intensity work as two independent axes.
+Pixelate lives at the sampling stage (see *Sample* section above),
+not in the feedback-write tail. Cycled via `Delete`.
 
 ### Post — `vfx_slot[0]`, `vfx_slot[1]`, `output_fade`
 
@@ -182,10 +201,12 @@ move the sanitize to the new tail.
 
 **Hard** (code will break if violated):
 
-- `warp` and `thermal` must precede `optics`. They produce the
-  `src_uv` that optics samples at.
-- `optics` is the only stage that takes `(sampler2D, vec2)` and
-  returns `vec4`. It's the UV-space → colour-space transition.
+- `warp` and `thermal` must precede `optics` / `pixelate`. They
+  produce the `src_uv` that the sample stage reads at.
+- The sample stage has two mutually exclusive implementations —
+  `optics_sample` (normal path) and `pixelate_apply` (active when
+  `uPixelateStyle != 0`). Only one runs per frame. Both take
+  `(sampler2D, vec2, ...)` and return `vec4`. See ADR-0017.
 - `gamma_in` and `gamma_out` must bracket the "linear-light" stages
   as a matched pair. Splitting the pair breaks the mathematical
   intent.
@@ -211,6 +232,46 @@ Any soft reorder **changes the visual behaviour of every curated
 preset.** Presets are not re-tuned automatically; expect an aesthetic
 calibration pass after any reorder lands.
 
+## Music → visual bridge (dropout noise)
+
+The noise `dropout` archetype (mode 4) consumes a set of per-trigger
+envelopes — `uMusKick`, `uMusSnare`, `uMusHat`, `uMusBass`, `uMusOther`
+— published by the audio engine each time a voice triggers. Each
+music event produces a distinctly flavoured glitch:
+
+| Bucket | Flavour | Classification |
+|---|---|---|
+| kick | Wide 48-texel blocks pulled to black | sample `"bd"` / `"kick"` |
+| snare | Sharp narrow white flashes | `"sn"`, `"sd"`, `"snare"`, `"cp"`, `"rim"` |
+| hat | Tiny 4-texel green-tinted speckle | `"hh"`, `"oh"`, `"ch"`, `"hat"`, `"cb"` |
+| bass | Medium blocks tinted by a slowly rotating hue | synth note `freq < 200 Hz` |
+| other | Rare wide rainbow-coloured glitch | everything else |
+
+Envelopes rise to the trigger's gain and decay at ~0.88 per frame
+(~150 ms half-life at 60 fps). Host-side machinery lives in
+`audio.cpp` (`classify_sample`, `consumeTriggerPulses`) and
+`main.cpp` (the drain + envelope update alongside `Music::setScalar`).
+See [ADR-0018](ADR/0018-music-to-visual-trigger-bridge.md).
+
+## Pattern alpha channel
+
+`inject.glsl::pattern_gen()` returns `vec4(rgb, alpha)`. Alpha is the
+per-pixel injection mask:
+
+- `alpha = 1.0` → fully inject this pixel (the default for all static
+  patterns — 5 original + 5 added).
+- `alpha = 0.0` → leave `col` unchanged at this pixel.
+
+Sparse alpha lets animated / localised patterns (e.g. the pattern 10
+"bouncer" — a low-res pong-ball box) ride on top of the feedback
+field without wiping it. The `inject_apply` mix is
+`mix(c.rgb, p.rgb, uInject * p.a)` so gaps are true no-ops.
+
+`p.injectHoldTimer` (float seconds) on the host side lets animated
+patterns override the normal `inject *= 0.85` fadeout for a declared
+duration — the bouncer uses this to run for 10 seconds before
+resuming normal fade.
+
 ## Per-layer quick reference
 
 | Layer | Stage | Signature | File |
@@ -228,6 +289,7 @@ calibration pass after any reorder lands.
 | external | feedback | `(vec4, vec2) → vec4` | `shaders/layers/external.glsl` |
 | inject | feedback | `(vec4, vec2) → vec4` | `shaders/layers/inject.glsl` |
 | noise | feedback | `(vec4, vec2, float, uint) → vec4` | `shaders/layers/noise.glsl` |
+| pixelate | sample  | `(sampler2D, vec2, vec2) → vec4` | `shaders/layers/pixelate.glsl` |
 | vfx_slot | post | `(vec4, vec2, int) → vec4` | `shaders/layers/vfx_slot.glsl` |
 | output_fade | post | `vec4 → vec4` | `shaders/layers/output_fade.glsl` |
 

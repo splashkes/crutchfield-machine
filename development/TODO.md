@@ -93,20 +93,11 @@ near the existing 2×2 grid.
 - Linked from README above the fold.
 **Effort:** small. Record with OBS, re-encode to GIF or MP4.
 
-### [P1] Non-empty default startup state
+### ~~[P1] Non-empty default startup state~~ — DONE 2026-04-20
 
-**Why:** A new user who double-clicks the exe, picks "Default" in the
-picker, sees a black screen and has to know to press `3` + `Space`.
-Losing this audience. Option 1 should load `01_default.ini` and
-auto-inject once on startup so something is visibly alive.
-**Where:** `main.cpp: main()`, right after preset_rescan. Trigger
-`S.p.inject = 1.0f` once after the preset loads if auto-launched
-from the picker.
-**Done when:**
-- Picker option 1 or a no-args launch produces visible motion within
-  2 seconds of window appearing.
-- Doesn't affect CLI users with explicit `--preset` or `--demo`.
-**Effort:** tiny.
+Landed: boot-inject picks a random inject pattern and fires at
+`inject = 1.0` once after preset load, regardless of launch path.
+Normal fade (`inject *= 0.85`) takes it out over ~20 frames.
 
 ### [P1] Shader hot-reload error visibility in-window
 
@@ -137,29 +128,27 @@ capture card loop currently have to drag the window manually.
 
 ## P2 — valuable, no rush
 
-### [P2] Audio → feedback coupling (music → visuals)
+### [P2] Audio → feedback coupling, signal-processing half (RMS / bands)
 
-**Why:** We now generate music inside feedback.exe (music.cpp +
-audio.cpp). The inverse of the current `fb.X` bridge would be music
-influencing visuals: RMS envelope of the mix driving `p.inject`, band
-splits driving `p.hueRate` / `p.zoom` per frequency range, transients
-triggering visual patterns. Closes the bidirectional loop Simon
-described ("ratios of colors feeding back into the music system" —
-music already reads `fb.hue`; reverse would be visual parameters
-reading music features).
-**Where:** extend `audio.cpp` with an analysis ring (RMS + 3-band
-split) on the master bus. Expose via `Audio::levels()` returning a
-POD consumable from `main.cpp`. Apply to a `Params` field as
-modulation (not replacement — mix against user setpoint).
+**Why:** The trigger-classification half of this (ADR-0018) landed
+2026-04-20 — kick/snare/hat/bass/other envelopes now drive noise-
+dropout glitch flavours. But the classifier only reacts to
+`Audio::trigger()` calls from our internal engine; live mic input,
+DAW output, ambient sound, anything NOT fired by our voice pool is
+invisible. The signal-processing complement (RMS + 3-band split on
+the master bus) would restore general audio-reactivity.
+**Where:** extend `audio.cpp` with an analysis ring on the master
+bus. Expose via `Audio::levels()` returning a POD consumable from
+`main.cpp`. Publish as additional uniforms alongside the existing
+`uMus*` triggers. The two systems coexist cleanly.
 **Done when:**
 - `Audio::levels()` returns `{rms, bassRms, midRms, highRms, onset}`.
-- Help panel exposes enable/disable toggles for which params receive
-  modulation.
-- An example preset (`music/06_selfmodulated.strudel` plus visual
-  preset tweaks) demonstrates the closed loop.
+- At least one visual consumer uses it (e.g. midRms driving a
+  continuous blur modulation, bassRms driving zoom).
+- Example preset (`music/06_selfmodulated.strudel` plus visual
+  tweaks) demonstrates the combined loop.
 **Effort:** medium.
-**Reference:** ADR-0010 explains why we picked QuickJS + native
-audio; this is the remaining half of the loop.
+**Reference:** ADR-0018 for the complementary trigger bridge.
 
 ### [P2] Euclidean rhythms in the pattern engine
 
@@ -359,9 +348,88 @@ needed now that the help panel surfaces presets but has no meta.
 
 ---
 
+### [P2] Spout GPU-texture-share output for live OBS at float precision
+
+**Why:** OBS window-capture goes through the 8-bit sRGB display
+framebuffer, losing the float headroom the sim runs at. For live
+streaming / real-time monitoring at full quality, Spout (Windows
+DX/GL shared texture) is the standard — OBS has a Spout source
+plugin, and our RGBA16F sim FBO could be published as a named
+texture. Alternative: NDI (lower precision, cross-machine capable).
+**Where:** new module `spout.cpp/h`, hook into the render loop
+after the blit. CLI flag `--spout [name]` to enable. Spout SDK
+is MIT with OpenGL bindings.
+**Done when:**
+- feedback.exe can publish its sim FBO via Spout under a
+  user-chosen sender name.
+- OBS Spout source picks it up and renders without 8-bit flattening.
+- Documented in README next to the EXR recorder as the "live
+  high-fidelity out" path.
+**Effort:** medium (~4-6 hours including SDK integration + test).
+
+### [P2] Retune curated presets for new default enable state
+
+**Why:** `01_default.ini` through `05_kaneko_cml.ini` were all saved
+before the 2026-04-20 extended session flipped `enable` default from
+a 7-layer mask to `L_ALL`, and before the physics/contrast clamp
+removals. Their visual character shifted — louder colour, different
+fade rate, thermal shimmer now on by default. Each preset needs
+an aesthetic calibration pass.
+**Where:** `presets/0[1-5]_*.ini`. Playable content only; no code.
+**Done when:**
+- Each curated preset re-saved after a dial-in session that
+  respects its original intent.
+- Preset headers (the `# notes:` lines) updated to describe the
+  new post-ADR-0015 / ADR-0017 character.
+**Effort:** small (one session of dial-in).
+
+---
+
 ## Recently completed
 
 *Remove from this list after ~2 releases.*
+
+**Landed 2026-04-20 (post v0.1.3 working branch — performance-layer expansion):**
+
+- Pipeline reorder: decay before mixers, inject before noise (ADR-0015).
+- Removed [0,1] clamps from physics.glsl + contrast.glsl (ADR-0015).
+- NaN/Inf sanitize at output_fade (ADR-0016).
+- New canonical doc `development/LAYERS.md`.
+- Pixelate layer as alternate sample stage — 9 styles × 6 bleed
+  presets, cell-size scaling by sim resolution, warp+thermal
+  re-applied to cell centres so pixelation propagates (ADR-0017).
+- Burn bleed preset with reseed action (Alt+Delete) for
+  dead-pixel-group simulation.
+- Noise archetypes extended 2 → 5: white, pink 1/f, heavy static,
+  VCR rolling bar, dropout.
+- Inject patterns extended 5 → 10: noise field, concentric rings,
+  spiral, polka dots, starburst (keys `6-0`). Plus pattern 10
+  "bouncer" (animated, 10-second hold) on Alt+B.
+- Pattern alpha channel: `pattern_gen()` now returns `vec4` so
+  sparse / animated patterns don't wipe the feedback field.
+- Boot-time random inject so startup is never black-screen.
+- Music → visual trigger bridge (ADR-0018). Kick/snare/hat/bass/
+  other event-level classification in `audio.cpp`; per-bucket
+  decaying envelopes drive distinct dropout glitch flavours.
+- Beat-driven hue jump modulation (Ctrl+Alt+H toggle,
+  Ctrl+Alt+=/- step nudge, 0-100 range). On by default at step 12
+  for a gentle colour cycle.
+- Beat-driven invert flip modulation (Ctrl+Alt+V toggle,
+  Ctrl+Alt+,/. divisor nudge). Flips `p.invert` every Nth beat.
+- Invert frame-divider fix (`p.invertPeriod` default 20) — turned
+  a 60 Hz strobe into a slow 3 Hz flip.
+- Brightness knob (Alt+Up/Down) applied in `blit.frag` — display-
+  only, doesn't feed back, doesn't affect EXR recording.
+- Default `enable = L_ALL`; all 12 layers on at startup.
+- Default `bpmInject = false`, `bpmHueJump = true` at step 12.
+- Pause couples to music (remembers pre-pause music state).
+- Exit-confirm modal (first Esc → "Really quit? Y/N"; second Esc
+  or Y confirms, N cancels).
+- Layer-off warnings — nudging a parameter whose layer is off posts
+  a HUD hint (e.g. "contrast set — layer off, F5 to activate").
+- Help panel redesign: removed the full-panel opaque dim; per-line
+  dark backings via `drawTextBacked` so feedback shows through
+  between rows.
 
 **Landed in PR #6 (`music`) — merged 2026-04-20, released as v0.1.3:**
 
