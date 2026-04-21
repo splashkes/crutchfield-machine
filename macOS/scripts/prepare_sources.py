@@ -53,15 +53,20 @@ static std::string mac_user_base() {
     return mac_executable_dir();
 }
 
-static void seed_user_presets(const std::string& assetBase) {
-    fs::path src = fs::path(assetBase) / "presets";
-    fs::path dst = fs::path("presets");
+static void seed_user_tree(const std::string& assetBase, const char* name) {
+    fs::path src = fs::path(assetBase) / name;
+    fs::path dst = fs::path(name);
     std::error_code ec;
+    if (!fs::exists(src)) return;
     fs::create_directories(dst, ec);
-    if (ec || !fs::exists(src)) return;
-    for (const auto& e : fs::directory_iterator(src)) {
-        if (!e.is_regular_file() || e.path().extension() != ".ini") continue;
-        fs::path out = dst / e.path().filename();
+    if (ec) return;
+    for (const auto& e : fs::recursive_directory_iterator(src)) {
+        if (!e.is_regular_file()) continue;
+        fs::path rel = fs::relative(e.path(), src, ec);
+        if (ec) continue;
+        fs::path out = dst / rel;
+        fs::create_directories(out.parent_path(), ec);
+        if (ec) continue;
         if (!fs::exists(out)) fs::copy_file(e.path(), out, fs::copy_options::skip_existing, ec);
     }
 }
@@ -72,7 +77,10 @@ static void bootstrap_macos_runtime() {
     std::error_code ec;
     fs::create_directories(g_user_base, ec);
     if (!ec && chdir(g_user_base.c_str()) == 0) {
-        seed_user_presets(g_shader_base);
+        seed_user_tree(g_shader_base, "presets");
+        seed_user_tree(g_shader_base, "js");
+        seed_user_tree(g_shader_base, "music");
+        seed_user_tree(g_shader_base, "samples");
     } else {
         std::fprintf(stderr, "[paths] warning: couldn't use %s as runtime dir\n",
                      g_user_base.c_str());

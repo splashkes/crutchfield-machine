@@ -26,6 +26,11 @@ def main() -> int:
 
     shutil.copytree(repo_root / "shaders", resources_dir / "shaders")
     shutil.copytree(repo_root / "presets", resources_dir / "presets")
+    shutil.copytree(repo_root / "js", resources_dir / "js")
+    shutil.copytree(repo_root / "music", resources_dir / "music")
+    samples = repo_root / "samples"
+    if samples.exists():
+        shutil.copytree(samples, resources_dir / "samples")
 
     replace_glsl_version(resources_dir / "shaders" / "main.vert")
     replace_glsl_version(resources_dir / "shaders" / "main.frag")
