@@ -312,15 +312,11 @@ void Overlay::draw() {
         const int lineH    = (int)(12 * TEXT_SCALE) + 4;
         const int leftPad  = 16;
         const int bottomPad= 16;
-        unsigned char bg[4] = { 0, 0, 0, 200 };
         unsigned char fg[4] = { 235, 235, 240, 255 };
 
         int nLines = (int)lines_.size();
-        float boxH = (float)(nLines * lineH + 16);
-        float boxY = (float)(winH_ - bottomPad - boxH + 6);
-        float boxW = (float)(winW_ / 2 + 80);
-        drawFilledRect(6, boxY, boxW, boxH, bg, alpha * 0.85f);
-
+        // No backing rect — white text on the live feedback. Deliberate.
+        // Keep the text at full alpha against whatever colour is behind.
         for (int i = 0; i < nLines; i++) {
             const auto& line = lines_[nLines - 1 - i];
             float y = (float)(winH_ - bottomPad - (i+1) * lineH + 4);

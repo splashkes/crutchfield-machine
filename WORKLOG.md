@@ -1,3 +1,30 @@
+# Worklog — 2026-04-21 polish + release prep
+
+Follow-up after 2026-04-20 extended session. Small corrections and a
+release cut.
+
+- Fixed binding collision: `Ctrl+Alt+V` was bound to both
+  `ACT_BPM_VFXCYCLE_TOGGLE` and the new `ACT_BPM_INVERT_TOGGLE`; the
+  dispatcher matched the first, so beat-invert was silently
+  unreachable. Moved beat-invert to `Ctrl+Alt+R` (`R`everse).
+- Split `CHEAT_SHEET.md` (real one-page print sheet, ~60 lines)
+  from `REFERENCE.md` (full user reference, ~450 lines). README
+  links to both with the distinction explained.
+- Silenced the noisy `[music] pattern set: <full body>` stdout
+  dump on every preset load. Preset-name line already carries the
+  info; the body dump was filling the terminal.
+- Added `--high-color` / `--hi-color` CLI flag: windowed,
+  `--precision 32 --blur-q 2 --ca-q 2 --fields 4`. Discoverable as
+  picker option `8  High color`. Complements fullscreen max path
+  for OBS-capture workflows.
+- Removed the bottom-left HUD toast backing rect. White text floats
+  directly over the live feedback — legible enough against the
+  moving image, and one less opaque square on the display.
+
+Release: cut **v0.1.4** with Windows and Linux artifacts.
+
+---
+
 # Worklog — 2026-04-20 extended session (performance-layer expansion)
 
 Continuation of the same day. Scope was initially a small colour-quality
