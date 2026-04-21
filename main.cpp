@@ -560,8 +560,10 @@ static State S;
 static void print_help() {
     printf(
       "\n=== video feedback ===\n"
+      "Full printable cheat sheet at CHEAT_SHEET.md; complete reference at REFERENCE.md.\n\n"
       " F1..F10  toggle layer (warp, optics, gamma, color, contrast,\n"
       "          decay, noise, couple, external, inject)\n"
+      " Ins/PgDn toggle physics / thermal\n"
       " F11      toggle fullscreen / windowed\n"
       " PgUp     cycle blur kernel (5-tap / 9-gauss / 25-gauss)\n"
       " F12      cycle chromatic aberration (3 / 5 / 8 samples)\n"
@@ -570,17 +572,19 @@ static void print_help() {
       " Delete   cycle pixelate (off / dots / squares / rounded, s·m·l)\n"
       " Ctrl+Del cycle pixelate bleed (off / soft / CRT / melt / fried / burned)\n"
       " Alt+Del  reroll burn pattern (only audible when bleed = burned)\n"
-      " H        toggle help overlay (in-window)\n"
-      " `        start/stop recording (feedback_<timestamp>.mp4)\n"
+      " H        toggle help overlay (in-window; full key list lives there)\n"
+      " `        start/stop EXR recording (./recordings/feedback_<ts>/)\n"
       " PrtSc    screenshot (PNG, sim resolution, no HUD)\n"
       " \\        reload shaders from disk\n"
       " Ctrl+S   save current settings as preset (./presets/auto_*.ini)\n"
       " Ctrl+N   load next preset      Ctrl+P  load previous preset\n"
       " C        clear all fields to black\n"
-      " P        pause/resume\n"
+      " P        pause (couples to music)\n"
       " SPACE    inject current pattern (hold)\n"
       " 1..5     pattern: H-bars, V-bars, dot, checker, gradient\n"
-      " Esc      quit\n\n"
+      " 6..0     pattern: noise, rings, spiral, polka, starburst\n"
+      " Alt+B    pattern: bouncer (10-sec animated box)\n"
+      " Esc      quit (first press arms confirm — Y / 2nd Esc = yes, N = cancel)\n\n"
       " --- parameter adjustments (hold Shift for 20x coarse steps) ---\n"
       " Q/A   zoom            W/S   rotation       arrows  translate\n"
       " [/]   chroma         ;/'   blur-X          ,/.   blur-Y\n"
@@ -589,8 +593,16 @@ static void print_help() {
       " T/Y   contrast       U/J   decay           N/M   noise\n"
       " K/I   couple amt     O/L   external amt\n"
       " V     invert (toggle)  Z/X  sensor-gamma  7/8 sat-knee  9/0 color-xtalk\n"
-      " Ins   toggle physics layer   PgDn  toggle thermal layer\n"
-      " Numpad thermal: 1/4 amp   2/5 scale   3/6 speed   7/8 rise   9/0 swirl\n\n");
+      " Ctrl+Up/Dn  output fade (feeds back)\n"
+      " Alt+Up/Dn   brightness (display only — doesn't feed back)\n"
+      " Numpad thermal: 1/4 amp   2/5 scale   3/6 speed   7/8 rise   9/0 swirl\n\n"
+      " --- BPM / music ---\n"
+      " Tab          tap tempo           Ctrl+Tab  sync on/off   Alt+Tab division\n"
+      " Ctrl+Alt+ I/S/V/F/D  inject/strobe/vfx-cycle/flash/decay-dip toggles\n"
+      " Ctrl+Alt+H   hue-jump toggle     Ctrl+Alt+=/-  step ± (0..100)\n"
+      " Ctrl+Alt+R   beat-invert toggle  Ctrl+Alt+,/.  flip divisor ±\n"
+      " Ctrl+Alt+N/P next/prev music preset   Ctrl+Alt+Space play/pause\n"
+      " Ctrl+M       install MIDI virtual-port driver (first run, Windows)\n\n");
     fflush(stdout);
 }
 

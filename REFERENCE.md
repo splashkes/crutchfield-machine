@@ -42,6 +42,18 @@ Pick one line, open a shell in the project folder, run it.
 Half-float feedback. Visually near-identical to 32-bit on most scenes
 but ~2× faster on weaker GPUs.
 
+### Windowed max-colour (shortcut)
+
+```
+./feedback.exe --high-color
+```
+
+Same pipeline knobs as the quality-first line — float32, 25-tap blur,
+8-sample CA, 4-field coupling — but **windowed** instead of fullscreen.
+Handy for OBS capture workflows where you want the full colour path
+without grabbing the whole display. Also available as picker option
+`8  High color` when you launch with no args.
+
 ### First-time / no flags
 
 ```

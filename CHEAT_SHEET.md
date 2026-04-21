@@ -53,13 +53,15 @@ Modulations — `Ctrl+Alt+` `I` inject · `S` strobe · `V` vfx-cycle · `F` fla
 ## Bootup
 
 ```
-# best quality
+# max quality fullscreen
 ./feedback.exe --fullscreen --precision 32 --blur-q 2 --ca-q 2 --fields 4
+# same but windowed (shortcut)
+./feedback.exe --high-color
 # balanced (any machine)
 ./feedback.exe --fullscreen --precision 16
 # unattended / gallery
 ./feedback.exe --fullscreen --demo
-# interactive picker (no args / double-click)
+# interactive picker — option 8 is "high color"
 ./feedback.exe
 ```
 
