@@ -267,10 +267,11 @@ namespace {
 void setPattern(const std::string& code) {
     g_pattern = code;
     if (!code.empty()) {
-        std::fprintf(stdout, "[music] pattern set: %s\n", code.c_str());
         // Pick up at the current cycle time so a reload doesn't trigger
         // a flood of back-scheduled events from cycle 0 onward.
         g_lastQueryTo = g_curCycle;
+        // No stdout spam — loadPreset() and pollPresetReload() already log
+        // the preset name; dumping the entire pattern body was redundant.
     } else {
         std::fprintf(stdout, "[music] pattern cleared\n");
     }

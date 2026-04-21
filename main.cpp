@@ -94,6 +94,7 @@ static void print_cli_help() {
       "  --demo-presets S    auto-cycle to next preset every S seconds (0 = off)\n"
       "  --demo-inject S     auto-fire a random injection every S seconds (0 = off)\n"
       "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
+      "  --high-color        windowed, max colour pipeline (float32 + blur-q 2 + ca-q 2 + fields 4)\n"
       "  -h, --help          show this help\n\n"
       "Launch with NO arguments to get an interactive mode picker — handy for\n"
       "non-CLI use and for double-clicking the exe from Explorer.\n\n"
@@ -128,6 +129,12 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--demo-presets")) { c.demoPresetSec = (float)atof(next()); if (c.demoPresetSec < 0) c.demoPresetSec = 0; }
         else if (eq("--demo-inject"))  { c.demoInjectSec = (float)atof(next()); if (c.demoInjectSec < 0) c.demoInjectSec = 0; }
         else if (eq("--demo"))         { c.demoPresetSec = 30.0f; c.demoInjectSec = 8.0f; }
+        // Convenience bundle — windowed, full-float feedback, max blur/CA,
+        // 4-field coupling. For exploring the colour pipeline without
+        // committing to fullscreen.
+        else if (eq("--high-color") || eq("--hi-color")) {
+            c.precision = 32; c.blurQ = 2; c.caQ = 2; c.fields = 4;
+        }
         else if (eq("-h") || eq("--help")) { print_cli_help(); exit(0); }
         else { fprintf(stderr, "[cli] unknown arg: %s\n", argv[i]); print_cli_help(); exit(1); }
     }
@@ -1229,6 +1236,7 @@ static void run_mode_picker(Cfg& c) {
         printf("  6  Load preset... pick from the %zu preset(s) shipped\n",
                g_presetFiles.size());
         printf("  7  Music mode     fullscreen + launch loopMIDI + open Strudel\n");
+        printf("  8  High color     windowed, float32 + max blur/CA + 4-field coupling\n");
         printf("\n  Q  Quit\n\n");
         printf("  Tip: run with --help for the full list of flags.\n\n");
         printf("Choice [1]: ");
@@ -1254,6 +1262,10 @@ static void run_mode_picker(Cfg& c) {
                 music_open_strudel();
                 return;
             }
+            case '8':
+                // Windowed — no c.fullscreen. Max colour quality knobs.
+                c.precision = 32; c.blurQ = 2; c.caQ = 2; c.fields = 4;
+                return;
             case '6': {
                 if (g_presetFiles.empty()) {
                     printf("\n  No presets found in %s/\n", preset_dir().c_str());
@@ -1277,7 +1289,7 @@ static void run_mode_picker(Cfg& c) {
             }
             case 'q': exit(0);
             default:
-                printf("  (unrecognised — try 1-6 or Q)\n");
+                printf("  (unrecognised — try 1-8 or Q)\n");
                 continue;
         }
     }

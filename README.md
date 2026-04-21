@@ -275,9 +275,11 @@ Both timers are independent — set either to 0 to disable.
 
 ## Controls
 
-**New here?** A single-page printable reference is at
-[CHEAT_SHEET.md](CHEAT_SHEET.md) — best bootup settings, full keyboard
-layout, and how to add your own music.
+**New here?** One-page key reference at
+[CHEAT_SHEET.md](CHEAT_SHEET.md) (print it, tape it by the rig). Full
+user docs — best bootup settings, every keybind explained, music
+authoring walkthrough, troubleshooting — at
+[REFERENCE.md](REFERENCE.md).
 
 Press `H` at any time to open the in-window help panel (top-left, drill-down
 by section). It lists every action with the current key binding and the live
