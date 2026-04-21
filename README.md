@@ -275,6 +275,10 @@ Both timers are independent — set either to 0 to disable.
 
 ## Controls
 
+**New here?** A single-page printable reference is at
+[CHEAT_SHEET.md](CHEAT_SHEET.md) — best bootup settings, full keyboard
+layout, and how to add your own music.
+
 Press `H` at any time to open the in-window help panel (top-left, drill-down
 by section). It lists every action with the current key binding and the live
 parameter value — the panel stays visible while you play, so you can keep it
