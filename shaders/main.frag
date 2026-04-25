@@ -52,6 +52,9 @@ uniform float uExternal;
 // inject
 uniform float uInject;
 uniform int   uPattern;
+uniform float uShapeInject;
+uniform int   uShapeKind;
+uniform int   uShapeCount;
 
 // ── layer sources (resolved by host before compile) ─────────
 #include "common.glsl"
@@ -143,8 +146,10 @@ void main() {
     //  9. noise: thermal sensor floor
     if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
 
-    // 10. inject: triggered pattern perturbation
-    if ((uEnable & L_INJECT) != 0) col = inject_apply(col, uv);
+    // 10. inject: triggered pattern or held shape perturbation
+    if ((uEnable & L_INJECT) != 0 || uInject > 0.0 || uShapeInject > 0.0) {
+        col = inject_apply(col, uv);
+    }
 
     // 11. V-4-style effect slots. Two back-to-back slots, each holding
     //     any of 18 effects (or off). Placed last so effects operate on

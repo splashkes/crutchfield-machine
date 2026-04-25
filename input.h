@@ -77,6 +77,8 @@ enum ActionId : int {
     // ── Patterns + inject ────────────────────────────────────────────
     ACT_PATTERN_HBARS, ACT_PATTERN_VBARS, ACT_PATTERN_DOT,
     ACT_PATTERN_CHECKER, ACT_PATTERN_GRAD,
+    ACT_SHAPE_TRIANGLE_HOLD, ACT_SHAPE_STAR_HOLD,
+    ACT_SHAPE_CIRCLE_HOLD, ACT_SHAPE_SQUARE_HOLD,
     ACT_INJECT_HOLD,      // TRIGGER: 1.0 on press, 0.0 on release
 
     // ── App-level actions ────────────────────────────────────────────
@@ -121,6 +123,7 @@ enum ActionId : int {
     ACT_HUE_AXIS,
     ACT_DECAY_AXIS,
     ACT_EXTERNAL_AXIS, // absolute 0..1 external/camera blend
+    ACT_SHAPE_COUNT_AXIS, // absolute 0..1 shape count, mapped to 1..16
 
     // ── BPM (C7) ─────────────────────────────────────────────────────
     ACT_BPM_TAP,

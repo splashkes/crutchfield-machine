@@ -70,7 +70,8 @@ Mixer:
 - Deck 1 EQ high/mid/low: saturation, hue rate, gamma.
 - Deck 2 EQ high: output fade, center neutral, left black, right white.
 - Deck 2 EQ mid/low: blur X and decay.
-- CFX knobs: noise and coupling.
+- CFX CH1 knob: persistent shape count, from 1 to 16.
+- CFX CH2 knob: coupling.
 - Channel faders: external amount and thermal amplitude.
 - Master level: contrast.
 - Headphones level: blur Y.
@@ -88,7 +89,10 @@ Buttons:
 
 Pads and LEDs:
 
-- Deck 1 pads 1-5: select the five inject patterns.
+- Deck 1 pads 1-4: hold persistent shape injects:
+  triangle, star, circle, square.
+- Deck 1 pads 1-4 also keep their original pattern selection behavior.
+- Deck 1 pad 5: select the gradient inject pattern.
 - Deck 1 pads 6-8: VFX-1 previous, next, off.
 - Shift + deck 1 pads: VFX-1 quick-select bank. Pads 1-8 are:
   off, VCR, Pixel, Strobe, Posterize, Negative, Mirror-HV, PinP.

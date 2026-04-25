@@ -222,6 +222,9 @@ struct Params {
     // inject
     float inject = 0.0f;
     int   pattern = 0;
+    float shapeInject = 0.0f;
+    int   shapeKind = 0;   // 0=triangle, 1=star, 2=circle, 3=square
+    int   shapeCount = 1;  // 1..16 evenly spaced copies
     // physics (Crutchfield camera-side knobs)
     int   invert      = 0;       // 0 = off, 1 = on (Crutchfield's "s")
     float sensorGamma = 1.0f;    // 1.0 = no-op; Crutchfield: 0.6..0.9
@@ -733,7 +736,10 @@ static bool preset_write(const std::string& path) {
 "\n"
 "[trigger]\n"
 "# pattern: 0=H-bars 1=V-bars 2=dot 3=checker 4=gradient\n"
+"# shapeKind: 0=triangle 1=star 2=circle 3=square; shapeCount: 1..16\n"
 "pattern  = %d\n"
+"shapeKind  = %d\n"
+"shapeCount = %d\n"
 "\n"
 "[physics]\n"
 "# Crutchfield 1984 camera-side knobs (see shaders/layers/physics.glsl).\n"
@@ -791,7 +797,7 @@ static bool preset_write(const std::string& path) {
         p.chroma, p.blurX, p.blurY, p.blurAngle,
         p.gamma, p.hueRate, p.satGain, p.contrast,
         p.decay, p.noise, p.couple, p.external,
-        p.pattern,
+        p.pattern, p.shapeKind, p.shapeCount,
         p.invert, p.sensorGamma, p.satKnee, p.colorCross,
         p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl,
         p.vfxSlot[0], p.vfxParam[0], p.vfxBSource[0],
@@ -904,6 +910,8 @@ static bool preset_load(const std::string& path) {
         } else if (section == "trigger") {
             int n = atoi(v.c_str());
             if (k == "pattern" && n>=0 && n<=4) p.pattern = n;
+            else if (k == "shapeKind" && n>=0 && n<=3) p.shapeKind = n;
+            else if (k == "shapeCount") p.shapeCount = fmaxf(1, fminf(16, n));
         } else if (section == "physics") {
             if (k == "invert") p.invert = (atoi(v.c_str()) ? 1 : 0);
             else {
@@ -1859,6 +1867,15 @@ static void apply_action(ActionId id, float mag) {
         S.ov.logEvent(buf);
         sync_ddj_layer_leds();
     };
+    auto hold_shape = [&](int kind, const char* name, float m) {
+        p.shapeKind = kind;
+        p.shapeInject = (m > 0.0f) ? 1.0f : 0.0f;
+        if (m > 0.0f) {
+            char b[96];
+            snprintf(b, sizeof b, "shape: %s x%d", name, p.shapeCount);
+            S.ov.logEvent(b);
+        }
+    };
 
     switch (id) {
         // ── layer toggles ─────────────────────────────────────────
@@ -2082,6 +2099,14 @@ static void apply_action(ActionId id, float mag) {
             S.ov.logEvent("pattern: checker"); return;
         case ACT_PATTERN_GRAD:    p.pattern = 4; printf("[pattern] gradient\n");
             S.ov.logEvent("pattern: gradient"); return;
+        case ACT_SHAPE_TRIANGLE_HOLD:
+            hold_shape(0, "triangle", mag); return;
+        case ACT_SHAPE_STAR_HOLD:
+            hold_shape(1, "star", mag); return;
+        case ACT_SHAPE_CIRCLE_HOLD:
+            hold_shape(2, "circle", mag); return;
+        case ACT_SHAPE_SQUARE_HOLD:
+            hold_shape(3, "square", mag); return;
         case ACT_INJECT_HOLD: {
             if (mag > 0.5f) {
                 p.inject = 1.0f;
@@ -2214,6 +2239,16 @@ static void apply_action(ActionId id, float mag) {
             p.external = fmaxf(0.0f, fminf(1.0f, mag));
             hud_post("ext","external", p.external - old, p.external,
                      100.f,"%", 100.f,"%");
+            return;
+        }
+        case ACT_SHAPE_COUNT_AXIS: {
+            int old = p.shapeCount;
+            float x = fmaxf(0.0f, fminf(1.0f, mag));
+            p.shapeCount = 1 + (int)floorf(x * 15.999f);
+            if (p.shapeCount != old) {
+                hud_post("shcnt","shape count", (float)(p.shapeCount - old),
+                         (float)p.shapeCount, 1.f,"", 1.f,"");
+            }
             return;
         }
 
@@ -2418,6 +2453,9 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1f("uExternal", p.external);
     U1f("uInject", p.inject);
     U1i("uPattern", p.pattern);
+    U1f("uShapeInject", p.shapeInject);
+    U1i("uShapeKind", p.shapeKind);
+    U1i("uShapeCount", p.shapeCount);
 
     // V-4 effect slots. Arrays-of-ints can't be set with U1i; use the
     // array-at-index loc form.

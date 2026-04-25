@@ -118,6 +118,10 @@ static const ActionInfo ACTIONS[] = {
     { ACT_PATTERN_DOT,     "pattern.dot",     AK_DISCRETE, "Inject", "pattern: dot" },
     { ACT_PATTERN_CHECKER, "pattern.checker", AK_DISCRETE, "Inject", "pattern: checker" },
     { ACT_PATTERN_GRAD,    "pattern.grad",    AK_DISCRETE, "Inject", "pattern: gradient" },
+    { ACT_SHAPE_TRIANGLE_HOLD, "shape.triangle.hold", AK_TRIGGER, "Inject", "shape: triangle hold" },
+    { ACT_SHAPE_STAR_HOLD,     "shape.star.hold",     AK_TRIGGER, "Inject", "shape: star hold" },
+    { ACT_SHAPE_CIRCLE_HOLD,   "shape.circle.hold",   AK_TRIGGER, "Inject", "shape: circle hold" },
+    { ACT_SHAPE_SQUARE_HOLD,   "shape.square.hold",   AK_TRIGGER, "Inject", "shape: square hold" },
     { ACT_INJECT_HOLD,     "inject.hold",     AK_TRIGGER,  "Inject", "inject (hold)" },
 
     // app
@@ -182,6 +186,7 @@ static const ActionInfo ACTIONS[] = {
     { ACT_HUE_AXIS,     "color.hue.axis",   AK_RATE, "Color",    "hue rate (axis)" },
     { ACT_DECAY_AXIS,   "dyn.decay.axis",   AK_RATE, "Dynamics", "decay (axis)" },
     { ACT_EXTERNAL_AXIS,"dyn.external.axis",AK_RATE, "Dynamics", "external (axis)" },
+    { ACT_SHAPE_COUNT_AXIS,"shape.count.axis",AK_RATE, "Inject", "shape count (axis)" },
 
     // BPM
     { ACT_BPM_TAP,               "bpm.tap",           AK_DISCRETE, "BPM", "tap tempo" },
@@ -484,7 +489,8 @@ void Input::installDefaults() {
     MIDI(in, ACT_ZOOM_AXIS,    SRC_MIDI_CC14,  0, 2, 700.0f, false, false, true); // deck 2 tempo
     MIDI(in, ACT_CONTRAST_UP,  SRC_MIDI_CC14,  8, 7, 180.0f, false, false, true); // master level
     MIDI(in, ACT_BLURY_UP,     SRC_MIDI_CC14, 13, 7, 180.0f, false, false, true); // phones level
-    MIDI(in, ACT_NOISE_UP,    SRC_MIDI_CC14, 23, 7, 260.0f, false, false, true);
+    MIDI(in, ACT_SHAPE_COUNT_AXIS,SRC_MIDI_CC14, 23, 7,  1.0f, false, false, false,
+         true, false); // CFX CH1: persistent shape count 1..16
     MIDI(in, ACT_COUPLE_UP,   SRC_MIDI_CC14, 24, 7, 140.0f, false, false, true);
     MIDI(in, ACT_EXTERNAL_UP, SRC_MIDI_CC14, 19, 1, 150.0f, false, false, true);
     MIDI(in, ACT_THERMAMP_UP, SRC_MIDI_CC14, 19, 2, 150.0f, false, false, true);
@@ -503,8 +509,12 @@ void Input::installDefaults() {
     MIDI(in, ACT_BPM_SYNC_TOGGLE, SRC_MIDI_NOTE,  1, 7);  // SMART FADER
     MIDI(in, ACT_HELP,            SRC_MIDI_NOTE, 99, 7);  // master cue
 
-    // Pads, normal mode: deck 1 selects/injects patterns + VFX1,
-    // deck 2 drives VFX2 and quick cursor actions.
+    // Pads, normal mode: deck 1 still selects inject patterns, and pads 1-4
+    // additionally hold persistent shape injections. Deck 2 toggles layers.
+    MIDI(in, ACT_SHAPE_TRIANGLE_HOLD, SRC_MIDI_NOTE, 0,  8);
+    MIDI(in, ACT_SHAPE_STAR_HOLD,     SRC_MIDI_NOTE, 1,  8);
+    MIDI(in, ACT_SHAPE_CIRCLE_HOLD,   SRC_MIDI_NOTE, 2,  8);
+    MIDI(in, ACT_SHAPE_SQUARE_HOLD,   SRC_MIDI_NOTE, 3,  8);
     MIDI(in, ACT_PATTERN_HBARS,     SRC_MIDI_NOTE, 0,  8);
     MIDI(in, ACT_PATTERN_VBARS,     SRC_MIDI_NOTE, 1,  8);
     MIDI(in, ACT_PATTERN_DOT,       SRC_MIDI_NOTE, 2,  8);
