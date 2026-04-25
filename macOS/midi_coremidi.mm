@@ -25,7 +25,8 @@ struct CoreMidiState {
     std::string destinationName;
     bool connected = false;
     bool outputConnected = false;
-    bool tried = false;
+    bool initialized = false;
+    std::mutex stateMu;
     std::mutex mu;
     std::deque<FeedbackMidiMsg> q;
 
@@ -149,93 +150,136 @@ static void midi_read_proc(const MIDIPacketList* pktlist, void*, void*) {
         pkt = MIDIPacketNext(pkt);
     }
 }
+
+static void midi_notify_proc(const MIDINotification* msg, void*) {
+    if (!msg) return;
+    switch (msg->messageID) {
+        case kMIDIMsgObjectAdded:
+        case kMIDIMsgObjectRemoved:
+        case kMIDIMsgSetupChanged:
+        {
+            std::lock_guard<std::mutex> lk(g_midi.stateMu);
+            if (g_midi.connected || g_midi.outputConnected) {
+                std::fprintf(stderr, "[midi] device change; reconnecting MIDI endpoints\n");
+            }
+            g_midi.connected = false;
+            g_midi.outputConnected = false;
+            g_midi.source = 0;
+            g_midi.destination = 0;
+            g_midi.sourceName.clear();
+            g_midi.destinationName.clear();
+            g_midi.runningStatus = 0;
+            g_midi.count = 0;
+            g_midi.need = 0;
+            g_midi.inSysex = false;
+            break;
+        }
+        default:
+            break;
+    }
+}
 }
 
 extern "C" int feedback_midi_open(const char* port_hint) {
-    if (g_midi.connected) return 1;
-    if (g_midi.tried) return 0;
-    g_midi.tried = true;
+    std::lock_guard<std::mutex> lk(g_midi.stateMu);
+    if (g_midi.connected && g_midi.outputConnected) return 1;
 
-    OSStatus err = MIDIClientCreate(CFSTR("Crutchfield Machine"), nullptr, nullptr,
-                                    &g_midi.client);
-    if (err != noErr) {
-        std::fprintf(stderr, "[midi] CoreMIDI client create failed: %d\n", (int)err);
-        return 0;
-    }
-    err = MIDIInputPortCreate(g_midi.client, CFSTR("Crutchfield Machine Input"),
-                              midi_read_proc, nullptr, &g_midi.inputPort);
-    if (err != noErr) {
-        std::fprintf(stderr, "[midi] CoreMIDI input port create failed: %d\n", (int)err);
-        return 0;
-    }
-    err = MIDIOutputPortCreate(g_midi.client, CFSTR("Crutchfield Machine Output"),
-                               &g_midi.outputPort);
-    if (err != noErr) {
-        std::fprintf(stderr, "[midi] CoreMIDI output port create failed: %d\n", (int)err);
-        g_midi.outputPort = 0;
+    if (!g_midi.initialized) {
+        OSStatus err = MIDIClientCreate(CFSTR("Crutchfield Machine"), midi_notify_proc, nullptr,
+                                        &g_midi.client);
+        if (err != noErr) {
+            std::fprintf(stderr, "[midi] CoreMIDI client create failed: %d\n", (int)err);
+            return 0;
+        }
+        err = MIDIInputPortCreate(g_midi.client, CFSTR("Crutchfield Machine Input"),
+                                  midi_read_proc, nullptr, &g_midi.inputPort);
+        if (err != noErr) {
+            std::fprintf(stderr, "[midi] CoreMIDI input port create failed: %d\n", (int)err);
+            return 0;
+        }
+        err = MIDIOutputPortCreate(g_midi.client, CFSTR("Crutchfield Machine Output"),
+                                   &g_midi.outputPort);
+        if (err != noErr) {
+            std::fprintf(stderr, "[midi] CoreMIDI output port create failed: %d\n", (int)err);
+            g_midi.outputPort = 0;
+        }
+        g_midi.initialized = true;
     }
 
     std::string hint = port_hint ? port_hint : "";
-    MIDIEndpointRef fallback = 0;
-    std::string fallbackName;
-    ItemCount n = MIDIGetNumberOfSources();
-    for (ItemCount i = 0; i < n; i++) {
-        MIDIEndpointRef src = MIDIGetSource(i);
-        std::string name = endpoint_name(src);
-        if (name.empty()) continue;
-        std::fprintf(stdout, "[midi] source: %s\n", name.c_str());
-        if (fallback == 0 || contains_ci(name, "DDJ-FLX2") || contains_ci(name, "DDJ")) {
-            fallback = src;
-            fallbackName = name;
-        }
-        if (!hint.empty() && contains_ci(name, hint)) {
-            fallback = src;
-            fallbackName = name;
-            break;
-        }
-    }
 
-    if (!fallback) {
-        std::fprintf(stderr, "[midi] no CoreMIDI sources found\n");
-    } else {
-        err = MIDIPortConnectSource(g_midi.inputPort, fallback, nullptr);
-        if (err != noErr) {
-            std::fprintf(stderr, "[midi] failed to connect '%s': %d\n",
-                         fallbackName.c_str(), (int)err);
+    if (!g_midi.connected) {
+        MIDIEndpointRef fallback = 0;
+        std::string fallbackName;
+        ItemCount n = MIDIGetNumberOfSources();
+        for (ItemCount i = 0; i < n; i++) {
+            MIDIEndpointRef src = MIDIGetSource(i);
+            std::string name = endpoint_name(src);
+            if (name.empty()) continue;
+            std::fprintf(stdout, "[midi] source: %s\n", name.c_str());
+            if (fallback == 0 || contains_ci(name, "DDJ-FLX2") || contains_ci(name, "DDJ")) {
+                fallback = src;
+                fallbackName = name;
+            }
+            if (!hint.empty() && contains_ci(name, hint)) {
+                fallback = src;
+                fallbackName = name;
+                break;
+            }
+        }
+
+        if (!fallback) {
+            static bool warnedNoSources = false;
+            if (!warnedNoSources) {
+                std::fprintf(stderr, "[midi] no CoreMIDI sources found\n");
+                warnedNoSources = true;
+            }
         } else {
-            g_midi.source = fallback;
-            g_midi.sourceName = fallbackName;
-            g_midi.connected = true;
-            std::fprintf(stdout, "[midi] CoreMIDI opened '%s'\n", fallbackName.c_str());
+            OSStatus err = MIDIPortConnectSource(g_midi.inputPort, fallback, nullptr);
+            if (err != noErr) {
+                std::fprintf(stderr, "[midi] failed to connect '%s': %d\n",
+                             fallbackName.c_str(), (int)err);
+            } else {
+                g_midi.source = fallback;
+                g_midi.sourceName = fallbackName;
+                g_midi.connected = true;
+                std::fprintf(stdout, "[midi] CoreMIDI opened '%s'\n", fallbackName.c_str());
+            }
         }
     }
 
-    MIDIEndpointRef outFallback = 0;
-    std::string outFallbackName;
-    ItemCount nd = MIDIGetNumberOfDestinations();
-    for (ItemCount i = 0; i < nd; i++) {
-        MIDIEndpointRef dst = MIDIGetDestination(i);
-        std::string name = endpoint_name(dst);
-        if (name.empty()) continue;
-        std::fprintf(stdout, "[midi] destination: %s\n", name.c_str());
-        if (outFallback == 0 || contains_ci(name, "DDJ-FLX2") || contains_ci(name, "DDJ")) {
-            outFallback = dst;
-            outFallbackName = name;
+    if (!g_midi.outputConnected) {
+        MIDIEndpointRef outFallback = 0;
+        std::string outFallbackName;
+        ItemCount nd = MIDIGetNumberOfDestinations();
+        for (ItemCount i = 0; i < nd; i++) {
+            MIDIEndpointRef dst = MIDIGetDestination(i);
+            std::string name = endpoint_name(dst);
+            if (name.empty()) continue;
+            std::fprintf(stdout, "[midi] destination: %s\n", name.c_str());
+            if (outFallback == 0 || contains_ci(name, "DDJ-FLX2") || contains_ci(name, "DDJ")) {
+                outFallback = dst;
+                outFallbackName = name;
+            }
+            if (!hint.empty() && contains_ci(name, hint)) {
+                outFallback = dst;
+                outFallbackName = name;
+                break;
+            }
         }
-        if (!hint.empty() && contains_ci(name, hint)) {
-            outFallback = dst;
-            outFallbackName = name;
-            break;
-        }
-    }
 
-    if (outFallback && g_midi.outputPort) {
-        g_midi.destination = outFallback;
-        g_midi.destinationName = outFallbackName;
-        g_midi.outputConnected = true;
-        std::fprintf(stdout, "[midi] CoreMIDI output '%s'\n", outFallbackName.c_str());
-    } else {
-        std::fprintf(stderr, "[midi] no CoreMIDI destination found for LED feedback\n");
+        if (outFallback && g_midi.outputPort) {
+            g_midi.destination = outFallback;
+            g_midi.destinationName = outFallbackName;
+            g_midi.outputConnected = true;
+            std::fprintf(stdout, "[midi] CoreMIDI output '%s'\n", outFallbackName.c_str());
+        } else {
+            static bool warnedNoDest = false;
+            if (!warnedNoDest) {
+                std::fprintf(stderr, "[midi] no CoreMIDI destination found for LED feedback\n");
+                warnedNoDest = true;
+            }
+        }
     }
 
     return g_midi.connected ? 1 : 0;
@@ -253,6 +297,7 @@ extern "C" int feedback_midi_poll(FeedbackMidiMsg* out, int max_count) {
 }
 
 extern "C" void feedback_midi_status(char* name, int name_cap, int* connected) {
+    std::lock_guard<std::mutex> lk(g_midi.stateMu);
     if (connected) *connected = g_midi.connected ? 1 : 0;
     if (name && name_cap > 0) {
         name[0] = '\0';
@@ -263,10 +308,18 @@ extern "C" void feedback_midi_status(char* name, int name_cap, int* connected) {
 }
 
 extern "C" int feedback_midi_send_note(int channel, int note, int velocity) {
-    if (!g_midi.outputConnected || !g_midi.outputPort || !g_midi.destination) return 0;
     if (channel < 1 || channel > 16 || note < 0 || note > 127) return 0;
     if (velocity < 0) velocity = 0;
     if (velocity > 127) velocity = 127;
+
+    MIDIPortRef outputPort = 0;
+    MIDIEndpointRef destination = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_midi.stateMu);
+        if (!g_midi.outputConnected || !g_midi.outputPort || !g_midi.destination) return 0;
+        outputPort = g_midi.outputPort;
+        destination = g_midi.destination;
+    }
 
     Byte buffer[128] = {};
     MIDIPacketList* packets = reinterpret_cast<MIDIPacketList*>(buffer);
@@ -278,5 +331,5 @@ extern "C" int feedback_midi_send_note(int channel, int note, int velocity) {
     };
     packet = MIDIPacketListAdd(packets, sizeof buffer, packet, 0, 3, msg);
     if (!packet) return 0;
-    return MIDISend(g_midi.outputPort, g_midi.destination, packets) == noErr ? 1 : 0;
+    return MIDISend(outputPort, destination, packets) == noErr ? 1 : 0;
 }

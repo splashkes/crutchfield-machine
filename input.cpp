@@ -1318,13 +1318,15 @@ void Input::pollMidi(float /*dt*/) {
     const double now = glfwGetTime();
 
 #ifdef __APPLE__
-    if (!g_midiRt.opened) {
-        g_midiRt.opened = feedback_midi_open(midiPortHint_.c_str()) != 0;
-    }
-
     char portName[256] = {};
     int connected = 0;
     feedback_midi_status(portName, (int)sizeof portName, &connected);
+    if (!connected) {
+        g_midiRt.opened = feedback_midi_open(midiPortHint_.c_str()) != 0;
+        feedback_midi_status(portName, (int)sizeof portName, &connected);
+    } else {
+        g_midiRt.opened = true;
+    }
     midi_.connected = connected != 0;
     midi_.portName = midi_.connected ? portName : std::string();
 
