@@ -53,6 +53,7 @@ vec3 shape_gen(vec2 uv, out float mask) {
     float cols = ceil(sqrt(fc));
     float rows = ceil(fc / cols);
     float cell = min(1.0 / cols, 1.0 / rows);
+    float aspect = uRes.x / max(uRes.y, 1.0);
     float m = 0.0;
     vec3 col = vec3(0.0);
 
@@ -62,7 +63,8 @@ vec3 shape_gen(vec2 uv, out float mask) {
         float x = mod(fi, cols);
         float y = floor(fi / cols);
         vec2 center = vec2((x + 0.5) / cols, (y + 0.5) / rows);
-        vec2 q = (uv - center) / (cell * 0.34);
+        vec2 q = (uv - center) / (cell * 0.22);
+        q.x *= aspect;
         float sm = shape_mask(q, uShapeKind);
         vec3 sc = hsv2rgb(vec3(fract(0.10 + fi * 0.113), 0.55, 1.0));
         col = mix(col, sc, sm * (1.0 - m));
