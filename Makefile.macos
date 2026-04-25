@@ -19,9 +19,10 @@ OBJCXXFLAGS ?= $(CXXFLAGS) -fobjc-arc
 LDFLAGS  ?= -arch $(ARCH) -L$(BREW_PREFIX)/lib
 LDLIBS   ?= -lglfw -lGLEW -lz \
             -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo \
-            -framework Foundation -framework AVFoundation -framework CoreMedia
+            -framework Foundation -framework AVFoundation -framework CoreMedia \
+            -framework CoreMIDI
 
-SRCS = main.cpp input.cpp camera_avfoundation.mm recorder.cpp overlay.cpp
+SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm recorder.cpp overlay.cpp
 OBJS = $(SRCS:.cpp=.o)
 OBJS := $(OBJS:.mm=.o)
 BIN  = feedback

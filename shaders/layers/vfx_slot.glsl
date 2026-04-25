@@ -1,7 +1,7 @@
 // layers/vfx_slot.glsl
 // Edirol V-4-inspired effect catalogue, per-slot dispatched. Two slots
 // run back-to-back at the tail of the main pipeline; each holds one of
-// 18 effects (plus "off") and exposes a single continuous CONTROL
+// 20 effects (plus "off") and exposes a single continuous CONTROL
 // parameter that varies its behaviour across what the real V-4 spreads
 // over 5–10 sub-variants.
 //
@@ -10,7 +10,8 @@
 //    1 Strobe       6 Monochrome  11 Mirror-HV   16 B-LumiKey
 //    2 Still        7 Posterize   12 Multi-H     17 ChromaKey
 //    3 Shake        8 ColorPass   13 Multi-V     18 PinP
-//    4 Negative     9 Mirror-H    14 Multi-HV
+//    4 Negative     9 Mirror-H    14 Multi-HV    19 VCR
+//                                               20 Pixel
 //
 // Effect implementations land across commits C5a (color-family),
 // C5b (geometric), C5c (temporal + key + PinP). This file currently
@@ -200,6 +201,29 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
             return vec4(mix(borderCol, B.rgb, border), col.a);
         }
         return col;
+    }
+    else if (eff == 19) {                          // VCR
+        float line = floor(uv.y * uRes.y);
+        float drift = hash21(vec2(line * 0.071, floor(uTime * 24.0)), uTime) - 0.5;
+        float wobble = sin(uv.y * 80.0 + uTime * 5.0) * 0.0015;
+        vec2 vu = clamp(uv + vec2((drift * 0.012 + wobble) * (0.35 + 0.65 * p), 0.0), 0.0, 1.0);
+        vec3 rgb = texture(uPrev, vu).rgb;
+        rgb.r = texture(uPrev, clamp(vu + vec2(0.0025, 0.0), 0.0, 1.0)).r;
+        rgb.b = texture(uPrev, clamp(vu - vec2(0.0025, 0.0), 0.0, 1.0)).b;
+        float scan = 0.80 + 0.20 * sin(uv.y * uRes.y * 3.14159265);
+        float tear = smoothstep(0.96, 1.0,
+                                hash21(vec2(floor(uv.y * 80.0), floor(uTime * 8.0)), uTime));
+        float grain = hash21(uv * uRes + vec2(float(uFrame), line), uTime) - 0.5;
+        rgb = rgb * scan + vec3(grain * 0.08 * (0.5 + p)) + vec3(tear * 0.18);
+        return vec4(clamp(rgb, 0.0, 1.0), col.a);
+    }
+    else if (eff == 20) {                          // Pixel
+        float block = floor(mix(4.0, 32.0, p) + 0.5);
+        vec2 pixUv = (floor(uv * uRes / block) + 0.5) * block / uRes;
+        vec3 rgb = texture(uPrev, clamp(pixUv, 0.0, 1.0)).rgb;
+        float levels = floor(mix(10.0, 3.0, p) + 0.5);
+        rgb = floor(rgb * levels + 0.5) / levels;
+        return vec4(rgb, col.a);
     }
 
     return col;

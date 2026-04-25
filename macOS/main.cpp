@@ -13,6 +13,10 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#ifdef __APPLE__
+  #include <mach-o/dyld.h>
+  #include <unistd.h>
+#endif
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
   #ifndef NOMINMAX
@@ -25,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <limits.h>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -33,6 +38,7 @@
 #include <chrono>
 #include <thread>
 #include <iostream>
+#include <filesystem>
 
 #include "camera.h"
 #include "recorder.h"
@@ -632,17 +638,97 @@ static void toggle_fullscreen() {
 // active fields. NOT saved: window size, fullscreen, recording, sim res
 // (those are session/hardware concerns, not creative state).
 
-#include <filesystem>
 #include <algorithm>
 #include <cctype>
 
 namespace fs = std::filesystem;
 
+#ifdef __APPLE__
+static std::string g_user_base = "";
+
+static std::string ensure_trailing_slash(std::string s) {
+    if (!s.empty() && s.back() != '/') s.push_back('/');
+    return s;
+}
+
+static std::string mac_executable_path() {
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string buf(size + 1, '\0');
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) return "";
+    char resolved[PATH_MAX];
+    if (!realpath(buf.c_str(), resolved)) return "";
+    return resolved;
+}
+
+static std::string mac_executable_dir() {
+    std::string exe = mac_executable_path();
+    size_t slash = exe.find_last_of('/');
+    return slash == std::string::npos ? std::string() : ensure_trailing_slash(exe.substr(0, slash));
+}
+
+static std::string mac_asset_base() {
+    std::string exe = mac_executable_path();
+    std::string exeDir = mac_executable_dir();
+    const std::string marker = ".app/Contents/MacOS/";
+    size_t pos = exeDir.find(marker);
+    if (pos != std::string::npos)
+        return exeDir.substr(0, pos + 5) + "/Contents/Resources/";
+
+    // Debug build path: macOS/build/feedback. Assets still live at the
+    // repository root, one level above macOS/.
+    fs::path exePath(exe);
+    fs::path dir = exePath.parent_path();
+    if (dir.filename() == "build" && dir.parent_path().filename() == "macOS") {
+        return ensure_trailing_slash(dir.parent_path().parent_path().string());
+    }
+
+    return exeDir;
+}
+
+static std::string mac_user_base() {
+    const char* home = std::getenv("HOME");
+    if (home && home[0])
+        return ensure_trailing_slash(std::string(home) + "/Library/Application Support/Crutchfield Machine");
+    return mac_executable_dir();
+}
+
+static void seed_user_presets(const std::string& assetBase) {
+    fs::path src = fs::path(assetBase) / "presets";
+    fs::path dst = fs::path("presets");
+    std::error_code ec;
+    fs::create_directories(dst, ec);
+    if (ec || !fs::exists(src)) return;
+    for (const auto& e : fs::directory_iterator(src)) {
+        if (!e.is_regular_file() || e.path().extension() != ".ini") continue;
+        fs::path out = dst / e.path().filename();
+        if (!fs::exists(out)) fs::copy_file(e.path(), out, fs::copy_options::skip_existing, ec);
+    }
+}
+
+static void bootstrap_macos_runtime() {
+    g_shader_base = mac_asset_base();
+    g_user_base   = mac_user_base();
+    std::error_code ec;
+    fs::create_directories(g_user_base, ec);
+    if (!ec && chdir(g_user_base.c_str()) == 0) {
+        seed_user_presets(g_shader_base);
+    } else {
+        std::fprintf(stderr, "[paths] warning: couldn't use %s as runtime dir\n",
+                     g_user_base.c_str());
+    }
+}
+#endif
+
 static std::vector<std::string> g_presetFiles;
 static int g_currentPreset = -1;
 
 static std::string preset_dir() {
+#ifdef __APPLE__
+    return "presets";
+#else
     return g_shader_base.empty() ? "presets" : (g_shader_base + "presets");
+#endif
 }
 
 // Trim whitespace from both ends.
@@ -1026,7 +1112,11 @@ static std::string preset_save_now() {
 // field FBO directly (not the display), so screenshots are always at full
 // sim quality regardless of window size, and never include the HUD overlay.
 static std::string screenshot_dir() {
+#ifdef __APPLE__
+    return "screenshots";
+#else
     return g_shader_base.empty() ? "screenshots" : (g_shader_base + "screenshots");
+#endif
 }
 
 static bool save_screenshot(GLuint fbo, int w, int h) {
@@ -1548,7 +1638,7 @@ static std::string section_bpm() {
 static std::string section_bindings() {
     std::string s;
     s += "All current keyboard bindings.\n";
-    s += "Edit bindings.ini next to the exe to customize.\n\n";
+    s += "Edit bindings.ini in the app support folder to customize.\n\n";
     for (const Binding& b : g_input.bindings()) {
         if (b.source != SRC_KEY) continue;
         const ActionInfo* info = action_info(b.action);
@@ -2810,6 +2900,12 @@ int main(int argc, char** argv) {
     timeBeginPeriod(1);
 #endif
 
+#ifdef __APPLE__
+    bootstrap_macos_runtime();
+    if (!g_shader_base.empty()) printf("[paths] assets=%s\n", g_shader_base.c_str());
+    if (!g_user_base.empty())   printf("[paths] user=%s\n",   g_user_base.c_str());
+#endif
+
     // Windows console builds can be double-clicked; offer the picker there.
 #ifdef _WIN32
     if (argc == 1) run_mode_picker(g_cfg);
@@ -2900,9 +2996,13 @@ int main(int argc, char** argv) {
         S.ov.setActiveSection(2);    // default: Warp until the user drills in
     }
     {
+#ifdef __APPLE__
+        std::string bindingsPath = "bindings.ini";
+#else
         std::string bindingsPath = g_shader_base.empty()
             ? std::string("bindings.ini")
             : (g_shader_base + "bindings.ini");
+#endif
         if (!g_input.loadIni(bindingsPath)) {
             if (g_input.saveIni(bindingsPath))
                 printf("[bindings] wrote default %s\n", bindingsPath.c_str());

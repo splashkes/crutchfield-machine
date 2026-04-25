@@ -101,6 +101,8 @@ enum ActionId : int {
     ACT_VFX1_CYCLE_FWD, ACT_VFX1_CYCLE_BACK, ACT_VFX1_OFF,
     ACT_VFX1_PARAM_UP, ACT_VFX1_PARAM_DN,
     ACT_VFX1_BSRC_CYCLE,
+    ACT_VFX1_PAD_0, ACT_VFX1_PAD_1, ACT_VFX1_PAD_2, ACT_VFX1_PAD_3,
+    ACT_VFX1_PAD_4, ACT_VFX1_PAD_5, ACT_VFX1_PAD_6, ACT_VFX1_PAD_7,
     ACT_VFX2_CYCLE_FWD, ACT_VFX2_CYCLE_BACK, ACT_VFX2_OFF,
     ACT_VFX2_PARAM_UP, ACT_VFX2_PARAM_DN,
     ACT_VFX2_BSRC_CYCLE,
@@ -118,6 +120,7 @@ enum ActionId : int {
     ACT_TRANS_X_AXIS, ACT_TRANS_Y_AXIS,
     ACT_HUE_AXIS,
     ACT_DECAY_AXIS,
+    ACT_EXTERNAL_AXIS, // absolute 0..1 external/camera blend
 
     // ── BPM (C7) ─────────────────────────────────────────────────────
     ACT_BPM_TAP,
@@ -134,13 +137,16 @@ enum ActionId : int {
 
 enum ActionKind : int { AK_STEP, AK_RATE, AK_DISCRETE, AK_TRIGGER };
 
-// Binding sources. GAMEPAD_* are populated in C2, MIDI_CC in a later pass.
+// Binding sources. For MIDI, `modmask` is MIDI channel (1..16), or 0 for
+// omni (match any channel).
 enum BindSource : int {
     SRC_NONE = 0,
     SRC_KEY,           // code = GLFW_KEY_*, modmask = GLFW_MOD_* (Shift usually stripped)
     SRC_GAMEPAD_BTN,   // code = GLFW_GAMEPAD_BUTTON_*
     SRC_GAMEPAD_AXIS,  // code = GLFW_GAMEPAD_AXIS_* (bipolar/rate)
-    SRC_MIDI_CC,       // code = CC number
+    SRC_MIDI_CC,       // code = CC number,        modmask = channel (0 = omni)
+    SRC_MIDI_CC14,     // code = CC MSB number,    modmask = channel (0 = omni)
+    SRC_MIDI_NOTE,     // code = MIDI note number, modmask = channel (0 = omni)
 };
 
 // Gamepad binding context — what "mode" the controller is in. Keyboard
@@ -183,6 +189,10 @@ struct Binding {
                                    //   dt integration). Natural for
                                    //   "the stick IS the knob" mappings
                                    //   like output fade. Self-centers.
+    bool      relative = false;    // MIDI CC: signed 0x40-centered delta
+    bool      delta    = false;    // MIDI CC/CC14: dispatch change since last value
+    bool      bipolar  = false;    // MIDI CC/CC14 absolute: 0..1 -> -1..+1
+    bool      shifted  = false;    // MIDI note: require software Shift note held
     BindContext context = CTX_ANY; // gamepad only; keyboard ignores this
 };
 
@@ -239,9 +249,32 @@ public:
     // from glfwGetTime delta.
     void pollGamepad(int jid, float dt, BindContext currentCtx);
 
-    // MIDI stub — populated by a future commit (RtMidi / winmm). Kept here
-    // so apply_action consumers never have to care where events originate.
+    // MIDI input. Opens a platform backend on first call, drains incoming
+    // messages on the main thread, and dispatches Note/CC through handler_.
     void pollMidi(float dt);
+
+    struct MidiState {
+        std::string portName;
+        bool  connected   = false;
+        bool  clockLive   = false;
+        float derivedBpm  = 0.0f;
+        int   lastNoteCh  = 0;
+        int   lastNoteNum = -1;
+        int   lastNoteVel = 0;
+        int   lastCcCh    = 0;
+        int   lastCcNum   = -1;
+        int   lastCcVal   = 0;
+        bool  deck1Shift  = false;
+        bool  deck2Shift  = false;
+        bool  startPending = false;
+        bool  stopPending  = false;
+    };
+    MidiState&       midi()       { return midi_; }
+    const MidiState& midi() const { return midi_; }
+
+    void setMidiPortHint(const std::string& s) { midiPortHint_ = s; }
+    void setMidiLearn(bool enabled) { midiLearn_ = enabled; }
+    bool sendMidiNote(int channel, int note, int velocity);
 
     // Low-level insert (used by installDefaults and loadIni).
     void bind(const Binding& b) { bindings_.push_back(b); }
@@ -252,6 +285,9 @@ public:
 private:
     std::vector<Binding> bindings_;
     Handler handler_;
+    MidiState   midi_;
+    std::string midiPortHint_;
+    bool        midiLearn_ = false;
 };
 
 // Global instance; defined in input.cpp.
