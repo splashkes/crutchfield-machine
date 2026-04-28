@@ -243,6 +243,9 @@ static const ActionInfo ACTIONS[] = {
     { ACT_NOISEQ_GRAIN,          "q.noise.grain",     AK_DISCRETE, "Quality", "noise type: grain" },
     { ACT_NOISEQ_SCANLINE,       "q.noise.scanline",  AK_DISCRETE, "Quality", "noise type: scanline" },
 
+    { ACT_MPK_HOLD,              "mpk.hold",          AK_TRIGGER,  "App", "MPK Mini: HOLD modifier (momentary)" },
+    { ACT_MPK_B_TOGGLE,          "mpk.bToggle",       AK_DISCRETE, "App", "MPK Mini: B mode toggle" },
+
     { ACT_LAUNCH_LOOPMIDI,       "music.installMidiDriver", AK_DISCRETE, "BPM", "install MIDI driver (Windows)" },
     { ACT_MUSIC_NEXT,            "music.next",      AK_DISCRETE, "BPM", "next music preset" },
     { ACT_MUSIC_PREV,            "music.prev",      AK_DISCRETE, "BPM", "prev music preset" },
@@ -284,7 +287,7 @@ static void K(Input& in, ActionId a, int key, int mods = 0, float scale = 1.0f) 
 static void MIDI(Input& in, ActionId a, BindSource src, int code, int ch = 0,
                  float scale = 1.0f, bool invert = false, bool relative = false,
                  bool delta = false, bool absolute = false, bool bipolar = false,
-                 bool shifted = false) {
+                 bool shifted = false, int mpkMode = -1) {
     Binding b;
     b.action   = a;
     b.source   = src;
@@ -297,6 +300,7 @@ static void MIDI(Input& in, ActionId a, BindSource src, int code, int ch = 0,
     b.absolute = absolute;
     b.bipolar  = bipolar;
     b.shifted  = shifted;
+    b.mpkMode  = mpkMode;
     in.bind(b);
 }
 
@@ -545,6 +549,13 @@ void Input::installDefaults() {
     K(in, ACT_MUSIC_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_MUSIC_PLAYPAUSE,  GLFW_KEY_SPACE, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
 
+    // MPK Mini A/B/HOLD modal modifiers — keyboard chord since the MPK Mini
+    // has no spare MIDI buttons. Right Shift = HOLD-momentary; Right Alt =
+    // B-toggle (sticky). The onKey path strips the binding-key's own mod
+    // bit so these match modmask=0.
+    K(in, ACT_MPK_HOLD,        GLFW_KEY_RIGHT_SHIFT);
+    K(in, ACT_MPK_B_TOGGLE,    GLFW_KEY_RIGHT_ALT);
+
     // DDJ-FLX2 performance defaults. These are inert unless a matching
     // MIDI source is connected — Bindings just sit in the table until a
     // controller actually fires the matching note/CC. Applies to both
@@ -668,6 +679,94 @@ void Input::installDefaults() {
     MIDI(in, ACT_FIELDS_CYCLE,     SRC_MIDI_NOTE, 5, 10, 1, false, false, false, false, false, true);
     MIDI(in, ACT_BPM_FLASH_TOGGLE, SRC_MIDI_NOTE, 6, 10, 1, false, false, false, false, false, true);
     MIDI(in, ACT_BPM_DECAYDIP_TOGGLE, SRC_MIDI_NOTE, 7, 10, 1, false, false, false, false, false, true);
+
+    // ─────────────────────────────────────────────────────────────────────
+    // AKAI MPK Mini defaults — A/B/HOLD modal banking.
+    //
+    // The MPK Mini's hardware Bank A/B button doesn't send MIDI, and there
+    // are no other spare buttons, so the 3 modes are gated by the keyboard
+    // chord above (Right Shift = HOLD; Right Alt = B-toggle).
+    //
+    // Each pad binding is doubled — once for hardware Bank A (ch10 notes
+    // 36-43) and once for Bank B (ch10 notes 44-51) — so the user can
+    // press the bank button without anything breaking.
+    //
+    // Knobs use `delta` mode so they act as effectively endless: only the
+    // change since the last value matters. Switching A/B/HOLD doesn't
+    // create a parameter "snap" because we never read the absolute knob
+    // position.
+    // ─────────────────────────────────────────────────────────────────────
+    auto MPK_KNOB = [&](ActionId a, int cc, int mode, float scale = 1.0f) {
+        MIDI(in, a, SRC_MIDI_CC, cc, /*ch*/1, scale, /*invert*/false,
+             /*relative*/false, /*delta*/true, /*absolute*/false,
+             /*bipolar*/false, /*shifted*/false, /*mpkMode*/mode);
+    };
+    auto MPK_PAD = [&](ActionId a, int padIdx, int mode) {
+        MIDI(in, a, SRC_MIDI_NOTE, 36 + padIdx, /*ch*/10, 1.0f,
+             false, false, false, false, false, false, mode);  // Bank A
+        MIDI(in, a, SRC_MIDI_NOTE, 44 + padIdx, /*ch*/10, 1.0f,
+             false, false, false, false, false, false, mode);  // Bank B
+    };
+
+    // Mode A — warp / spatial.
+    MPK_KNOB(ACT_ZOOM_AXIS,    70, 0,  4.0f);
+    MPK_KNOB(ACT_THETA_AXIS,   71, 0,  4.0f);
+    MPK_KNOB(ACT_TRANS_X_AXIS, 72, 0,  4.0f);
+    MPK_KNOB(ACT_TRANS_Y_AXIS, 73, 0,  4.0f);
+    MPK_KNOB(ACT_BLURX_UP,     74, 0, 60.0f);
+    MPK_KNOB(ACT_BLURY_UP,     75, 0, 60.0f);
+    MPK_KNOB(ACT_GAMMA_UP,     76, 0, 30.0f);
+    MPK_KNOB(ACT_DECAY_AXIS,   77, 0,  1.0f);
+
+    // Mode B — color / dynamics.
+    MPK_KNOB(ACT_HUE_AXIS,     70, 1,  4.0f);
+    MPK_KNOB(ACT_SAT_UP,       71, 1, 60.0f);
+    MPK_KNOB(ACT_CONTRAST_UP,  72, 1, 60.0f);
+    MPK_KNOB(ACT_NOISE_AXIS,   73, 1,  1.0f);
+    MPK_KNOB(ACT_COUPLE_UP,    74, 1, 50.0f);
+    MPK_KNOB(ACT_EXTERNAL_AXIS,75, 1,  1.0f);
+    MPK_KNOB(ACT_OUTFADE_UP,   76, 1, 50.0f);
+    MPK_KNOB(ACT_BRIGHTNESS_UP,77, 1, 50.0f);
+
+    // Mode HOLD — effects / chaos.
+    MPK_KNOB(ACT_THERMAMP_UP,    70, 2, 50.0f);
+    MPK_KNOB(ACT_THERMSPEED_UP,  71, 2, 50.0f);
+    MPK_KNOB(ACT_THERMSWIRL_UP,  72, 2, 50.0f);
+    MPK_KNOB(ACT_THERMSCALE_UP,  73, 2, 50.0f);
+    MPK_KNOB(ACT_VFX1_PARAM_UP,  74, 2, 50.0f);
+    MPK_KNOB(ACT_VFX2_PARAM_UP,  75, 2, 50.0f);
+    MPK_KNOB(ACT_SHAPE_COUNT_AXIS,76, 2, 1.0f);
+    MPK_KNOB(ACT_FX_WET_AXIS,    77, 2, 1.0f);
+
+    // Pads Mode A — patterns.
+    MPK_PAD(ACT_PATTERN_HBARS,    0, 0);
+    MPK_PAD(ACT_PATTERN_VBARS,    1, 0);
+    MPK_PAD(ACT_PATTERN_DOT,      2, 0);
+    MPK_PAD(ACT_PATTERN_CHECKER,  3, 0);
+    MPK_PAD(ACT_PATTERN_GRAD,     4, 0);
+    MPK_PAD(ACT_PATTERN_NOISE,    5, 0);
+    MPK_PAD(ACT_PATTERN_RINGS,    6, 0);
+    MPK_PAD(ACT_PATTERN_SPIRAL,   7, 0);
+
+    // Pads Mode B — layer toggles.
+    MPK_PAD(ACT_LAYER_WARP,       0, 1);
+    MPK_PAD(ACT_LAYER_OPTICS,     1, 1);
+    MPK_PAD(ACT_LAYER_COLOR,      2, 1);
+    MPK_PAD(ACT_LAYER_DECAY,      3, 1);
+    MPK_PAD(ACT_LAYER_NOISE,      4, 1);
+    MPK_PAD(ACT_LAYER_COUPLE,     5, 1);
+    MPK_PAD(ACT_LAYER_EXTERNAL,   6, 1);
+    MPK_PAD(ACT_LAYER_INJECT,     7, 1);
+
+    // Pads Mode HOLD — chaos / transport.
+    MPK_PAD(ACT_VFX1_CYCLE_BACK,  0, 2);
+    MPK_PAD(ACT_VFX1_OFF,         1, 2);
+    MPK_PAD(ACT_VFX1_CYCLE_FWD,   2, 2);
+    MPK_PAD(ACT_BPM_TAP,          3, 2);
+    MPK_PAD(ACT_MUSIC_PREV,       4, 2);
+    MPK_PAD(ACT_MUSIC_PLAYPAUSE,  5, 2);
+    MPK_PAD(ACT_MUSIC_NEXT,       6, 2);
+    MPK_PAD(ACT_CLEAR,            7, 2);
 
     // Help nav — arrow keys dedicated while help is open (the handler checks
     // help visibility and consumes these only then, so they do NOT conflict
@@ -904,7 +1003,20 @@ void Input::onKey(int key, int /*scancode*/, int action, int mods) {
     for (const Binding& b : bindings_) {
         if (b.source != SRC_KEY) continue;
         if (b.code != key) continue;
-        if (b.modmask != matchMods) continue;
+        // If the binding's key IS a modifier key, the press/release event
+        // for that key sets the matching mod flag — strip it from the
+        // effective mods so a modmask=0 binding (e.g. "Right Shift alone")
+        // still matches.
+        int effMods = matchMods;
+        switch (b.code) {
+        case GLFW_KEY_LEFT_CONTROL: case GLFW_KEY_RIGHT_CONTROL:
+            effMods &= ~GLFW_MOD_CONTROL; break;
+        case GLFW_KEY_LEFT_ALT:     case GLFW_KEY_RIGHT_ALT:
+            effMods &= ~GLFW_MOD_ALT;     break;
+        case GLFW_KEY_LEFT_SUPER:   case GLFW_KEY_RIGHT_SUPER:
+            effMods &= ~GLFW_MOD_SUPER;   break;
+        }
+        if (b.modmask != effMods) continue;
 
         const ActionInfo* info = action_info(b.action);
         if (!info) continue;
@@ -1489,11 +1601,13 @@ void Input::pollMidi(float /*dt*/) {
             }
             return;
         }
+        const int curMpkMode = currentMpkMode();
         for (const Binding& b : bindings_) {
             if (b.source != SRC_MIDI_NOTE) continue;
             if (b.code != note) continue;
             if (b.modmask != 0 && b.modmask != ch) continue;
             if (b.shifted != softwareShifted) continue;
+            if (b.mpkMode >= 0 && b.mpkMode != curMpkMode) continue;
             const ActionInfo* info = action_info(b.action);
             if (!info) continue;
             float mg = (vel / 127.0f) * b.scale;
@@ -1562,8 +1676,10 @@ void Input::pollMidi(float /*dt*/) {
         }
         if (!handler_) return;
 
+        const int curMpkMode = currentMpkMode();
         for (const Binding& b : bindings_) {
             if (b.modmask != 0 && b.modmask != ch) continue;
+            if (b.mpkMode >= 0 && b.mpkMode != curMpkMode) continue;
             if (b.source == SRC_MIDI_CC) {
                 if (b.code != ccNum) continue;
                 dispatch_cc_value(b, ch, ccNum, ccVal, ccVal / 127.0f);
