@@ -14,7 +14,11 @@ ARCH        ?= arm64
 
 CXXFLAGS ?= -O3 -std=c++17 -Wall -Wextra -Wno-deprecated-declarations \
             -Wno-missing-field-initializers \
-            -DGL_SILENCE_DEPRECATION -arch $(ARCH) -I$(BREW_PREFIX)/include
+            -DGL_SILENCE_DEPRECATION -arch $(ARCH) -I$(BREW_PREFIX)/include \
+            -Ivendor/quickjs
+QJSFLAGS = -O3 -std=c99 -DCONFIG_VERSION="\"2025-04-26\"" \
+           -Wno-sign-compare -Wno-unused-parameter -Wno-implicit-fallthrough \
+           -Wno-array-bounds -Wno-format-truncation
 OBJCXXFLAGS ?= $(CXXFLAGS) -fobjc-arc
 LDFLAGS  ?= -arch $(ARCH) -L$(BREW_PREFIX)/lib
 LDLIBS   ?= -lglfw -lGLEW -lz \
@@ -22,9 +26,13 @@ LDLIBS   ?= -lglfw -lGLEW -lz \
             -framework Foundation -framework AVFoundation -framework CoreMedia \
             -framework CoreMIDI
 
-SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm recorder.cpp overlay.cpp
+SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm \
+       recorder.cpp overlay.cpp music.cpp audio.cpp
 OBJS = $(SRCS:.cpp=.o)
 OBJS := $(OBJS:.mm=.o)
+QJS_SRCS = vendor/quickjs/quickjs.c vendor/quickjs/libregexp.c \
+           vendor/quickjs/libunicode.c vendor/quickjs/dtoa.c
+QJS_OBJS = $(QJS_SRCS:.c=.o)
 BIN  = feedback
 DIST_NAME = feedback-macos-arm64
 DIST_DIR  = $(DIST_NAME)
@@ -32,7 +40,7 @@ DIST_ZIP  = $(DIST_NAME).zip
 
 all: $(BIN)
 
-$(BIN): $(OBJS)
+$(BIN): $(OBJS) $(QJS_OBJS)
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 %.o: %.cpp
@@ -41,17 +49,23 @@ $(BIN): $(OBJS)
 %.o: %.mm
 	$(CXX) $(OBJCXXFLAGS) -c -o $@ $<
 
+vendor/quickjs/%.o: vendor/quickjs/%.c
+	$(CC) $(QJSFLAGS) -Ivendor/quickjs -c -o $@ $<
+
 dist: $(BIN)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)
 	mkdir -p $(DIST_DIR)
 	cp $(BIN) $(DIST_DIR)/
 	cp -r shaders $(DIST_DIR)/
 	cp -r presets $(DIST_DIR)/
+	cp -r js $(DIST_DIR)/
+	cp -r music $(DIST_DIR)/
+	@if [ -d samples ]; then cp -r samples $(DIST_DIR)/; fi
 	cp README.md LICENSE CREDITS.md $(DIST_DIR)/
 	ditto -c -k --sequesterRsrc --keepParent $(DIST_DIR) $(DIST_ZIP)
 
 clean:
-	rm -f $(OBJS) $(BIN)
+	rm -f $(OBJS) $(QJS_OBJS) $(BIN)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)
 
 .PHONY: all dist clean

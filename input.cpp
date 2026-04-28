@@ -200,10 +200,25 @@ static const ActionInfo ACTIONS[] = {
     { ACT_THETA_AXIS,   "warp.theta.axis",  AK_RATE, "Warp",     "rotation (axis)" },
     { ACT_TRANS_X_AXIS, "warp.transX.axis", AK_RATE, "Warp",     "translate X (axis)" },
     { ACT_TRANS_Y_AXIS, "warp.transY.axis", AK_RATE, "Warp",     "translate Y (axis)" },
+    { ACT_TRANS_X_SET_AXIS, "warp.transX.setAxis", AK_RATE, "Warp", "translate X setpoint" },
+    { ACT_TRANS_Y_SET_AXIS, "warp.transY.setAxis", AK_RATE, "Warp", "translate Y setpoint" },
+    { ACT_BLURX_SET_AXIS, "optics.blurX.setAxis", AK_RATE, "Optics", "blur/sharp X setpoint" },
+    { ACT_BLURY_SET_AXIS, "optics.blurY.setAxis", AK_RATE, "Optics", "blur/sharp Y setpoint" },
+    { ACT_GAMMA_SET_AXIS, "color.gamma.setAxis", AK_RATE, "Color", "gamma setpoint" },
+    { ACT_HUE_SET_AXIS,   "color.hue.setAxis",   AK_RATE, "Color", "hue rate setpoint" },
+    { ACT_SAT_SET_AXIS,   "color.sat.setAxis",   AK_RATE, "Color", "saturation setpoint" },
+    { ACT_CONTRAST_SET_AXIS, "color.contrast.setAxis", AK_RATE, "Color", "contrast setpoint" },
+    { ACT_COUPLE_SET_AXIS, "dyn.couple.setAxis", AK_RATE, "Dynamics", "couple setpoint" },
+    { ACT_NOISE_AXIS, "dyn.noise.axis", AK_RATE, "Dynamics", "noise amount (axis)" },
+    { ACT_PATTERN_AMOUNT_AXIS, "pattern.amount.axis", AK_RATE, "Inject", "persistent pattern amount" },
     { ACT_HUE_AXIS,     "color.hue.axis",   AK_RATE, "Color",    "hue rate (axis)" },
-    { ACT_DECAY_AXIS,   "dyn.decay.axis",   AK_RATE, "Dynamics", "decay (axis)" },
+    { ACT_DECAY_AXIS,   "dyn.decay.axis",   AK_RATE, "Dynamics", "decay setpoint (axis)" },
     { ACT_EXTERNAL_AXIS,"dyn.external.axis",AK_RATE, "Dynamics", "external (axis)" },
+    { ACT_FX_WET_AXIS,  "fx.wet.axis",      AK_RATE, "Dynamics", "effect wet mix (axis)" },
+    { ACT_FX_WET_MODE_TOGGLE, "fx.wetMode", AK_DISCRETE, "Dynamics", "toggle crossfader wet mode" },
     { ACT_SHAPE_COUNT_AXIS,"shape.count.axis",AK_RATE, "Inject", "shape count (axis)" },
+    { ACT_SHAPE_SIZE_AXIS, "shape.size.axis", AK_RATE, "Inject", "shape size (axis)" },
+    { ACT_SHAPE_ROT_AXIS,  "shape.rot.axis",  AK_RATE, "Inject", "shape rotation (axis)" },
 
     // BPM
     { ACT_BPM_TAP,               "bpm.tap",           AK_DISCRETE, "BPM", "tap tempo" },
@@ -220,6 +235,11 @@ static const ActionInfo ACTIONS[] = {
     { ACT_BPM_INVERT_TOGGLE,     "bpm.invert",        AK_DISCRETE, "BPM", "toggle beat-driven invert flip" },
     { ACT_BPM_INVERT_DIV_UP,     "bpm.invertDiv+",    AK_STEP,     "BPM", "invert flip divisor +" },
     { ACT_BPM_INVERT_DIV_DN,     "bpm.invertDiv-",    AK_STEP,     "BPM", "invert flip divisor -" },
+    { ACT_DDJ_BANK_HOLD,         "ddj.bank.hold",     AK_TRIGGER,  "App", "DDJ alternate pad bank" },
+    { ACT_NOISEQ_WHITE,          "q.noise.white",     AK_DISCRETE, "Quality", "noise type: white" },
+    { ACT_NOISEQ_PINK,           "q.noise.pink",      AK_DISCRETE, "Quality", "noise type: pink" },
+    { ACT_NOISEQ_GRAIN,          "q.noise.grain",     AK_DISCRETE, "Quality", "noise type: grain" },
+    { ACT_NOISEQ_SCANLINE,       "q.noise.scanline",  AK_DISCRETE, "Quality", "noise type: scanline" },
 
     { ACT_LAUNCH_LOOPMIDI,       "music.installMidiDriver", AK_DISCRETE, "BPM", "install MIDI driver (Windows)" },
     { ACT_MUSIC_NEXT,            "music.next",      AK_DISCRETE, "BPM", "next music preset" },
@@ -535,26 +555,42 @@ void Input::installDefaults() {
     MIDI(in, ACT_TRANS_X_AXIS, SRC_MIDI_CC, 33, 1, 1.4f, false, true); // left wheel side
     MIDI(in, ACT_TRANS_Y_AXIS, SRC_MIDI_CC, 33, 2, 1.4f, true,  true); // right wheel side
 
-    // 14-bit mixer/fader controls. `delta` makes absolute hardware knobs
-    // behave like parameter nudges, while the crossfader is absolute.
-    MIDI(in, ACT_THETA_AXIS,   SRC_MIDI_CC14,  0, 1, 900.0f, false, false, true); // deck 1 tempo
-    MIDI(in, ACT_SAT_UP,      SRC_MIDI_CC14,  7, 1, 260.0f, false, false, true);
-    MIDI(in, ACT_HUE_UP,      SRC_MIDI_CC14, 11, 1, 420.0f, false, false, true);
-    MIDI(in, ACT_GAMMA_UP,    SRC_MIDI_CC14, 15, 1, 130.0f, false, false, true);
+    // 14-bit mixer/fader controls. Center-detented tone controls use bipolar
+    // setpoint mappings so the hardware center lands on a true neutral.
+    MIDI(in, ACT_TRANS_X_SET_AXIS, SRC_MIDI_CC14,  0, 1, 0.020f, false, false, false,
+         true, true); // deck 1 tempo: X translation speed, center stops
+    MIDI(in, ACT_SAT_SET_AXIS, SRC_MIDI_CC14,  7, 1, 1.0f, false, false, false,
+         true, true); // deck 1 EQ HI: center neutral, left desat, right saturate
+    MIDI(in, ACT_HUE_SET_AXIS, SRC_MIDI_CC14, 11, 1, 1.0f, false, false, false,
+         true, true); // deck 1 EQ MID: center still, left/right hue drift
+    MIDI(in, ACT_GAMMA_SET_AXIS, SRC_MIDI_CC14, 15, 1, 1.0f, false, false, false,
+         true, true); // deck 1 EQ LOW: center gamma identity
     MIDI(in, ACT_OUTFADE_AXIS,SRC_MIDI_CC14,  7, 2,   1.0f, false, false, false,
          true, true); // deck 2 EQ HI: centered black/white output fade
-    MIDI(in, ACT_BLURX_UP,    SRC_MIDI_CC14, 11, 2, 180.0f, false, false, true);
-    MIDI(in, ACT_DECAY_UP,    SRC_MIDI_CC14, 15, 2, 130.0f, false, false, true);
-    MIDI(in, ACT_ZOOM_AXIS,    SRC_MIDI_CC14,  0, 2, 700.0f, false, false, true); // deck 2 tempo
-    MIDI(in, ACT_CONTRAST_UP,  SRC_MIDI_CC14,  8, 7, 180.0f, false, false, true); // master level
-    MIDI(in, ACT_BLURY_UP,     SRC_MIDI_CC14, 13, 7, 180.0f, false, false, true); // phones level
+    MIDI(in, ACT_BLURX_SET_AXIS, SRC_MIDI_CC14, 11, 2,  1.0f, false, false, false,
+         true, true); // deck 2 EQ mid: center neutral, left sharp, right blur
+    MIDI(in, ACT_DECAY_AXIS,  SRC_MIDI_CC14, 15, 2,   1.0f, false, false, false,
+         true, false); // deck 2 EQ low: curved absolute decay 0.900..1.000
+    MIDI(in, ACT_TRANS_Y_SET_AXIS, SRC_MIDI_CC14,  0, 2, 0.020f, true, false, false,
+         true, true); // deck 2 tempo: Y translation speed, center stops
+    MIDI(in, ACT_CONTRAST_SET_AXIS, SRC_MIDI_CC14,  8, 7, 1.0f, false, false, false,
+         true, true); // master level: center identity, left flat, right punch
+    MIDI(in, ACT_BLURY_SET_AXIS, SRC_MIDI_CC14, 13, 7,  1.0f, false, false, false,
+         true, true); // phones level: center neutral, left sharp, right blur
     MIDI(in, ACT_SHAPE_COUNT_AXIS,SRC_MIDI_CC14, 23, 7,  1.0f, false, false, false,
          true, false); // CFX CH1: persistent shape count 1..16
-    MIDI(in, ACT_COUPLE_UP,   SRC_MIDI_CC14, 24, 7, 140.0f, false, false, true);
-    MIDI(in, ACT_EXTERNAL_UP, SRC_MIDI_CC14, 19, 1, 150.0f, false, false, true);
-    MIDI(in, ACT_THERMAMP_UP, SRC_MIDI_CC14, 19, 2, 150.0f, false, false, true);
-    MIDI(in, ACT_EXTERNAL_AXIS,SRC_MIDI_CC14, 31, 7,  1.0f, false, false, false,
-         true, false); // crossfader: direct external blend 0..1
+    MIDI(in, ACT_SHAPE_SIZE_AXIS,SRC_MIDI_CC14, 23, 7,  1.0f, false, false, false,
+         true, false, true); // Shift + CFX CH1: persistent shape size
+    MIDI(in, ACT_COUPLE_SET_AXIS, SRC_MIDI_CC14, 24, 7, 1.0f, false, false, false,
+         true, true); // CFX CH2: center off, left anti-couple, right couple
+    MIDI(in, ACT_SHAPE_ROT_AXIS,SRC_MIDI_CC14, 24, 7,  1.0f, false, false, false,
+         true, false, true); // Shift + CFX CH2: persistent shape rotation
+    MIDI(in, ACT_NOISE_AXIS, SRC_MIDI_CC14, 19, 1, 1.0f, false, false, false,
+         true, false); // channel 1 fader: noise amount
+    MIDI(in, ACT_PATTERN_AMOUNT_AXIS, SRC_MIDI_CC14, 19, 2, 1.0f, false, false, false,
+         true, false); // channel 2 fader: persistent pattern layer amount
+    MIDI(in, ACT_FX_WET_AXIS, SRC_MIDI_CC14, 31, 7,  1.0f, false, false, false,
+         true, false); // crossfader: dry/wet effect mix 0..1
 
     // Transport / utility buttons.
     MIDI(in, ACT_PAUSE,           SRC_MIDI_NOTE, 11, 1);
@@ -565,8 +601,8 @@ void Input::installDefaults() {
     MIDI(in, ACT_LAYER_THERMAL,   SRC_MIDI_NOTE, 84, 2);  // CH cue deck 2
     MIDI(in, ACT_BPM_TAP,         SRC_MIDI_NOTE, 88, 1);
     MIDI(in, ACT_BPM_TAP,         SRC_MIDI_NOTE, 88, 2);
-    MIDI(in, ACT_BPM_SYNC_TOGGLE, SRC_MIDI_NOTE,  1, 7);  // SMART FADER
-    MIDI(in, ACT_HELP,            SRC_MIDI_NOTE, 99, 7);  // master cue
+    MIDI(in, ACT_FX_WET_MODE_TOGGLE, SRC_MIDI_NOTE,  1, 7);  // SMART FADER
+    MIDI(in, ACT_DDJ_BANK_HOLD,   SRC_MIDI_NOTE, 99, 7);  // master cue: alternate pad bank
 
     // Pads, normal mode: deck 1 still selects inject patterns, and pads 1-4
     // additionally hold persistent shape injections. Deck 2 toggles layers.
@@ -1160,7 +1196,6 @@ bool Input::loadIni(const std::string& path) {
             if (lo == "bindings") return CTX_SEC_BINDINGS;
             return CTX_ANY;
         };
-        int midiChannel = 0;  // 0 = omni (match any channel)
         for (size_t t = 1; t < toks.size(); t++) {
             const std::string& opt = toks[t];
             if (opt.rfind("scale=", 0) == 0)      scale = (float)std::atof(opt.c_str() + 6);
@@ -1368,6 +1403,7 @@ struct MidiRuntime {
     bool ccSeen[17][128] = {};
     uint8_t ccVal[17][128] = {};
     bool deckShift[3] = {};
+    bool masterShift = false;
     double clockTimes[24] = {};
     int clockHead = 0;
     int clockCount = 0;
@@ -1407,6 +1443,10 @@ void Input::pollMidi(float /*dt*/) {
             midi_.deck1Shift = g_midiRt.deckShift[1];
             midi_.deck2Shift = g_midiRt.deckShift[2];
         }
+        if (note == 99 && ch == 7) {
+            g_midiRt.masterShift = on;
+            midi_.masterShift = g_midiRt.masterShift;
+        }
         const bool softwareShifted =
             (ch == 8 && g_midiRt.deckShift[1]) ||
             (ch == 10 && g_midiRt.deckShift[2]);
@@ -1419,6 +1459,26 @@ void Input::pollMidi(float /*dt*/) {
                         ch, note, vel, on ? "on" : "off");
         }
         if (!handler_) return;
+        if (g_midiRt.masterShift && (ch == 8 || ch == 10) && note >= 0 && note <= 7) {
+            if (on) {
+                if (ch == 8) {
+                    static const ActionId patternBank[5] = {
+                        ACT_PATTERN_HBARS, ACT_PATTERN_VBARS, ACT_PATTERN_DOT,
+                        ACT_PATTERN_CHECKER, ACT_PATTERN_GRAD
+                    };
+                    if (note < 5) handler_(patternBank[note], 1.0f);
+                } else {
+                    static const ActionId noiseBank[4] = {
+                        ACT_NOISEQ_WHITE, ACT_NOISEQ_PINK,
+                        ACT_NOISEQ_GRAIN, ACT_NOISEQ_SCANLINE
+                    };
+                    if (note < 4) handler_(noiseBank[note], 1.0f);
+                    else if (note == 4) handler_(ACT_LAYER_NOISE, 1.0f);
+                    else if (note == 5) handler_(ACT_LAYER_INJECT, 1.0f);
+                }
+            }
+            return;
+        }
         for (const Binding& b : bindings_) {
             if (b.source != SRC_MIDI_NOTE) continue;
             if (b.code != note) continue;

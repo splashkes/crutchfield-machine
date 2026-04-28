@@ -42,16 +42,7 @@ vec3 ca_sample(sampler2D tex, vec2 src, vec2 ca) {
     return col / max(nrm, vec3(1e-5));
 }
 
-vec4 optics_sample(sampler2D tex, vec2 src) {
-    vec2 px = 1.0 / uRes;
-
-    float bc = cos(uBlurAngle), bs = sin(uBlurAngle);
-    vec2 bx = vec2( bc,  bs) * uBlurX * px;
-    vec2 by = vec2(-bs,  bc) * uBlurY * px;
-
-    vec2 rad = (src - vec2(0.5));
-    vec2 ca  = rad * uChroma;
-
+vec3 blur_kernel_sample(sampler2D tex, vec2 src, vec2 ca, vec2 bx, vec2 by) {
     vec3 col = vec3(0.0);
     float wsum = 0.0;
 
@@ -88,5 +79,31 @@ vec4 optics_sample(sampler2D tex, vec2 src) {
             idx++;
         }
     }
-    return vec4(col / wsum, 1.0);
+    return col / wsum;
+}
+
+vec4 optics_sample(sampler2D tex, vec2 src) {
+    vec2 px = 1.0 / uRes;
+
+    float bc = cos(uBlurAngle), bs = sin(uBlurAngle);
+    vec2 ax = vec2( bc,  bs);
+    vec2 ay = vec2(-bs,  bc);
+    vec2 blurBx = ax * max(uBlurX, 0.0) * px;
+    vec2 blurBy = ay * max(uBlurY, 0.0) * px;
+    vec2 sharpBx = ax * max(-uBlurX, 0.0) * px;
+    vec2 sharpBy = ay * max(-uBlurY, 0.0) * px;
+
+    vec2 rad = (src - vec2(0.5));
+    vec2 ca  = rad * uChroma;
+
+    vec3 col = blur_kernel_sample(tex, src, ca, blurBx, blurBy);
+    float sharpAmt = max(max(-uBlurX, 0.0), max(-uBlurY, 0.0));
+    if (sharpAmt > 0.0) {
+        vec3 base = ca_sample(tex, src, ca);
+        vec3 soft = blur_kernel_sample(tex, src, ca, sharpBx, sharpBy);
+        float strength = clamp(sharpAmt * 0.28, 0.0, 2.0);
+        col = clamp(col + (base - soft) * strength, 0.0, 1.0);
+    }
+
+    return vec4(col, 1.0);
 }

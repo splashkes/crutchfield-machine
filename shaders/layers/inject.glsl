@@ -18,9 +18,12 @@
 // shape so the feedback field keeps evolving around them instead of
 // getting wiped by an all-black pattern background.
 //
-//   uShapeInject : held shape-inject strength, independent of uInject decay
-//   uShapeKind   : 0=triangle 1=star 2=circle 3=square
-//   uShapeCount  : 1..16 evenly spaced copies
+//   uPatternInject : persistent low-stack pattern layer amount
+//   uShapeInject   : held shape-inject strength, independent of uInject decay
+//   uShapeKind     : 0=triangle 1=star 2=circle 3=square
+//   uShapeCount    : 1..16 evenly spaced copies
+//   uShapeSize     : size multiplier
+//   uShapeAngle    : rotation in radians
 
 vec4 pattern_gen(vec2 uv, int id) {
     if (id == 0) return vec4(vec3(step(0.5, fract(uv.y * 16.0))), 1.0);
@@ -131,8 +134,11 @@ vec3 shape_gen(vec2 uv, out float mask) {
         float x = mod(fi, cols);
         float y = floor(fi / cols);
         vec2 center = vec2((x + 0.5) / cols, (y + 0.5) / rows);
-        vec2 q = (uv - center) / (cell * 0.22);
+        vec2 q = (uv - center) / (cell * 0.22 * uShapeSize);
         q.x *= aspect;
+        float cs = cos(uShapeAngle);
+        float sn = sin(uShapeAngle);
+        q = mat2(cs, -sn, sn, cs) * q;
         float sm = shape_mask(q, uShapeKind);
         vec3 sc = hsv2rgb(vec3(fract(0.10 + fi * 0.113), 0.55, 1.0));
         col = mix(col, sc, sm * (1.0 - m));
@@ -143,7 +149,27 @@ vec3 shape_gen(vec2 uv, out float mask) {
     return col;
 }
 
+vec4 shape_inject_apply(vec4 c, vec2 uv) {
+    vec3 rgb = c.rgb;
+    float shapeMask = 0.0;
+    vec3 shape = shape_gen(uv, shapeMask);
+    rgb = mix(rgb, shape, shapeMask * uShapeInject);
+    return vec4(rgb, c.a);
+}
+
 vec4 inject_apply(vec4 c, vec2 uv) {
+    vec4 p = pattern_gen(uv, uPattern);
+    vec3 rgb = mix(c.rgb, p.rgb, uInject * p.a);
+    return vec4(rgb, c.a);
+}
+
+vec4 pattern_layer_apply(vec4 c, vec2 uv) {
+    vec4 p = pattern_gen(uv, uPattern);
+    vec3 rgb = mix(c.rgb, p.rgb, clamp(uPatternInject, 0.0, 1.0) * p.a);
+    return vec4(rgb, c.a);
+}
+
+vec4 full_inject_apply(vec4 c, vec2 uv) {
     vec4 p = pattern_gen(uv, uPattern);
     vec3 rgb = mix(c.rgb, p.rgb, uInject * p.a);
     float shapeMask = 0.0;

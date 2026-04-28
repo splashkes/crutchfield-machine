@@ -128,10 +128,19 @@ enum ActionId : int {
     // key. "None" in the middle (deadzone applied in Input::pollGamepad).
     ACT_ZOOM_AXIS, ACT_THETA_AXIS,
     ACT_TRANS_X_AXIS, ACT_TRANS_Y_AXIS,
+    ACT_TRANS_X_SET_AXIS, ACT_TRANS_Y_SET_AXIS,
+    ACT_BLURX_SET_AXIS, ACT_BLURY_SET_AXIS,
+    ACT_GAMMA_SET_AXIS, ACT_HUE_SET_AXIS, ACT_SAT_SET_AXIS,
+    ACT_CONTRAST_SET_AXIS, ACT_COUPLE_SET_AXIS,
+    ACT_NOISE_AXIS, ACT_PATTERN_AMOUNT_AXIS,
     ACT_HUE_AXIS,
     ACT_DECAY_AXIS,
     ACT_EXTERNAL_AXIS, // absolute 0..1 external/camera blend
+    ACT_FX_WET_AXIS,   // absolute 0..1 dry/wet effect mix
+    ACT_FX_WET_MODE_TOGGLE,
     ACT_SHAPE_COUNT_AXIS, // absolute 0..1 shape count, mapped to 1..16
+    ACT_SHAPE_SIZE_AXIS,  // absolute 0..1 shape size
+    ACT_SHAPE_ROT_AXIS,   // absolute 0..1 shape rotation
 
     // ── Music / MIDI integration ─────────────────────────────────────
     // Launches loopMIDI if installed. No-op if a MIDI port already exists.
@@ -155,6 +164,8 @@ enum ActionId : int {
     ACT_BPM_HUEJUMP_STEP_UP, ACT_BPM_HUEJUMP_STEP_DN,
     ACT_BPM_INVERT_TOGGLE,
     ACT_BPM_INVERT_DIV_UP, ACT_BPM_INVERT_DIV_DN,
+    ACT_DDJ_BANK_HOLD,
+    ACT_NOISEQ_WHITE, ACT_NOISEQ_PINK, ACT_NOISEQ_GRAIN, ACT_NOISEQ_SCANLINE,
 
     ACT__COUNT
 };
@@ -300,6 +311,7 @@ public:
         int   lastCcVal   = 0;
         bool  deck1Shift  = false;
         bool  deck2Shift  = false;
+        bool  masterShift = false;
         // Pending system real-time events — caller consumes by setting back
         // to false after handling.
         bool  startPending = false;

@@ -57,7 +57,7 @@ struct Cfg {
     int  precision = 32;            // 8, 16, or 32 (RGBA8 / RGBA16F / RGBA32F)
     int  blurQ = 1;                 // 0=5-tap  1=9-tap gauss  2=25-tap gauss
     int  caQ   = 1;                 // 0=3-sample  1=5-ramp  2=8-wavelen
-    int  noiseQ = 1;                // 0=white  1=pink
+    int  noiseQ = 1;                // 0=white  1=pink  2=grain  3=scanline
     int  fields = 2;                // 1..4 coupled fields
     int  iters = 1;                 // feedback iterations per displayed frame
     bool vsync = true;
@@ -104,7 +104,7 @@ static void print_cli_help() {
       "                       (8 = unorm — simulates 8-bit HDMI capture in the feedback loop)\n"
       "  --blur-q 0|1|2      blur kernel: 5-tap / 9-tap / 25-tap gaussian (default: 1)\n"
       "  --ca-q   0|1|2      chromatic aberration: 3 / 5 / 8 samples (default: 1)\n"
-      "  --noise-q 0|1       sensor noise: white / pink-1/f (default: 1)\n"
+      "  --noise-q 0..3      sensor noise: white / pink / grain / scanline\n"
       "  --fields 1|2|3|4    coupled feedback fields (default: 2)\n"
       "  --iters N           feedback iterations per displayed frame, 1-32 (default: 1)\n"
       "  --vsync on|off      vsync (default: on)\n"
@@ -139,7 +139,7 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--precision"))    { int p = atoi(next()); if (p==8||p==16||p==32) c.precision = p; }
         else if (eq("--blur-q"))       { int q = atoi(next()); if (q>=0&&q<=2) c.blurQ = q; }
         else if (eq("--ca-q"))         { int q = atoi(next()); if (q>=0&&q<=2) c.caQ = q; }
-        else if (eq("--noise-q"))      { int q = atoi(next()); if (q>=0&&q<=1) c.noiseQ = q; }
+        else if (eq("--noise-q"))      { int q = atoi(next()); if (q>=0&&q<=3) c.noiseQ = q; }
         else if (eq("--fields"))       { int f = atoi(next()); if (f>=1&&f<=4) c.fields = f; }
         else if (eq("--iters"))        { c.iters = atoi(next()); if (c.iters < 1) c.iters = 1;
                                           if (c.iters > 32) c.iters = 32; }
@@ -212,7 +212,7 @@ struct Params {
     float chroma = 0.002f;
     float blurX = 1.0f, blurY = 1.0f, blurAngle = 0.0f;
     // gamma
-    float gamma = 2.2f;
+    float gamma = 1.0f;
     // color
     float hueRate = 0.003f, satGain = 1.010f;
     // contrast
@@ -225,12 +225,20 @@ struct Params {
     float couple = 0.05f;
     // external
     float external = 0.20f;
+    // global effect dry/wet mix. 1.0 preserves the historical fully-wet path.
+    float fxWet = 1.0f;
+    // source/transform dry/wet mix before color/dynamics. 1.0 = full transform.
+    float sourceWet = 1.0f;
+    int   fxWetMode = 0; // 0=full effect path, 1=source/transform path
     // inject
     float inject = 0.0f;
     int   pattern = 0;
+    float patternInject = 0.0f;
     float shapeInject = 0.0f;
     int   shapeKind = 0;   // 0=triangle, 1=star, 2=circle, 3=square
     int   shapeCount = 1;  // 1..16 evenly spaced copies
+    float shapeSize = 1.0f;
+    float shapeAngle = 0.0f;
     // physics (Crutchfield camera-side knobs)
     int   invert      = 0;       // 0 = off, 1 = on (Crutchfield's "s")
     float sensorGamma = 1.0f;    // 1.0 = no-op; Crutchfield: 0.6..0.9
@@ -247,7 +255,7 @@ struct Params {
     //   vfxSlot ∈ [0..18]; 0 means "off".
     //   vfxParam is the CONTROL-dial-equivalent continuous parameter, 0..1.
     //   vfxBSource ∈ {0 = camera, 1 = self (current image reprocessed)}
-    //     for key/PinP families that need a second source.
+    //     for key families that need a second source.
     int   vfxSlot[2]    = { 0, 0 };
     float vfxParam[2]   = { 0.5f, 0.5f };
     int   vfxBSource[2] = { 0, 0 };
@@ -289,7 +297,7 @@ static const char* VFX_NAMES[] = {
     "Negative",   "Colorize",  "Monochrome", "Posterize",
     "ColorPass",  "Mirror-H",  "Mirror-V",   "Mirror-HV",
     "Multi-H",    "Multi-V",   "Multi-HV",
-    "W-LumiKey",  "B-LumiKey", "ChromaKey",  "PinP",
+    "W-LumiKey",  "B-LumiKey", "ChromaKey",  "Fractal",
     "VCR",        "Pixel",
 };
 static constexpr int VFX_COUNT = (int)(sizeof(VFX_NAMES) / sizeof(VFX_NAMES[0]));
@@ -299,7 +307,7 @@ static constexpr int VFX_ID_STROBE    = 1;
 static constexpr int VFX_ID_NEGATIVE  = 4;
 static constexpr int VFX_ID_POSTERIZE = 7;
 static constexpr int VFX_ID_MIRROR_HV = 11;
-static constexpr int VFX_ID_PINP      = 18;
+static constexpr int VFX_ID_FRACTAL   = 18;
 static constexpr int VFX_ID_VCR       = 19;
 static constexpr int VFX_ID_PIXEL     = 20;
 
@@ -312,7 +320,7 @@ static const VfxPadChoice VFX_PAD_BANK[] = {
     {VFX_ID_POSTERIZE, "Posterize"},
     {VFX_ID_NEGATIVE,  "Negative"},
     {VFX_ID_MIRROR_HV, "Mirror-HV"},
-    {VFX_ID_PINP,      "PinP"},
+    {VFX_ID_FRACTAL,   "Fractal"},
 };
 static constexpr int VFX_PAD_BANK_COUNT =
     (int)(sizeof(VFX_PAD_BANK) / sizeof(VFX_PAD_BANK[0]));
@@ -521,9 +529,43 @@ static void sync_ddj_layer_leds() {
         {0, L_WARP}, {1, L_OPTICS}, {2, L_COLOR}, {3, L_DECAY},
         {4, L_NOISE}, {5, L_COUPLE}, {6, L_EXTERNAL}, {7, L_INJECT},
     };
+    if (g_input.midi().masterShift) {
+        int bank[8] = {
+            S.noiseQ == 0 ? 0x7F : 0x00,
+            S.noiseQ == 1 ? 0x7F : 0x00,
+            S.noiseQ == 2 ? 0x7F : 0x00,
+            S.noiseQ == 3 ? 0x7F : 0x00,
+            (S.enable & L_NOISE) ? 0x7F : 0x00,
+            (S.enable & L_INJECT) ? 0x7F : 0x00,
+            0x00, 0x00,
+        };
+        for (int note = 0; note < 8; note++) {
+            g_input.sendMidiNote(/*deck 2 pad channel*/ 10, note, bank[note]);
+            g_input.sendMidiNote(/*documented shifted deck 2 pad channel*/ 11, note, 0x00);
+        }
+        return;
+    }
+    if (g_input.midi().deck2Shift) {
+        int shifted[8] = {
+            (S.enable & L_PHYSICS) ? 0x7F : 0x00,
+            (S.enable & L_THERMAL) ? 0x7F : 0x00,
+            S.blurQ > 0 ? 0x7F : 0x00,
+            S.caQ > 0 ? 0x7F : 0x00,
+            S.noiseQ > 0 ? 0x7F : 0x00,
+            S.activeFields > 1 ? 0x7F : 0x00,
+            S.p.bpmFlash ? 0x7F : 0x00,
+            S.p.bpmDecayDip ? 0x7F : 0x00,
+        };
+        for (int note = 0; note < 8; note++) {
+            g_input.sendMidiNote(/*deck 2 pad channel*/ 10, note, shifted[note]);
+            g_input.sendMidiNote(/*documented shifted deck 2 pad channel*/ 11, note, shifted[note]);
+        }
+        return;
+    }
     for (const auto& p : pads) {
         g_input.sendMidiNote(/*deck 2 pad channel*/ 10, p.note,
                              (S.enable & p.bit) ? 0x7F : 0x00);
+        g_input.sendMidiNote(/*documented shifted deck 2 pad channel*/ 11, p.note, 0x00);
     }
 }
 
@@ -535,6 +577,14 @@ static int vfx_pad_bank_index_for_effect(int effect) {
 }
 
 static void sync_ddj_filter_leds() {
+    if (g_input.midi().masterShift) {
+        for (int note = 0; note < 8; note++) {
+            int velocity = (note <= 4 && note == S.p.pattern) ? 0x7F : 0x00;
+            g_input.sendMidiNote(/*deck 1 pad channel*/ 8, note, velocity);
+            g_input.sendMidiNote(/*documented shifted deck 1 pad channel*/ 9, note, 0x00);
+        }
+        return;
+    }
     const bool reveal = g_input.midi().deck1Shift;
     const int selected = vfx_pad_bank_index_for_effect(S.p.vfxSlot[0]);
     for (int note = 0; note < VFX_PAD_BANK_COUNT; note++) {
@@ -563,7 +613,7 @@ static void print_help() {
       " F11      toggle fullscreen / windowed\n"
       " PgUp     cycle blur kernel (5-tap / 9-gauss / 25-gauss)\n"
       " F12      cycle chromatic aberration (3 / 5 / 8 samples)\n"
-      " Home     cycle noise (white / pink 1/f)\n"
+      " Home     cycle noise (white / pink / grain / scanline)\n"
       " End      cycle coupled fields (1 / 2 / 3 / 4)\n"
       " H        toggle help overlay (in-window)\n"
       " `        start/stop recording (feedback_<timestamp>.mp4)\n"
@@ -787,7 +837,7 @@ static bool preset_write(const std::string& path) {
 "[quality]\n"
 "# blur:  0=5-tap cross   1=9-tap gauss   2=25-tap gauss\n"
 "# ca:    0=3-sample      1=5-sample ramp 2=8-sample wavelen\n"
-"# noise: 0=white          1=pink 1/f\n"
+"# noise: 0=white          1=pink 1/f     2=grain       3=scanline\n"
 "# fields: 1..4 coupled feedback fields\n"
 "blur     = %d\n"
 "ca       = %d\n"
@@ -819,13 +869,20 @@ static bool preset_write(const std::string& path) {
 "noise    = %.6f\n"
 "couple   = %.6f\n"
 "external = %.6f\n"
+"fxWet    = %.6f\n"
+"sourceWet = %.6f\n"
+"fxWetMode = %d\n"
 "\n"
 "[trigger]\n"
 "# pattern: 0=H-bars 1=V-bars 2=dot 3=checker 4=gradient\n"
 "# shapeKind: 0=triangle 1=star 2=circle 3=square; shapeCount: 1..16\n"
+"# shapeSize: multiplier, shapeAngle: radians.\n"
 "pattern  = %d\n"
+"patternAmount = %.6f\n"
 "shapeKind  = %d\n"
 "shapeCount = %d\n"
+"shapeSize  = %.6f\n"
+"shapeAngle = %.6f\n"
 "\n"
 "[physics]\n"
 "# Crutchfield 1984 camera-side knobs (see shaders/layers/physics.glsl).\n"
@@ -850,7 +907,7 @@ static bool preset_write(const std::string& path) {
 "swirl  = %.6f\n"
 "\n"
 "[vfx]\n"
-"# V-4-inspired effect slots. slot1/slot2 are effect IDs (0=off, 1..18).\n"
+"# V-4-inspired effect slots. slot1/slot2 are effect IDs (0=off, 1..20).\n"
 "# See main.cpp::VFX_NAMES for the full list. param1/param2 are the\n"
 "# CONTROL-dial equivalents (0..1). bsource1/bsource2: 0=camera, 1=self.\n"
 "slot1    = %d\n"
@@ -882,8 +939,8 @@ static bool preset_write(const std::string& path) {
         p.zoom, p.theta, p.pivotX, p.pivotY, p.transX, p.transY,
         p.chroma, p.blurX, p.blurY, p.blurAngle,
         p.gamma, p.hueRate, p.satGain, p.contrast,
-        p.decay, p.noise, p.couple, p.external,
-        p.pattern, p.shapeKind, p.shapeCount,
+        p.decay, p.noise, p.couple, p.external, p.fxWet, p.sourceWet, p.fxWetMode,
+        p.pattern, p.patternInject, p.shapeKind, p.shapeCount, p.shapeSize, p.shapeAngle,
         p.invert, p.sensorGamma, p.satKnee, p.colorCross,
         p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl,
         p.vfxSlot[0], p.vfxParam[0], p.vfxBSource[0],
@@ -900,6 +957,30 @@ static bool preset_write(const std::string& path) {
     return true;
 }
 
+static void ensure_active_field_fbos() {
+    S.activeFields = std::max(1, std::min(4, S.activeFields));
+    for (int fi = 0; fi < S.activeFields; fi++) {
+        if (S.field[fi][0].fbo == 0) {
+            resize_fbo(S.field[fi][0], S.simW, S.simH);
+            resize_fbo(S.field[fi][1], S.simW, S.simH);
+            clear_fbo(S.field[fi][0]);
+            clear_fbo(S.field[fi][1]);
+        }
+    }
+}
+
+static void preset_reset_creative_defaults() {
+    S.enable = L_WARP | L_OPTICS | L_COLOR | L_CONTRAST
+             | L_DECAY | L_NOISE | L_INJECT;
+    S.p = Params();
+    S.blurQ = g_cfg.blurQ;
+    S.caQ = g_cfg.caQ;
+    S.noiseQ = g_cfg.noiseQ;
+    S.activeFields = g_cfg.fields;
+    S.armedLayer = 0;
+    S.armedQuality = 0;
+}
+
 // Load file at path, mutating S. Returns true on success.
 // Tolerates unknown sections/keys (so old presets keep working when we add new
 // keys; new presets just leave default values for keys they don't know about).
@@ -908,6 +989,7 @@ static bool preset_load(const std::string& path) {
     if (!f) return false;
     char line[1024];
     std::string section;
+    preset_reset_creative_defaults();
     auto& p = S.p;
 
     // Helper: convert layer name to bit
@@ -952,19 +1034,10 @@ static bool preset_load(const std::string& path) {
             int n = atoi(v.c_str());
             if      (k == "blur")   { if (n>=0 && n<=2) S.blurQ = n; }
             else if (k == "ca")     { if (n>=0 && n<=2) S.caQ   = n; }
-            else if (k == "noise")  { if (n>=0 && n<=1) S.noiseQ = n; }
+            else if (k == "noise")  { if (n>=0 && n<=3) S.noiseQ = n; }
             else if (k == "fields") {
                 if (n>=1 && n<=4) {
                     S.activeFields = n;
-                    // make sure FBOs exist for newly-active fields
-                    for (int fi = 0; fi < n; fi++) {
-                        if (S.field[fi][0].fbo == 0) {
-                            resize_fbo(S.field[fi][0], S.simW, S.simH);
-                            resize_fbo(S.field[fi][1], S.simW, S.simH);
-                            clear_fbo(S.field[fi][0]);
-                            clear_fbo(S.field[fi][1]);
-                        }
-                    }
                 }
             }
         } else if (section == "warp") {
@@ -993,11 +1066,17 @@ static bool preset_load(const std::string& path) {
             else if (k == "noise")    p.noise    = fv;
             else if (k == "couple")   p.couple   = fv;
             else if (k == "external") p.external = fv;
+            else if (k == "fxWet")    p.fxWet    = fmaxf(0.0f, fminf(1.0f, fv));
+            else if (k == "sourceWet") p.sourceWet = fmaxf(0.0f, fminf(1.0f, fv));
+            else if (k == "fxWetMode") p.fxWetMode = atoi(v.c_str()) ? 1 : 0;
         } else if (section == "trigger") {
             int n = atoi(v.c_str());
             if (k == "pattern" && n>=0 && n<=4) p.pattern = n;
+            else if (k == "patternAmount") p.patternInject = fmaxf(0.0f, fminf(1.0f, (float)atof(v.c_str())));
             else if (k == "shapeKind" && n>=0 && n<=3) p.shapeKind = n;
             else if (k == "shapeCount") p.shapeCount = fmaxf(1, fminf(16, n));
+            else if (k == "shapeSize") p.shapeSize = fmaxf(0.25f, fminf(2.5f, (float)atof(v.c_str())));
+            else if (k == "shapeAngle") p.shapeAngle = (float)atof(v.c_str());
         } else if (section == "physics") {
             if (k == "invert") p.invert = (atoi(v.c_str()) ? 1 : 0);
             else {
@@ -1038,6 +1117,9 @@ static bool preset_load(const std::string& path) {
         }
     }
     fclose(f);
+    ensure_active_field_fbos();
+    sync_ddj_layer_leds();
+    sync_ddj_filter_leds();
     return true;
 }
 
@@ -1510,7 +1592,7 @@ static std::string section_inject() {
 static std::string section_quality() {
     const char* blur[] = {"5-tap cross","9-gauss","25-gauss"};
     const char* ca[]   = {"3-sample","5-ramp","8-wavelen"};
-    const char* ns[]   = {"white","pink 1/f"};
+    const char* ns[]   = {"white","pink 1/f","grain","scanline"};
     auto cur = [&](int i) { return i == S.armedQuality ? "\x10" : " "; };
     char b[1024];
     snprintf(b, sizeof b,
@@ -1915,6 +1997,50 @@ namespace step {
     constexpr float thermSwirl = 0.02f;
 }
 
+static float clamp_decay(float v) {
+    v = fmaxf(0.9f, fminf(1.0f, v));
+    return (v >= 0.999f) ? 1.0f : v;
+}
+
+static float decay_from_axis(float x) {
+    x = fmaxf(0.0f, fminf(1.0f, x));
+    if (x >= 0.995f) return 1.0f;
+    if (x < 0.25f) return 0.90f + 0.05f * (x / 0.25f);
+    float t = (x - 0.25f) / 0.75f;
+    return clamp_decay(0.95f + 0.05f * powf(t, 1.7f));
+}
+
+static float blur_sharp_from_axis(float x) {
+    x = fmaxf(-1.0f, fminf(1.0f, x));
+    if (fabsf(x) < 0.025f) return 0.0f;
+    return x > 0.0f ? x * 8.0f : x * 4.0f;
+}
+
+static float center_deadband(float x) {
+    x = fmaxf(-1.0f, fminf(1.0f, x));
+    return fabsf(x) < 0.025f ? 0.0f : x;
+}
+
+static float gamma_from_axis(float x) {
+    x = center_deadband(x);
+    return x < 0.0f ? 1.0f + x * 0.30f : 1.0f + x * 0.80f;
+}
+
+static float sat_from_axis(float x) {
+    x = center_deadband(x);
+    return x < 0.0f ? 1.0f + x : 1.0f + x * 2.0f;
+}
+
+static float contrast_from_axis(float x) {
+    x = center_deadband(x);
+    return x < 0.0f ? 1.0f + x * 0.75f : 1.0f + x * 3.0f;
+}
+
+static float noise_from_axis(float x) {
+    x = fmaxf(0.0f, fminf(1.0f, x));
+    return x * x * 0.030f;
+}
+
 static void apply_action(ActionId id, float mag) {
     auto& p = S.p;
 
@@ -2096,7 +2222,7 @@ static void apply_action(ActionId id, float mag) {
 
         // ── dynamics ──────────────────────────────────────────────
         case ACT_DECAY_UP: { float d =  step::decay * mag;
-            p.decay = fminf(1.0f, p.decay + d);
+            p.decay = clamp_decay(p.decay + d);
             hud_post("dec","decay", d, p.decay, 1000.f,"milli", 1000.f,"milli"); break; }
         case ACT_DECAY_DN: { float d = -step::decay * mag;
             p.decay = fmaxf(0.9f, p.decay + d);
@@ -2180,15 +2306,15 @@ static void apply_action(ActionId id, float mag) {
 
         // ── patterns / inject ─────────────────────────────────────
         case ACT_PATTERN_HBARS:   p.pattern = 0; printf("[pattern] H-bars\n");
-            S.ov.logEvent("pattern: H-bars"); return;
+            S.ov.logEvent("pattern: H-bars"); sync_ddj_filter_leds(); return;
         case ACT_PATTERN_VBARS:   p.pattern = 1; printf("[pattern] V-bars\n");
-            S.ov.logEvent("pattern: V-bars"); return;
+            S.ov.logEvent("pattern: V-bars"); sync_ddj_filter_leds(); return;
         case ACT_PATTERN_DOT:     p.pattern = 2; printf("[pattern] dot\n");
-            S.ov.logEvent("pattern: dot"); return;
+            S.ov.logEvent("pattern: dot"); sync_ddj_filter_leds(); return;
         case ACT_PATTERN_CHECKER: p.pattern = 3; printf("[pattern] checker\n");
-            S.ov.logEvent("pattern: checker"); return;
+            S.ov.logEvent("pattern: checker"); sync_ddj_filter_leds(); return;
         case ACT_PATTERN_GRAD:    p.pattern = 4; printf("[pattern] gradient\n");
-            S.ov.logEvent("pattern: gradient"); return;
+            S.ov.logEvent("pattern: gradient"); sync_ddj_filter_leds(); return;
         case ACT_SHAPE_TRIANGLE_HOLD:
             hold_shape(0, "triangle", mag); return;
         case ACT_SHAPE_STAR_HOLD:
@@ -2283,21 +2409,33 @@ static void apply_action(ActionId id, float mag) {
             const char* n[] = {"5-tap cross","9-tap gauss","25-tap gauss"};
             printf("[blur-q] %s\n", n[S.blurQ]);
             char b[64]; snprintf(b, sizeof b, "blur: %s", n[S.blurQ]);
-            S.ov.logEvent(b); return;
+            S.ov.logEvent(b); sync_ddj_layer_leds(); return;
         }
         case ACT_CAQ_CYCLE: {
             S.caQ = (S.caQ + 1) % 3;
             const char* n[] = {"3-sample","5-ramp","8-wavelen"};
             printf("[ca-q] %s\n", n[S.caQ]);
             char b[64]; snprintf(b, sizeof b, "CA: %s", n[S.caQ]);
-            S.ov.logEvent(b); return;
+            S.ov.logEvent(b); sync_ddj_layer_leds(); return;
         }
         case ACT_NOISEQ_CYCLE: {
-            S.noiseQ = (S.noiseQ + 1) % 2;
-            const char* n[] = {"white","pink 1/f"};
+            S.noiseQ = (S.noiseQ + 1) % 4;
+            const char* n[] = {"white","pink 1/f","grain","scanline"};
             printf("[noise-q] %s\n", n[S.noiseQ]);
             char b[64]; snprintf(b, sizeof b, "noise: %s", n[S.noiseQ]);
-            S.ov.logEvent(b); return;
+            S.ov.logEvent(b); sync_ddj_layer_leds(); return;
+        }
+        case ACT_NOISEQ_WHITE:
+        case ACT_NOISEQ_PINK:
+        case ACT_NOISEQ_GRAIN:
+        case ACT_NOISEQ_SCANLINE: {
+            S.noiseQ = (id == ACT_NOISEQ_WHITE) ? 0 :
+                       (id == ACT_NOISEQ_PINK) ? 1 :
+                       (id == ACT_NOISEQ_GRAIN) ? 2 : 3;
+            const char* n[] = {"white","pink 1/f","grain","scanline"};
+            printf("[noise-q] %s\n", n[S.noiseQ]);
+            char b[64]; snprintf(b, sizeof b, "noise: %s", n[S.noiseQ]);
+            S.ov.logEvent(b); sync_ddj_layer_leds(); return;
         }
         case ACT_FIELDS_CYCLE: {
             S.activeFields = (S.activeFields % 4) + 1;
@@ -2311,7 +2449,7 @@ static void apply_action(ActionId id, float mag) {
             }
             printf("[fields] %d\n", S.activeFields);
             char b[64]; snprintf(b, sizeof b, "fields: %d", S.activeFields);
-            S.ov.logEvent(b); return;
+            S.ov.logEvent(b); sync_ddj_layer_leds(); return;
         }
         case ACT_PRINT_HELP_STDOUT: print_help(); return;
 
@@ -2320,15 +2458,86 @@ static void apply_action(ActionId id, float mag) {
         case ACT_THETA_AXIS:   p.theta  += step::theta * mag; return;
         case ACT_TRANS_X_AXIS: p.transX += step::trans * mag; return;
         case ACT_TRANS_Y_AXIS: p.transY += step::trans * mag; return;
+        case ACT_TRANS_X_SET_AXIS:
+            p.transX = fmaxf(-0.050f, fminf(0.050f, mag));
+            hud_post("trX","trans-X", 0.0f, p.transX, 100.f,"% /pass", 100.f,"% of frame");
+            return;
+        case ACT_TRANS_Y_SET_AXIS:
+            p.transY = fmaxf(-0.050f, fminf(0.050f, mag));
+            hud_post("trY","trans-Y", 0.0f, p.transY, 100.f,"% /pass", 100.f,"% of frame");
+            return;
+        case ACT_BLURX_SET_AXIS:
+            p.blurX = blur_sharp_from_axis(mag);
+            hud_post("blrX", p.blurX < 0.0f ? "sharp-X" : "blur-X", 0.0f,
+                     fabsf(p.blurX), 1.f,"px", 1.f,"px");
+            return;
+        case ACT_BLURY_SET_AXIS:
+            p.blurY = blur_sharp_from_axis(mag);
+            hud_post("blrY", p.blurY < 0.0f ? "sharp-Y" : "blur-Y", 0.0f,
+                     fabsf(p.blurY), 1.f,"px", 1.f,"px");
+            return;
+        case ACT_GAMMA_SET_AXIS:
+            p.gamma = gamma_from_axis(mag);
+            if (fabsf(center_deadband(mag)) > 0.0f) S.enable |= L_GAMMA;
+            else                                    S.enable &= ~L_GAMMA;
+            hud_post("gam","gamma", 0.0f, p.gamma, 1.f,"", 1.f,"");
+            sync_ddj_layer_leds();
+            return;
+        case ACT_HUE_SET_AXIS:
+            p.hueRate = center_deadband(mag) * 0.010f;
+            hud_post("hue","hue rate", 0.0f, p.hueRate, 1000.f,"milli/pass", 60.f,"rot/s");
+            return;
+        case ACT_SAT_SET_AXIS:
+            p.satGain = sat_from_axis(mag);
+            hud_post("sat","satur", 0.0f, p.satGain, 100.f,"%", 1.f,"x");
+            return;
+        case ACT_CONTRAST_SET_AXIS:
+            p.contrast = contrast_from_axis(mag);
+            hud_post("con","contrast", 0.0f, p.contrast, 100.f,"%", 1.f,"x");
+            return;
+        case ACT_COUPLE_SET_AXIS:
+            p.couple = center_deadband(mag);
+            hud_post("cpl", p.couple < 0.0f ? "anti-couple" : "couple", 0.0f,
+                     p.couple, 100.f,"%", 100.f,"%");
+            return;
+        case ACT_NOISE_AXIS:
+            p.noise = noise_from_axis(mag);
+            hud_post("noi","noise", 0.0f, p.noise, 1000.f,"milli", 1000.f,"milli");
+            return;
+        case ACT_PATTERN_AMOUNT_AXIS:
+            p.patternInject = powf(fmaxf(0.0f, fminf(1.0f, mag)), 1.5f);
+            hud_post("pat","pattern", 0.0f, p.patternInject, 100.f,"%", 100.f,"%");
+            return;
         case ACT_HUE_AXIS:     p.hueRate+= step::hue   * mag; return;
         case ACT_DECAY_AXIS:
-            p.decay = fmaxf(0.9f, fminf(1.0f, p.decay + step::decay * mag));
+            p.decay = decay_from_axis(mag);
+            hud_post("dec","decay", 0.0f, p.decay, 1000.f,"milli", 1000.f,"milli");
             return;
         case ACT_EXTERNAL_AXIS: {
             float old = p.external;
             p.external = fmaxf(0.0f, fminf(1.0f, mag));
             hud_post("ext","external", p.external - old, p.external,
                      100.f,"%", 100.f,"%");
+            return;
+        }
+        case ACT_FX_WET_AXIS: {
+            if (p.fxWetMode == 0) {
+                float old = p.fxWet;
+                p.fxWet = fmaxf(0.0f, fminf(1.0f, mag));
+                hud_post("fxwet","fx wet", p.fxWet - old, p.fxWet,
+                         100.f,"%", 100.f,"%");
+            } else {
+                float old = p.sourceWet;
+                p.sourceWet = fmaxf(0.0f, fminf(1.0f, mag));
+                hud_post("srcwet","source wet", p.sourceWet - old, p.sourceWet,
+                         100.f,"%", 100.f,"%");
+            }
+            return;
+        }
+        case ACT_FX_WET_MODE_TOGGLE: {
+            p.fxWetMode = p.fxWetMode ? 0 : 1;
+            S.ov.logEvent(p.fxWetMode ? "crossfader: source wet"
+                                      : "crossfader: fx wet");
             return;
         }
         case ACT_SHAPE_COUNT_AXIS: {
@@ -2339,6 +2548,22 @@ static void apply_action(ActionId id, float mag) {
                 hud_post("shcnt","shape count", (float)(p.shapeCount - old),
                          (float)p.shapeCount, 1.f,"", 1.f,"");
             }
+            return;
+        }
+        case ACT_SHAPE_SIZE_AXIS: {
+            float old = p.shapeSize;
+            float x = fmaxf(0.0f, fminf(1.0f, mag));
+            p.shapeSize = 0.35f + x * 1.65f;
+            hud_post("shsiz","shape size", p.shapeSize - old,
+                     p.shapeSize, 100.f,"%", 1.f,"x");
+            return;
+        }
+        case ACT_SHAPE_ROT_AXIS: {
+            float old = p.shapeAngle;
+            float x = fmaxf(0.0f, fminf(1.0f, mag));
+            p.shapeAngle = x * 6.2831853f;
+            hud_post("shrot","shape rot", p.shapeAngle - old,
+                     p.shapeAngle, 57.2958f,"deg", 57.2958f,"deg");
             return;
         }
 
@@ -2461,11 +2686,18 @@ static void apply_action(ActionId id, float mag) {
         case ACT_BPM_FLASH_TOGGLE:
             p.bpmFlash = !p.bpmFlash;
             S.ov.logEvent(p.bpmFlash ? "bpm fade-flash: ON"
-                                     : "bpm fade-flash: off"); return;
+                                     : "bpm fade-flash: off");
+            sync_ddj_layer_leds(); return;
         case ACT_BPM_DECAYDIP_TOGGLE:
             p.bpmDecayDip = !p.bpmDecayDip;
             S.ov.logEvent(p.bpmDecayDip ? "bpm decay-dip: ON"
-                                        : "bpm decay-dip: off"); return;
+                                        : "bpm decay-dip: off");
+            sync_ddj_layer_leds(); return;
+
+        case ACT_DDJ_BANK_HOLD:
+            sync_ddj_layer_leds();
+            sync_ddj_filter_leds();
+            return;
 
         case ACT_NONE: case ACT__COUNT: return;
     }
@@ -2541,11 +2773,16 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1f("uThermSwirl",  p.thermSwirl);
     U1f("uCouple", p.couple);
     U1f("uExternal", p.external);
+    U1f("uFxWet", p.fxWet);
+    U1f("uSourceWet", p.sourceWet);
     U1f("uInject", p.inject);
     U1i("uPattern", p.pattern);
+    U1f("uPatternInject", p.patternInject);
     U1f("uShapeInject", p.shapeInject);
     U1i("uShapeKind", p.shapeKind);
     U1i("uShapeCount", p.shapeCount);
+    U1f("uShapeSize", p.shapeSize);
+    U1f("uShapeAngle", p.shapeAngle);
 
     // V-4 effect slots. Arrays-of-ints can't be set with U1i; use the
     // array-at-index loc form.
@@ -3009,7 +3246,7 @@ int main(int argc, char** argv) {
 
     const char* blurNames[]  = { "5-tap cross", "9-tap gauss", "25-tap gauss" };
     const char* caNames[]    = { "3-sample", "5-sample ramp", "8-sample wavelen" };
-    const char* noiseNames[] = { "white", "pink 1/f" };
+    const char* noiseNames[] = { "white", "pink 1/f", "grain", "scanline" };
     printf("[sim] %dx%d  precision=%s  iters=%d\n",
            S.simW, S.simH, precision_label(g_cfg.precision), g_cfg.iters);
     printf("[quality] blur=%s  ca=%s  noise=%s  fields=%d\n",
@@ -3123,6 +3360,8 @@ int main(int argc, char** argv) {
 
     bool midiWasConnected = false;
     bool deck1ShiftWasHeld = false;
+    bool deck2ShiftWasHeld = false;
+    bool masterShiftWasHeld = false;
     double prevFrameStart = glfwGetTime();
     while (!glfwWindowShouldClose(win)) {
         const double frameStart = glfwGetTime();
@@ -3157,6 +3396,15 @@ int main(int argc, char** argv) {
         if (g_input.midi().deck1Shift != deck1ShiftWasHeld) {
             deck1ShiftWasHeld = g_input.midi().deck1Shift;
             sync_ddj_filter_leds();
+        }
+        if (g_input.midi().deck2Shift != deck2ShiftWasHeld) {
+            deck2ShiftWasHeld = g_input.midi().deck2Shift;
+            sync_ddj_layer_leds();
+        }
+        if (g_input.midi().masterShift != masterShiftWasHeld) {
+            masterShiftWasHeld = g_input.midi().masterShift;
+            sync_ddj_filter_leds();
+            sync_ddj_layer_leds();
         }
 
         // BPM clock — advances beat phase, fires beat events.
