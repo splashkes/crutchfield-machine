@@ -70,6 +70,7 @@ struct Cfg {
     float demoPresetSec = 0.0f;     // >0 = cycle to next preset every N seconds
     float demoInjectSec = 0.0f;     // >0 = fire an injection every N seconds
     bool midiLearn = false;          // print incoming MIDI messages
+    std::string midiPort;            // override the port hint (substring match against device names)
 };
 
 static std::string g_program_name = "feedback";
@@ -117,6 +118,9 @@ static void print_cli_help() {
       "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
       "  --high-color        windowed, max colour pipeline (float32 + blur-q 2 + ca-q 2 + fields 4)\n"
       "  --midi-learn        print incoming MIDI notes/CCs for controller mapping\n"
+      "  --midi-port NAME    override which MIDI input device to open (substring match)\n"
+      "                      e.g. --midi-port \"MPK\" picks any device whose name contains 'MPK'.\n"
+      "                      Empty string = match any (first non-virtual device wins).\n"
       "  -h, --help          show this help\n\n"
       "On Windows only: launch with NO arguments to get an interactive mode\n"
       "picker for double-click / non-CLI use.\n\n"
@@ -153,6 +157,7 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--demo-inject"))  { c.demoInjectSec = (float)atof(next()); if (c.demoInjectSec < 0) c.demoInjectSec = 0; }
         else if (eq("--demo"))         { c.demoPresetSec = 30.0f; c.demoInjectSec = 8.0f; }
         else if (eq("--midi-learn"))   { c.midiLearn = true; }
+        else if (eq("--midi-port"))    { c.midiPort = next(); }
         // Convenience bundle — windowed, full-float feedback, max blur/CA,
         // 4-field coupling. For exploring the colour pipeline without
         // committing to fullscreen.
@@ -3866,6 +3871,9 @@ int main(int argc, char** argv) {
     // on first run so users have something to edit.
     g_input.installDefaults();
     g_input.setMidiLearn(g_cfg.midiLearn);
+    // CLI override beats both installDefaults() and bindings.ini's [midi] port=.
+    // Pass the flag verbatim — empty string is meaningful (match any device).
+    if (!g_cfg.midiPort.empty()) g_input.setMidiPortHint(g_cfg.midiPort);
     g_input.setHandler(apply_action);
 
     // Help panel: ordered section list + provider. Each section's body is

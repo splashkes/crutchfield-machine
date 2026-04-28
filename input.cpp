@@ -1626,6 +1626,21 @@ void Input::pollMidi(float /*dt*/) {
             dispatch_note(ch, note, vel, on);
         } else if (type == 0xB0) {
             dispatch_cc(ch, b1 & 0x7F, b2 & 0x7F);
+        } else if (midiLearn_) {
+            // Channel-voice messages we don't dispatch but the user may
+            // want to discover: program change (0xC0), channel pressure
+            // (0xD0), pitch bend (0xE0), poly aftertouch (0xA0). Print so
+            // mapping work can route them via bindings.ini once we add
+            // matching SRC_* sources.
+            const char* kindName = "unknown";
+            switch (type) {
+                case 0xA0: kindName = "polyAftertouch"; break;
+                case 0xC0: kindName = "programChange";  break;
+                case 0xD0: kindName = "channelPressure";break;
+                case 0xE0: kindName = "pitchBend";      break;
+            }
+            std::printf("[midi-learn] ch=%d %s b1=%d b2=%d  (status=0x%02X)\n",
+                        ch, kindName, b1, b2, b0);
         }
     }
 
@@ -1793,8 +1808,35 @@ namespace {
         }
     }
 
+    bool g_enumerated = false;
+    void enumerate_devices_once() {
+        if (g_enumerated) return;
+        g_enumerated = true;
+        UINT nin = midiInGetNumDevs();
+        std::fprintf(stdout, "[midi] %u MIDI input device(s) available:\n", nin);
+        for (UINT i = 0; i < nin; i++) {
+            MIDIINCAPSA caps = {};
+            if (midiInGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) {
+                std::fprintf(stdout, "[midi]   in[%u]: <getDevCaps failed>\n", i);
+                continue;
+            }
+            std::fprintf(stdout, "[midi]   in[%u]: '%s'\n", i, caps.szPname);
+        }
+        UINT nout = midiOutGetNumDevs();
+        std::fprintf(stdout, "[midi] %u MIDI output device(s) available:\n", nout);
+        for (UINT i = 0; i < nout; i++) {
+            MIDIOUTCAPSA caps = {};
+            if (midiOutGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) {
+                std::fprintf(stdout, "[midi]   out[%u]: <getDevCaps failed>\n", i);
+                continue;
+            }
+            std::fprintf(stdout, "[midi]   out[%u]: '%s'\n", i, caps.szPname);
+        }
+    }
+
     void winmm_try_open(const std::string& hint) {
         if (g_mi.hIn) return;
+        enumerate_devices_once();
         UINT n = midiInGetNumDevs();
         if (n == 0) return;
         UINT pick = (UINT)-1;
@@ -1807,7 +1849,18 @@ namespace {
             if (!hint.empty() && !name_contains(nm, hint)) continue;
             pick = i; pickName = nm; break;
         }
-        if (pick == (UINT)-1) return;
+        if (pick == (UINT)-1) {
+            // Surface the mismatch — common on first run when the hint is
+            // wrong or the controller isn't plugged in.
+            static bool warned = false;
+            if (!warned && !hint.empty()) {
+                std::fprintf(stdout,
+                    "[midi] no winmm input matches hint '%s' — pass --midi-port NAME or edit [midi] port= in bindings.ini\n",
+                    hint.c_str());
+                warned = true;
+            }
+            return;
+        }
         HMIDIIN h = nullptr;
         if (midiInOpen(&h, pick, (DWORD_PTR)winmm_cb, 0, CALLBACK_FUNCTION) != MMSYSERR_NOERROR) return;
         if (midiInStart(h) != MMSYSERR_NOERROR) { midiInClose(h); return; }
