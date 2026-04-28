@@ -9,13 +9,12 @@
 //    0 off          5 Colorize    10 Mirror-V    15 W-LumiKey
 //    1 Strobe       6 Monochrome  11 Mirror-HV   16 B-LumiKey
 //    2 Still        7 Posterize   12 Multi-H     17 ChromaKey
-//    3 Shake        8 ColorPass   13 Multi-V     18 PinP
+//    3 Shake        8 ColorPass   13 Multi-V     18 Fractal
 //    4 Negative     9 Mirror-H    14 Multi-HV    19 VCR
 //                                               20 Pixel
 //
 // Effect implementations land across commits C5a (color-family),
-// C5b (geometric), C5c (temporal + key + PinP). This file currently
-// scaffolds the dispatch + no-op bodies.
+// C5b (geometric), C5c (temporal + key), plus live feedback-native additions.
 
 // Slot-scoped uniforms driven by the host.
 uniform int   uVfxEffect[2];
@@ -32,13 +31,85 @@ float vfx_lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 // Map a 0..1 parameter onto the full hue wheel, saturation = 1, value = 1.
 vec3 vfx_hue_tint(float p) { return hsv2rgb(vec3(fract(p), 1.0, 1.0)); }
 
-// Return the "B source" colour for key/PinP families.
+vec2 vfx_rot(vec2 q, float a) {
+    float c = cos(a), s = sin(a);
+    return mat2(c, -s, s, c) * q;
+}
+
+// Return the "B source" colour for key families.
 //   bsrc == 0  → camera
 //   bsrc == 1  → current feedback frame at the same uv (simple self-mix)
 // For C5c we may post-process self to imitate V-4's second-bus feel.
 vec4 vfx_b_source(vec2 uv, int bsrc) {
     if (bsrc == 0) return texture(uCam,  uv);
     /* bsrc == 1 */  return texture(uPrev, uv);
+}
+
+// Geometric VFX should alter where the feedback loop samples from, not replace
+// the finished colour at the end of the shader. Keeping these in UV-space lets
+// downstream layers (gamma/color/contrast/couple/noise/etc.) still act on them.
+vec2 vfx_warp_uv(vec2 uv, int slot) {
+    int   eff = uVfxEffect[slot];
+    float p   = uVfxParam[slot];
+
+    if (eff == 3) {                                // Shake
+        float A = p * 0.05;
+        float tA = uTime * 7.3;
+        float tB = uTime * 11.7;
+        vec2 j = vec2(hash21(vec2(floor(tA), 0.0), uTime) - 0.5,
+                      hash21(vec2(0.0, floor(tB)), uTime) - 0.5) * 2.0 * A;
+        return clamp(uv + j, 0.0, 1.0);
+    }
+    if (eff == 9) {                                // Mirror-H
+        float s = clamp(p, 0.02, 0.98);
+        if (uv.x > s) uv.x = 2.0 * s - uv.x;
+        return clamp(uv, 0.0, 1.0);
+    }
+    if (eff == 10) {                               // Mirror-V
+        float s = clamp(p, 0.02, 0.98);
+        if (uv.y > s) uv.y = 2.0 * s - uv.y;
+        return clamp(uv, 0.0, 1.0);
+    }
+    if (eff == 11) {                               // Mirror-HV
+        float s = clamp(p, 0.02, 0.98);
+        if (uv.x > s) uv.x = 2.0 * s - uv.x;
+        if (uv.y > s) uv.y = 2.0 * s - uv.y;
+        return clamp(uv, 0.0, 1.0);
+    }
+    if (eff == 12) {                               // Multi-H
+        float N = floor(mix(2.0, 8.0, p) + 0.5);
+        return vec2(fract(uv.x * N), uv.y);
+    }
+    if (eff == 13) {                               // Multi-V
+        float N = floor(mix(2.0, 8.0, p) + 0.5);
+        return vec2(uv.x, fract(uv.y * N));
+    }
+    if (eff == 14) {                               // Multi-HV
+        float N = floor(mix(2.0, 8.0, p) + 0.5);
+        return fract(uv * N);
+    }
+    if (eff == 18) {                               // Fractal
+        vec2 q = uv - 0.5;
+        float aspect = uRes.x / max(uRes.y, 1.0);
+        q.x *= aspect;
+        float zoom = mix(0.990, 0.955, p);
+        float twist = mix(0.004, 0.045, p);
+        q = vfx_rot(q * zoom, twist);
+        q.x /= aspect;
+        return clamp(q + 0.5, 0.0, 1.0);
+    }
+    if (eff == 19) {                               // VCR line displacement
+        float line = floor(uv.y * uRes.y);
+        float drift = hash21(vec2(line * 0.071, floor(uTime * 24.0)), uTime) - 0.5;
+        float wobble = sin(uv.y * 80.0 + uTime * 5.0) * 0.0015;
+        return clamp(uv + vec2((drift * 0.012 + wobble) * (0.35 + 0.65 * p), 0.0),
+                     0.0, 1.0);
+    }
+    if (eff == 20) {                               // Pixel
+        float block = floor(mix(4.0, 32.0, p) + 0.5);
+        return (floor(uv * uRes / block) + 0.5) * block / uRes;
+    }
+    return uv;
 }
 
 // Apply the effect assigned to `slot` (0 or 1). `col` is the incoming
@@ -48,8 +119,7 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
     float p     = uVfxParam[slot];
     int   bsrc  = uVfxBSource[slot];
 
-    // 19-way dispatch. B-source is sampled inside each branch that needs
-    // it so PinP can resample at the inset coordinate, not the outer one.
+    // Effect dispatch. B-source is sampled inside each branch that needs it.
     if      (eff == 0)  return col;                // off
     else if (eff == 1) {                           // Strobe — intensity modulation
         // Two timing sources:
@@ -73,15 +143,7 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
         return vec4(mix(col.rgb, held.rgb, p), col.a);
     }
     else if (eff == 3) {                           // Shake
-        // Position jitter. param = amplitude in the 0..5% of frame range.
-        // Two-frequency random drift via hash on uTime gives less regular
-        // motion than a pure sine would.
-        float A = p * 0.05;
-        float tA = uTime * 7.3;
-        float tB = uTime * 11.7;
-        vec2 j = vec2(hash21(vec2(floor(tA), 0.0), uTime) - 0.5,
-                      hash21(vec2(0.0, floor(tB)), uTime) - 0.5) * 2.0 * A;
-        return texture(uPrev, uv + j);
+        return col;
     }
     else if (eff == 4) {                           // Negative
         // param = mix between original and full RGB inversion.
@@ -124,41 +186,22 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
         return vec4(mix(mono, col.rgb, keep), col.a);
     }
     else if (eff == 9) {                           // Mirror-H (vertical seam)
-        // Reflect the half on the far side of the seam onto the near side.
-        // param slides the seam 0..1; 0.5 = classic centre mirror.
-        float s = clamp(p, 0.02, 0.98);
-        vec2 mu = uv;
-        if (uv.x > s) mu.x = 2.0 * s - uv.x;
-        return texture(uPrev, clamp(mu, 0.0, 1.0));
+        return col;
     }
     else if (eff == 10) {                          // Mirror-V (horizontal seam)
-        float s = clamp(p, 0.02, 0.98);
-        vec2 mu = uv;
-        if (uv.y > s) mu.y = 2.0 * s - uv.y;
-        return texture(uPrev, clamp(mu, 0.0, 1.0));
+        return col;
     }
     else if (eff == 11) {                          // Mirror-HV (both)
-        float s = clamp(p, 0.02, 0.98);
-        vec2 mu = uv;
-        if (uv.x > s) mu.x = 2.0 * s - uv.x;
-        if (uv.y > s) mu.y = 2.0 * s - uv.y;
-        return texture(uPrev, clamp(mu, 0.0, 1.0));
+        return col;
     }
     else if (eff == 12) {                          // Multi-H (horizontal tiling)
-        // Integer tile count 2..8 via continuous param.
-        float N = floor(mix(2.0, 8.0, p) + 0.5);
-        vec2 tu = vec2(fract(uv.x * N), uv.y);
-        return texture(uPrev, tu);
+        return col;
     }
     else if (eff == 13) {                          // Multi-V
-        float N = floor(mix(2.0, 8.0, p) + 0.5);
-        vec2 tu = vec2(uv.x, fract(uv.y * N));
-        return texture(uPrev, tu);
+        return col;
     }
     else if (eff == 14) {                          // Multi-HV
-        float N = floor(mix(2.0, 8.0, p) + 0.5);
-        vec2 tu = fract(uv * N);
-        return texture(uPrev, tu);
+        return col;
     }
     else if (eff == 15) {                          // W-LumiKey (bright = key)
         vec4 B = vfx_b_source(uv, bsrc);
@@ -184,32 +227,39 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
         mask *= smoothstep(0.30, 0.45, hsv.y);             // ignore grays
         return vec4(mix(col.rgb, B.rgb, mask), col.a);
     }
-    else if (eff == 18) {                          // PinP (inset from B-source)
-        // Fixed bottom-right inset with param = size. Could extend to
-        // positionable via two slot params later if we grow the slot schema.
-        float size = mix(0.15, 0.60, p);
-        float m    = 0.03;                         // 3% outer margin
-        vec2 lo = vec2(1.0 - size - m, 1.0 - size - m);
-        vec2 hi = vec2(1.0 - m, 1.0 - m);
-        if (uv.x > lo.x && uv.y > lo.y && uv.x < hi.x && uv.y < hi.y) {
-            vec2 ruv = (uv - lo) / size;
-            vec4 B = vfx_b_source(ruv, bsrc);
-            // Thin border: 1px-ish ramp at the inset edge.
-            vec2 edge = min(uv - lo, hi - uv);
-            float border = smoothstep(0.0, 0.004, min(edge.x, edge.y));
-            vec3 borderCol = vec3(1.0) - col.rgb;   // contrast-to-background
-            return vec4(mix(borderCol, B.rgb, border), col.a);
+    else if (eff == 18) {                          // Fractal
+        vec2 q = uv - 0.5;
+        float aspect = uRes.x / max(uRes.y, 1.0);
+        q.x *= aspect;
+
+        float angle = mix(0.09, 0.32, p);
+        float scale = mix(0.78, 0.58, p);
+        float gain = mix(0.18, 0.48, p);
+        vec3 acc = vec3(0.0);
+        float wsum = 0.0;
+        float w = 0.50;
+        for (int i = 0; i < 4; i++) {
+            q = vfx_rot(q * scale, angle);
+            vec2 tuv = q;
+            tuv.x /= aspect;
+            tuv += 0.5;
+            if (tuv.x >= 0.0 && tuv.x <= 1.0 && tuv.y >= 0.0 && tuv.y <= 1.0) {
+                vec3 s = texture(uPrev, tuv).rgb;
+                acc += s * w;
+                wsum += w;
+            }
+            w *= 0.58;
         }
-        return col;
+        vec3 echo = acc / max(wsum, 0.001);
+        vec3 rgb = max(col.rgb, echo * gain);
+        rgb = mix(col.rgb, rgb, 0.45 + 0.35 * p);
+        return vec4(clamp(rgb, 0.0, 1.0), col.a);
     }
     else if (eff == 19) {                          // VCR
         float line = floor(uv.y * uRes.y);
-        float drift = hash21(vec2(line * 0.071, floor(uTime * 24.0)), uTime) - 0.5;
-        float wobble = sin(uv.y * 80.0 + uTime * 5.0) * 0.0015;
-        vec2 vu = clamp(uv + vec2((drift * 0.012 + wobble) * (0.35 + 0.65 * p), 0.0), 0.0, 1.0);
-        vec3 rgb = texture(uPrev, vu).rgb;
-        rgb.r = texture(uPrev, clamp(vu + vec2(0.0025, 0.0), 0.0, 1.0)).r;
-        rgb.b = texture(uPrev, clamp(vu - vec2(0.0025, 0.0), 0.0, 1.0)).b;
+        vec3 rgb = col.rgb;
+        rgb.r = mix(rgb.r, col.g, 0.12 * p);
+        rgb.b = mix(rgb.b, col.g, 0.10 * p);
         float scan = 0.80 + 0.20 * sin(uv.y * uRes.y * 3.14159265);
         float tear = smoothstep(0.96, 1.0,
                                 hash21(vec2(floor(uv.y * 80.0), floor(uTime * 8.0)), uTime));
@@ -218,9 +268,7 @@ vec4 vfx_apply(vec4 col, vec2 uv, int slot) {
         return vec4(clamp(rgb, 0.0, 1.0), col.a);
     }
     else if (eff == 20) {                          // Pixel
-        float block = floor(mix(4.0, 32.0, p) + 0.5);
-        vec2 pixUv = (floor(uv * uRes / block) + 0.5) * block / uRes;
-        vec3 rgb = texture(uPrev, clamp(pixUv, 0.0, 1.0)).rgb;
+        vec3 rgb = col.rgb;
         float levels = floor(mix(10.0, 3.0, p) + 0.5);
         rgb = floor(rgb * levels + 0.5) / levels;
         return vec4(rgb, col.a);

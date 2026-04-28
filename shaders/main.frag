@@ -57,12 +57,18 @@ uniform float uThermSwirl;
 uniform float uCouple;
 // external (camera)
 uniform float uExternal;
+// dry/wet mix for the feedback effect path
+uniform float uFxWet;
+uniform float uSourceWet;
 // inject
 uniform float uInject;
 uniform int   uPattern;
+uniform float uPatternInject;
 uniform float uShapeInject;
 uniform int   uShapeKind;
 uniform int   uShapeCount;
+uniform float uShapeSize;
+uniform float uShapeAngle;
 // pixelate
 uniform int   uPixelateStyle;     // 0 = off; 1..9 = (shape × size)
 uniform int   uPixelateBleedIdx;  // 0 off; 1 soft; 2 CRT; 3 melt; 4 fried; 5 burned
@@ -109,6 +115,7 @@ const int L_THERMAL  = 1<<11;
 void main() {
     vec2 uv     = vUV;
     vec2 src_uv = uv;
+    vec4 dry    = texture(uPrev, uv);
 
     //  1. geometric warp (modifies the sample location)
     if ((uEnable & L_WARP) != 0) src_uv = warp_apply(uv);
@@ -119,6 +126,11 @@ void main() {
     //  heat, larger amplitude creates genuine turbulence.
     if ((uEnable & L_THERMAL) != 0) src_uv = thermal_warp(src_uv);
 
+    // Geometric VFX alter the feedback source before the rest of the stack,
+    // so tone/dynamics/noise/coupling can still process the result.
+    src_uv = vfx_warp_uv(src_uv, 0);
+    src_uv = vfx_warp_uv(src_uv, 1);
+
     //  2. sample uPrev. When pixelate is on it takes over the sample
     //     (quantizing to a screen-space grid whose cell-centres get
     //     warp+thermal re-applied so pixelated content propagates).
@@ -128,6 +140,15 @@ void main() {
     if (uPixelateStyle != 0)             col = pixelate_apply(uPrev, src_uv, uv);
     else if ((uEnable & L_OPTICS) != 0)  col = optics_sample(uPrev, src_uv);
     else                                  col = texture(uPrev, src_uv);
+
+    // Source/transform dry/wet: crossfade the raw previous image with the
+    // warped/thermal/optics sample before downstream tone/dynamics.
+    col = mix(dry, col, clamp(uSourceWet, 0.0, 1.0));
+
+    // Controller-held shapes and persistent patterns enter low in the stack
+    // so downstream signal stages process them as part of the feedback image.
+    if (uPatternInject > 0.0) col = pattern_layer_apply(col, uv);
+    if (uShapeInject > 0.0) col = shape_inject_apply(col, uv);
 
     //  2.4 invert: always-on (toggled by uInvert itself). Sits outside
     //  the physics layer gate because users turning on "V" in the UI
@@ -176,23 +197,26 @@ void main() {
     //  8. external: blend in camera
     if ((uEnable & L_EXTERNAL) != 0) col = external_apply(col, uv);
 
-    //  9. inject: triggered pattern or held-shape perturbation. Runs
-    //     BEFORE noise so injected patterns pick up sensor-floor texture
-    //     rather than reading as pristine-synthetic against noisy feedback.
-    if ((uEnable & L_INJECT) != 0 || uInject > 0.0 || uShapeInject > 0.0) {
-        col = inject_apply(col, uv);
-    }
-
     // 10. noise: thermal sensor floor — final additive stage before post.
     if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
 
-    // 11. V-4-style effect slots. Two back-to-back slots, each holding
-    //     any of 18 effects (or off). Placed last so effects operate on
-    //     the finished composition and the result is what feeds back.
+    // 11. V-4-style colour/key/temporal effects. Geometric VFX are applied
+    //     above as source-UV warps; their late-stage branch intentionally
+    //     returns col so they don't discard downstream layer work.
     col = vfx_apply(col, uv, 0);
     col = vfx_apply(col, uv, 1);
 
-    // 12. Output fade — bipolar to black / white. The V-4's Output Fade dial.
+    // 11.5 Effect dry/wet: crossfade the raw previous feedback image against
+    //      the processed cycle. Triggered inject and output fade stay after
+    //      this mixer so performance hits remain decisive.
+    col = mix(dry, col, clamp(uFxWet, 0.0, 1.0));
+
+    // 12. inject: triggered pattern perturbation
+    if ((uEnable & L_INJECT) != 0 || uInject > 0.0) {
+        col = inject_apply(col, uv);
+    }
+
+    // 13. Output fade — bipolar to black / white. The V-4's Output Fade dial.
     col = output_fade_apply(col);
 
     oCol = vec4(col.rgb, 1.0);

@@ -4,7 +4,8 @@
 // color.glsl), the two fields produce non-degenerate dynamics even from the
 // same initial condition.
 //
-//   uCouple : mix fraction (0.0 = no coupling; 0.5 = equal blend)
+//   uCouple : mix fraction (0.0 = no coupling; >0 blends the other field in;
+//             <0 anti-couples by moving away from the other field)
 //
 // The coupling sample uses the current UV, not the warped src_uv — this is
 // the standard CML (coupled map lattice) formulation: local read from the
@@ -12,5 +13,5 @@
 
 vec4 couple_apply(vec4 c, vec2 uv) {
     vec3 other = texture(uOther, uv).rgb;
-    return vec4(mix(c.rgb, other, uCouple), c.a);
+    return vec4(clamp(mix(c.rgb, other, uCouple), 0.0, 1.0), c.a);
 }
