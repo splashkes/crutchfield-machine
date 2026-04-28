@@ -10,7 +10,7 @@
 #include <string>
 
 // ── shaders for flat-coloured 2D text/rectangles ──────────────────────────
-static const char* VS = R"(#version 460 core
+static const char* VS = R"(#version 410 core
 layout(location=0) in vec2 aPos;
 layout(location=1) in vec4 aCol;
 uniform vec2 uRes;
@@ -23,7 +23,7 @@ void main() {
 }
 )";
 
-static const char* FS = R"(#version 460 core
+static const char* FS = R"(#version 410 core
 in  vec4 vCol;
 out vec4 oCol;
 uniform float uAlpha;

@@ -1,10 +1,18 @@
 # Build artifacts
 *.o
 feedback.exe
+feedback
+*.dSYM/
+feedback-macos-arm64/
+feedback-macos-arm64.zip
+macOS/feedback.app/
 
 # Recorded output (EXR sequences + encoded MP4s are large)
 recordings/
 screenshots/
+
+# Controller capture logs
+macOS/*.log
 
 # Distribution bundle from `make dist`
 feedback-windows-x64/

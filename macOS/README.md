@@ -1,32 +1,7 @@
 # macOS / Apple Silicon
 
-This subtree keeps the macOS build isolated from the Windows-first app at
-the repo root.
-
-## Shared-source rule
-
-The macOS build does **not** check in near-duplicate copies of the root
-Windows sources. Instead, `macOS/scripts/prepare_sources.py` transforms the
-shared root `main.cpp` and `camera.h` into `build/generated/` at build time,
-then compiles those generated files together with the macOS-specific camera
-backend.
-
-Shared at build time:
-
-- `../main.cpp`
-- `../camera.h`
-- `../input.cpp`
-- `../overlay.cpp`
-- `../recorder.cpp`
-- `../shaders/`
-- `../presets/`
-
-Mac-specific in this directory:
-
-- `camera_avfoundation.mm`
-- `Makefile`
-- `Info.plist`
-- `scripts/prepare_sources.py`
+This subtree keeps the experimental macOS build isolated from the
+Windows-first app at the repo root.
 
 ## Prereqs
 
@@ -41,7 +16,7 @@ cd macOS
 make
 ```
 
-This produces `macOS/feedback.app`.
+This produces `macOS/feedback.app`, a Finder-launchable app bundle.
 
 ## Package
 
@@ -66,12 +41,13 @@ The app bundle embeds:
 - `shaders/` and `presets/` in `Contents/Resources`
 - `libglfw.3.dylib` and `libGLEW.2.3.dylib` in `Contents/Frameworks`
 
-At runtime the app uses:
+At runtime the app copies the bundled starter presets into:
 
-`~/Library/Application Support/Crutchfield Machine`
+`~/Library/Application Support/Crutchfield Machine/presets`
 
-for `bindings.ini`, user presets, screenshots, and recordings, so Finder
-launches do not depend on the shell working directory.
+It also writes `bindings.ini`, screenshots, and recordings under the same
+Application Support folder, so Finder launches do not depend on the shell
+working directory.
 
 ## Camera
 
@@ -79,7 +55,17 @@ launches do not depend on the shell working directory.
 - If access was denied, re-enable it for `feedback` under
   System Settings -> Privacy & Security -> Camera.
 
-## Note
+## MIDI / DDJ-FLX2
 
-This still needs normal signing/notarization work if you want Gatekeeper to
-trust a downloaded release zip on other machines without manual override.
+The macOS build includes CoreMIDI input plus simple pad LED feedback. It
+defaults to the DDJ-FLX2 map documented in `MIDI_NOTES.md`, and writes
+editable MIDI bindings into `bindings.ini`.
+
+Use `--midi-learn` to print incoming notes and CCs while touching controls.
+
+## Notes
+
+- This is still an experimental Apple Silicon path.
+- A downloaded release zip will still need normal macOS signing/notarization
+  work if you want Gatekeeper to trust double-click launches on other
+  machines without manual override.

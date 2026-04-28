@@ -37,7 +37,8 @@ feedback-GBPS/
 ├── input.cpp/h          ~750 lines. Action registry, binding table, kbd/pad/MIDI dispatch.
 ├── recorder.cpp/h       ~400 lines. 3-stage capture pipeline.
 ├── overlay.cpp/h        ~500 lines. HUD + drill-down help panel + section legend.
-├── camera.cpp/h         ~300 lines. Windows Media Foundation webcam.
+├── camera.cpp/h         ~300 lines. Windows Media Foundation webcam API.
+├── camera_avfoundation.mm macOS AVFoundation webcam backend behind the same API.
 ├── music.cpp/h          ~550 lines. Embedded JS runtime + pattern scheduler +
 │                        preset manager + fb.* scalar bridge.
 ├── audio.cpp/h          ~500 lines. miniaudio backend, voice pool, sampler,
@@ -64,6 +65,7 @@ feedback-GBPS/
 ├── research/            Source papers, V-4 inventory, A/B-bus holdback doc.
 ├── gallery/             README screenshots.
 ├── linux/, macOS/       Platform ports — transform scripts + native camera backend. See ADR-0014.
+├── Makefile.macos       Native Apple Silicon build + dist zip. See ADR-0019.
 ├── Makefile             MSYS2/MinGW build + `make dist` target.
 ├── build_msvc.bat       MSVC/vcpkg alternate (less maintained).
 └── development/         You are here.
@@ -246,14 +248,29 @@ Curated presets (`01_*.ini` through `05_*.ini`) are hand-authored and
 committed. Auto-saves (`auto_*.ini`) are user-generated; git-ignored
 only if you delete them.
 
-### Camera input (Windows only)
+### Camera input
 
-**Files:** `camera.cpp`, `camera.h`.
+**Files:** `camera.h` with platform backends in `camera.cpp` (Windows)
+and `camera_avfoundation.mm` (macOS).
 
-Media Foundation capture of the first video device offering NV12, YUY2,
-or RGB24. Converts to RGB and uploads to `S.camTex` each frame via
-`S.cam.grab()` in the main loop. If no camera or no compatible format,
-the `external` layer becomes a no-op. Graceful degradation.
+The host-side API is intentionally tiny:
+
+- `Camera::open(w, h)`
+- `Camera::grab(rgb)`
+
+That lets the render loop stay platform-agnostic while the backend does
+whatever capture work it needs.
+
+**Windows path:** Media Foundation capture of the first video device
+offering NV12, YUY2, or RGB24. Converts to RGB and uploads to `S.camTex`
+each frame via `S.cam.grab()`.
+
+**macOS path:** AVFoundation `AVCaptureSession` with BGRA frame delivery
+on a capture queue. The delegate converts BGRA -> RGB into the existing
+CPU buffer layout expected by the render loop.
+
+If no camera is present, no supported format is available, or permission
+is denied, the `external` layer becomes a no-op. Graceful degradation.
 
 ### Music → visual trigger bridge
 
@@ -401,8 +418,9 @@ then lower `--iters`, then lower sim resolution.
 | Rebind an existing action | Edit `bindings.ini` next to the exe — no recompile. |
 | Add a new V-4 effect | New `if (eff == N)` branch in `shaders/layers/vfx_slot.glsl`; extend `VFX_NAMES[]` in main.cpp; bump `VFX_COUNT`. |
 | Change recording format | `exr_write.h` + `recorder.cpp` encoder loop. |
-| Add another CPU capture card | `camera.cpp` (Media Foundation). |
-| Port to Linux/macOS | `linux/` and `macOS/` subdirs (separate main.cpp currently). |
+| Add another CPU capture card | `camera.cpp` / `camera_avfoundation.mm`, depending on platform. |
+| Extend the native macOS path | `Makefile.macos`, `camera_avfoundation.mm`, `development/apple_silicon.md`. |
+| Port to Linux | `linux/` plus whatever root-port decisions supersede it later. |
 | Add a music preset | Drop a `.strudel` file into `music/`. Edit any number at runtime and save — hot-reloads within ~250 ms. |
 | Add a Pattern combinator | Add a method on `Pattern.prototype` in `js/engine.js`. For a no-op safety net instead of real logic, add the name to `_UNIMPL_METHODS`. |
 | Add a new audio effect | Extend `audio.cpp` with DSP + optional `Voice` fields, add `TriggerOpts`/`NoteOpts` field, marshal from `Event` in `music.cpp`'s scheduler. |
@@ -485,8 +503,10 @@ Break these and things go subtly wrong:
   indication when the reload failed. See TODO.md.
 - **Layer dispatch order in main.frag** is hand-maintained. No
   automation catches "you added a layer but forgot to dispatch it."
-- **Windows-only camera path.** `camera.cpp` uses Media Foundation; the
-  Linux stub uses V4L2 with a separate file; macOS has nothing yet.
+- **Platform split in camera backends.** The host API is unified, but the
+  capture implementations now diverge between Media Foundation and
+  AVFoundation. Feature additions to the camera path need parity work in
+  both files.
 - **Preset schema drift.** New params must be added to both read and
   write sides of the preset code; forgetting the write side silently
   drops data.

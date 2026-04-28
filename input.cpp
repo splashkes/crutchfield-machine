@@ -9,6 +9,7 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <deque>
 #include <mutex>
 
@@ -19,6 +20,20 @@
 #endif
 
 Input g_input;
+
+struct FeedbackMidiMsg {
+    uint8_t b[3];
+    uint8_t len;
+};
+
+#ifdef __APPLE__
+extern "C" {
+int  feedback_midi_open(const char* port_hint);
+int  feedback_midi_poll(FeedbackMidiMsg* out, int max_count);
+void feedback_midi_status(char* name, int name_cap, int* connected);
+int  feedback_midi_send_note(int channel, int note, int velocity);
+}
+#endif
 
 // ─────────────────────────────────────────────────────────────────────────
 // Action catalogue — the table that names every ActionId. Order is free
@@ -115,6 +130,10 @@ static const ActionInfo ACTIONS[] = {
     { ACT_PATTERN_POLKA,   "pattern.polka",   AK_DISCRETE, "Inject", "pattern: polka dots" },
     { ACT_PATTERN_STARBURST,"pattern.starburst",AK_DISCRETE,"Inject", "pattern: starburst" },
     { ACT_PATTERN_ANIM_BOUNCER,"pattern.bouncer",AK_DISCRETE,"Inject", "pattern: bouncer (10s animated box)" },
+    { ACT_SHAPE_TRIANGLE_HOLD, "shape.triangle.hold", AK_TRIGGER, "Inject", "shape: triangle hold" },
+    { ACT_SHAPE_STAR_HOLD,     "shape.star.hold",     AK_TRIGGER, "Inject", "shape: star hold" },
+    { ACT_SHAPE_CIRCLE_HOLD,   "shape.circle.hold",   AK_TRIGGER, "Inject", "shape: circle hold" },
+    { ACT_SHAPE_SQUARE_HOLD,   "shape.square.hold",   AK_TRIGGER, "Inject", "shape: square hold" },
     { ACT_INJECT_HOLD,     "inject.hold",     AK_TRIGGER,  "Inject", "inject (hold)" },
 
     // app
@@ -154,6 +173,14 @@ static const ActionInfo ACTIONS[] = {
     { ACT_VFX1_PARAM_UP,  "vfx1.param+",    AK_STEP,     "VFX-1", "slot 1: param +" },
     { ACT_VFX1_PARAM_DN,  "vfx1.param-",    AK_STEP,     "VFX-1", "slot 1: param -" },
     { ACT_VFX1_BSRC_CYCLE,"vfx1.bsrc",      AK_DISCRETE, "VFX-1", "slot 1: cycle B-source" },
+    { ACT_VFX1_PAD_0,     "vfx1.pad0",      AK_DISCRETE, "VFX-1", "slot 1: pad bank 1" },
+    { ACT_VFX1_PAD_1,     "vfx1.pad1",      AK_DISCRETE, "VFX-1", "slot 1: pad bank 2" },
+    { ACT_VFX1_PAD_2,     "vfx1.pad2",      AK_DISCRETE, "VFX-1", "slot 1: pad bank 3" },
+    { ACT_VFX1_PAD_3,     "vfx1.pad3",      AK_DISCRETE, "VFX-1", "slot 1: pad bank 4" },
+    { ACT_VFX1_PAD_4,     "vfx1.pad4",      AK_DISCRETE, "VFX-1", "slot 1: pad bank 5" },
+    { ACT_VFX1_PAD_5,     "vfx1.pad5",      AK_DISCRETE, "VFX-1", "slot 1: pad bank 6" },
+    { ACT_VFX1_PAD_6,     "vfx1.pad6",      AK_DISCRETE, "VFX-1", "slot 1: pad bank 7" },
+    { ACT_VFX1_PAD_7,     "vfx1.pad7",      AK_DISCRETE, "VFX-1", "slot 1: pad bank 8" },
     { ACT_VFX2_CYCLE_FWD, "vfx2.next",      AK_DISCRETE, "VFX-2", "slot 2: next effect" },
     { ACT_VFX2_CYCLE_BACK,"vfx2.prev",      AK_DISCRETE, "VFX-2", "slot 2: prev effect" },
     { ACT_VFX2_OFF,       "vfx2.off",       AK_DISCRETE, "VFX-2", "slot 2: off" },
@@ -175,6 +202,8 @@ static const ActionInfo ACTIONS[] = {
     { ACT_TRANS_Y_AXIS, "warp.transY.axis", AK_RATE, "Warp",     "translate Y (axis)" },
     { ACT_HUE_AXIS,     "color.hue.axis",   AK_RATE, "Color",    "hue rate (axis)" },
     { ACT_DECAY_AXIS,   "dyn.decay.axis",   AK_RATE, "Dynamics", "decay (axis)" },
+    { ACT_EXTERNAL_AXIS,"dyn.external.axis",AK_RATE, "Dynamics", "external (axis)" },
+    { ACT_SHAPE_COUNT_AXIS,"shape.count.axis",AK_RATE, "Inject", "shape count (axis)" },
 
     // BPM
     { ACT_BPM_TAP,               "bpm.tap",           AK_DISCRETE, "BPM", "tap tempo" },
@@ -229,6 +258,91 @@ static void K(Input& in, ActionId a, int key, int mods = 0, float scale = 1.0f) 
     b.scale   = scale;
     in.bind(b);
 }
+
+static void MIDI(Input& in, ActionId a, BindSource src, int code, int ch = 0,
+                 float scale = 1.0f, bool invert = false, bool relative = false,
+                 bool delta = false, bool absolute = false, bool bipolar = false,
+                 bool shifted = false) {
+    Binding b;
+    b.action   = a;
+    b.source   = src;
+    b.code     = code;
+    b.modmask  = ch;
+    b.scale    = scale;
+    b.invert   = invert;
+    b.relative = relative;
+    b.delta    = delta;
+    b.absolute = absolute;
+    b.bipolar  = bipolar;
+    b.shifted  = shifted;
+    in.bind(b);
+}
+
+#ifdef __APPLE__
+static bool has_key_binding(const Input& in, ActionId action, int key, int mods,
+                            BindContext ctx = CTX_ANY) {
+    for (const Binding& b : in.bindings()) {
+        if (b.action != action) continue;
+        if (b.source != SRC_KEY) continue;
+        if (b.context != ctx) continue;
+        if (b.code != key) continue;
+        if (b.modmask != mods) continue;
+        return true;
+    }
+    return false;
+}
+
+static bool has_super_binding(const Input& in, ActionId action,
+                              BindContext ctx = CTX_ANY) {
+    for (const Binding& b : in.bindings()) {
+        if (b.action != action) continue;
+        if (b.source != SRC_KEY) continue;
+        if (b.context != ctx) continue;
+        if (b.modmask & GLFW_MOD_SUPER) return true;
+    }
+    return false;
+}
+
+static int add_mac_alias(Input& in, ActionId action, int key, int mods,
+                         bool onlyIfMissing) {
+    if (has_key_binding(in, action, key, mods)) return 0;
+    if (onlyIfMissing && has_super_binding(in, action)) return 0;
+    K(in, action, key, mods);
+    return 1;
+}
+
+static int install_mac_keyboard_aliases(Input& in, bool onlyIfMissing) {
+    int added = 0;
+
+    // These are additive aliases for keys that are awkward or absent on
+    // Apple keyboards. They do not replace the existing cross-platform map.
+    added += add_mac_alias(in, ACT_FULLSCREEN,    GLFW_KEY_ENTER,     GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_SCREENSHOT,    GLFW_KEY_BACKSLASH, GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_PRESET_SAVE,   GLFW_KEY_S,         GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_PRESET_NEXT,   GLFW_KEY_N,         GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_PRESET_PREV,   GLFW_KEY_P,         GLFW_MOD_SUPER, onlyIfMissing);
+
+    added += add_mac_alias(in, ACT_LAYER_PHYSICS, GLFW_KEY_P,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_LAYER_THERMAL, GLFW_KEY_T,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_BLURQ_CYCLE,   GLFW_KEY_B,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_CAQ_CYCLE,     GLFW_KEY_C,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_NOISEQ_CYCLE,  GLFW_KEY_N,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_FIELDS_CYCLE,  GLFW_KEY_F,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+
+    added += add_mac_alias(in, ACT_THERMAMP_DN,   GLFW_KEY_1,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMAMP_UP,   GLFW_KEY_2,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSCALE_DN, GLFW_KEY_3,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSCALE_UP, GLFW_KEY_4,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSPEED_DN, GLFW_KEY_5,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSPEED_UP, GLFW_KEY_6,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMRISE_DN,  GLFW_KEY_7,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMRISE_UP,  GLFW_KEY_8,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSWIRL_DN, GLFW_KEY_9,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+    added += add_mac_alias(in, ACT_THERMSWIRL_UP, GLFW_KEY_0,         GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
+
+    return added;
+}
+#endif
 
 void Input::installDefaults() {
     clear();
@@ -344,6 +458,10 @@ void Input::installDefaults() {
     K(in, ACT_PIXELATE_BURN_RESEED, GLFW_KEY_DELETE, GLFW_MOD_ALT);
     K(in, ACT_PRINT_HELP_STDOUT, GLFW_KEY_SLASH);  // '?' / shifted slash
 
+#ifdef __APPLE__
+    install_mac_keyboard_aliases(in, /*onlyIfMissing=*/false);
+#endif
+
     // Help navigation (also consumes the main-panel arrow keys when the
     // help panel is open — we dispatch both from the same bindings and let
     // the handler decide which to act on based on help visibility).
@@ -404,6 +522,113 @@ void Input::installDefaults() {
     K(in, ACT_MUSIC_NEXT,       GLFW_KEY_N, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_MUSIC_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_MUSIC_PLAYPAUSE,  GLFW_KEY_SPACE, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+
+#ifdef __APPLE__
+    // DDJ-FLX2 performance defaults. These are inert unless a matching
+    // CoreMIDI source is connected, and stay confined to Apple builds for
+    // now while the macOS controller path is being proven out.
+    midiPortHint_ = "DDJ-FLX2";
+
+    // Jog wheels: Pioneer relative CC centered on 0x40.
+    MIDI(in, ACT_THETA_AXIS,   SRC_MIDI_CC, 34, 1, 1.6f, false, true); // deck 1 platter
+    MIDI(in, ACT_ZOOM_AXIS,    SRC_MIDI_CC, 34, 2, 1.8f, true,  true); // deck 2 platter
+    MIDI(in, ACT_TRANS_X_AXIS, SRC_MIDI_CC, 33, 1, 1.4f, false, true); // left wheel side
+    MIDI(in, ACT_TRANS_Y_AXIS, SRC_MIDI_CC, 33, 2, 1.4f, true,  true); // right wheel side
+
+    // 14-bit mixer/fader controls. `delta` makes absolute hardware knobs
+    // behave like parameter nudges, while the crossfader is absolute.
+    MIDI(in, ACT_THETA_AXIS,   SRC_MIDI_CC14,  0, 1, 900.0f, false, false, true); // deck 1 tempo
+    MIDI(in, ACT_SAT_UP,      SRC_MIDI_CC14,  7, 1, 260.0f, false, false, true);
+    MIDI(in, ACT_HUE_UP,      SRC_MIDI_CC14, 11, 1, 420.0f, false, false, true);
+    MIDI(in, ACT_GAMMA_UP,    SRC_MIDI_CC14, 15, 1, 130.0f, false, false, true);
+    MIDI(in, ACT_OUTFADE_AXIS,SRC_MIDI_CC14,  7, 2,   1.0f, false, false, false,
+         true, true); // deck 2 EQ HI: centered black/white output fade
+    MIDI(in, ACT_BLURX_UP,    SRC_MIDI_CC14, 11, 2, 180.0f, false, false, true);
+    MIDI(in, ACT_DECAY_UP,    SRC_MIDI_CC14, 15, 2, 130.0f, false, false, true);
+    MIDI(in, ACT_ZOOM_AXIS,    SRC_MIDI_CC14,  0, 2, 700.0f, false, false, true); // deck 2 tempo
+    MIDI(in, ACT_CONTRAST_UP,  SRC_MIDI_CC14,  8, 7, 180.0f, false, false, true); // master level
+    MIDI(in, ACT_BLURY_UP,     SRC_MIDI_CC14, 13, 7, 180.0f, false, false, true); // phones level
+    MIDI(in, ACT_SHAPE_COUNT_AXIS,SRC_MIDI_CC14, 23, 7,  1.0f, false, false, false,
+         true, false); // CFX CH1: persistent shape count 1..16
+    MIDI(in, ACT_COUPLE_UP,   SRC_MIDI_CC14, 24, 7, 140.0f, false, false, true);
+    MIDI(in, ACT_EXTERNAL_UP, SRC_MIDI_CC14, 19, 1, 150.0f, false, false, true);
+    MIDI(in, ACT_THERMAMP_UP, SRC_MIDI_CC14, 19, 2, 150.0f, false, false, true);
+    MIDI(in, ACT_EXTERNAL_AXIS,SRC_MIDI_CC14, 31, 7,  1.0f, false, false, false,
+         true, false); // crossfader: direct external blend 0..1
+
+    // Transport / utility buttons.
+    MIDI(in, ACT_PAUSE,           SRC_MIDI_NOTE, 11, 1);
+    MIDI(in, ACT_PAUSE,           SRC_MIDI_NOTE, 11, 2);
+    MIDI(in, ACT_INJECT_HOLD,     SRC_MIDI_NOTE, 12, 1);
+    MIDI(in, ACT_CLEAR,           SRC_MIDI_NOTE, 12, 2);
+    MIDI(in, ACT_LAYER_EXTERNAL,  SRC_MIDI_NOTE, 84, 1);  // CH cue deck 1
+    MIDI(in, ACT_LAYER_THERMAL,   SRC_MIDI_NOTE, 84, 2);  // CH cue deck 2
+    MIDI(in, ACT_BPM_TAP,         SRC_MIDI_NOTE, 88, 1);
+    MIDI(in, ACT_BPM_TAP,         SRC_MIDI_NOTE, 88, 2);
+    MIDI(in, ACT_BPM_SYNC_TOGGLE, SRC_MIDI_NOTE,  1, 7);  // SMART FADER
+    MIDI(in, ACT_HELP,            SRC_MIDI_NOTE, 99, 7);  // master cue
+
+    // Pads, normal mode: deck 1 still selects inject patterns, and pads 1-4
+    // additionally hold persistent shape injections. Deck 2 toggles layers.
+    MIDI(in, ACT_SHAPE_TRIANGLE_HOLD, SRC_MIDI_NOTE, 0,  8);
+    MIDI(in, ACT_SHAPE_STAR_HOLD,     SRC_MIDI_NOTE, 1,  8);
+    MIDI(in, ACT_SHAPE_CIRCLE_HOLD,   SRC_MIDI_NOTE, 2,  8);
+    MIDI(in, ACT_SHAPE_SQUARE_HOLD,   SRC_MIDI_NOTE, 3,  8);
+    MIDI(in, ACT_PATTERN_HBARS,     SRC_MIDI_NOTE, 0,  8);
+    MIDI(in, ACT_PATTERN_VBARS,     SRC_MIDI_NOTE, 1,  8);
+    MIDI(in, ACT_PATTERN_DOT,       SRC_MIDI_NOTE, 2,  8);
+    MIDI(in, ACT_PATTERN_CHECKER,   SRC_MIDI_NOTE, 3,  8);
+    MIDI(in, ACT_PATTERN_GRAD,      SRC_MIDI_NOTE, 4,  8);
+    MIDI(in, ACT_VFX1_CYCLE_BACK,   SRC_MIDI_NOTE, 5,  8);
+    MIDI(in, ACT_VFX1_CYCLE_FWD,    SRC_MIDI_NOTE, 6,  8);
+    MIDI(in, ACT_VFX1_OFF,          SRC_MIDI_NOTE, 7,  8);
+    MIDI(in, ACT_LAYER_WARP,       SRC_MIDI_NOTE, 0, 10);
+    MIDI(in, ACT_LAYER_OPTICS,     SRC_MIDI_NOTE, 1, 10);
+    MIDI(in, ACT_LAYER_COLOR,      SRC_MIDI_NOTE, 2, 10);
+    MIDI(in, ACT_LAYER_DECAY,      SRC_MIDI_NOTE, 3, 10);
+    MIDI(in, ACT_LAYER_NOISE,      SRC_MIDI_NOTE, 4, 10);
+    MIDI(in, ACT_LAYER_COUPLE,     SRC_MIDI_NOTE, 5, 10);
+    MIDI(in, ACT_LAYER_EXTERNAL,   SRC_MIDI_NOTE, 6, 10);
+    MIDI(in, ACT_LAYER_INJECT,     SRC_MIDI_NOTE, 7, 10);
+
+    // Shifted pads: left deck reveals the VFX quick-select bank, right deck
+    // keeps fast layer/quality access. The official FLX2 table
+    // advertises channels 9/11 for shifted pads, but observed hardware also
+    // sends Shift as note 63 while pads stay on channels 8/10. Support both.
+    MIDI(in, ACT_VFX1_PAD_0,       SRC_MIDI_NOTE, 0,  9);
+    MIDI(in, ACT_VFX1_PAD_1,       SRC_MIDI_NOTE, 1,  9);
+    MIDI(in, ACT_VFX1_PAD_2,       SRC_MIDI_NOTE, 2,  9);
+    MIDI(in, ACT_VFX1_PAD_3,       SRC_MIDI_NOTE, 3,  9);
+    MIDI(in, ACT_VFX1_PAD_4,       SRC_MIDI_NOTE, 4,  9);
+    MIDI(in, ACT_VFX1_PAD_5,       SRC_MIDI_NOTE, 5,  9);
+    MIDI(in, ACT_VFX1_PAD_6,       SRC_MIDI_NOTE, 6,  9);
+    MIDI(in, ACT_VFX1_PAD_7,       SRC_MIDI_NOTE, 7,  9);
+    MIDI(in, ACT_LAYER_PHYSICS,    SRC_MIDI_NOTE, 0, 11);
+    MIDI(in, ACT_LAYER_THERMAL,    SRC_MIDI_NOTE, 1, 11);
+    MIDI(in, ACT_BLURQ_CYCLE,      SRC_MIDI_NOTE, 2, 11);
+    MIDI(in, ACT_CAQ_CYCLE,        SRC_MIDI_NOTE, 3, 11);
+    MIDI(in, ACT_NOISEQ_CYCLE,     SRC_MIDI_NOTE, 4, 11);
+    MIDI(in, ACT_FIELDS_CYCLE,     SRC_MIDI_NOTE, 5, 11);
+    MIDI(in, ACT_BPM_FLASH_TOGGLE, SRC_MIDI_NOTE, 6, 11);
+    MIDI(in, ACT_BPM_DECAYDIP_TOGGLE, SRC_MIDI_NOTE, 7, 11);
+
+    MIDI(in, ACT_VFX1_PAD_0,       SRC_MIDI_NOTE, 0,  8, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_VFX1_PAD_1,       SRC_MIDI_NOTE, 1,  8, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_VFX1_PAD_2,       SRC_MIDI_NOTE, 2,  8, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_VFX1_PAD_3,       SRC_MIDI_NOTE, 3,  8, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_VFX1_PAD_4,       SRC_MIDI_NOTE, 4,  8, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_VFX1_PAD_5,       SRC_MIDI_NOTE, 5,  8, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_VFX1_PAD_6,       SRC_MIDI_NOTE, 6,  8, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_VFX1_PAD_7,       SRC_MIDI_NOTE, 7,  8, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_LAYER_PHYSICS,    SRC_MIDI_NOTE, 0, 10, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_LAYER_THERMAL,    SRC_MIDI_NOTE, 1, 10, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_BLURQ_CYCLE,      SRC_MIDI_NOTE, 2, 10, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_CAQ_CYCLE,        SRC_MIDI_NOTE, 3, 10, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_NOISEQ_CYCLE,     SRC_MIDI_NOTE, 4, 10, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_FIELDS_CYCLE,     SRC_MIDI_NOTE, 5, 10, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_BPM_FLASH_TOGGLE, SRC_MIDI_NOTE, 6, 10, 1, false, false, false, false, false, true);
+    MIDI(in, ACT_BPM_DECAYDIP_TOGGLE, SRC_MIDI_NOTE, 7, 10, 1, false, false, false, false, false, true);
+#endif
 
     // Help nav — arrow keys dedicated while help is open (the handler checks
     // help visibility and consumes these only then, so they do NOT conflict
@@ -632,9 +857,9 @@ void Input::onKey(int key, int /*scancode*/, int action, int mods) {
     if (!handler_) return;
 
     // Shift is always used as the coarse-step multiplier, not as a binding
-    // modifier. Match on Ctrl and Alt only; drop Super because Windows
-    // intercepts it anyway.
-    const int matchMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    // modifier. Match on Ctrl / Alt / Super so macOS can use Command-based
+    // aliases without changing the other platforms.
+    const int matchMods = mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER);
     const float coarse  = (mods & GLFW_MOD_SHIFT) ? 20.0f : 1.0f;
 
     for (const Binding& b : bindings_) {
@@ -716,8 +941,10 @@ static bool parse_key_spec(const std::string& spec, int& outKey, int& outMods) {
     for (size_t k = 0; k + 1 < parts.size(); k++) {
         const std::string& m = parts[k];
         if      (ieq(m, "Ctrl") || ieq(m, "Control")) outMods |= GLFW_MOD_CONTROL;
-        else if (ieq(m, "Alt"))                        outMods |= GLFW_MOD_ALT;
+        else if (ieq(m, "Alt") || ieq(m, "Option"))   outMods |= GLFW_MOD_ALT;
         else if (ieq(m, "Shift"))                      outMods |= GLFW_MOD_SHIFT;
+        else if (ieq(m, "Cmd") || ieq(m, "Command") || ieq(m, "Super"))
+                                                         outMods |= GLFW_MOD_SUPER;
         else return false;
     }
     const std::string& key = parts.back();
@@ -785,6 +1012,11 @@ static std::string key_spec_string(int key, int mods) {
     if (mods & GLFW_MOD_CONTROL) s += "Ctrl+";
     if (mods & GLFW_MOD_ALT)     s += "Alt+";
     if (mods & GLFW_MOD_SHIFT)   s += "Shift+";
+#ifdef __APPLE__
+    if (mods & GLFW_MOD_SUPER)   s += "Cmd+";
+#else
+    if (mods & GLFW_MOD_SUPER)   s += "Super+";
+#endif
     // Reverse lookup.
     if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z) { s += (char)('A' + (key - GLFW_KEY_A)); return s; }
     if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) { s += (char)('0' + (key - GLFW_KEY_0)); return s; }
@@ -850,17 +1082,21 @@ bool Input::loadIni(const std::string& path) {
         size_t hash = v.find('#');
         if (hash != std::string::npos) v = s_trim(v.substr(0, hash));
 
-        // Top-level keys inside [midi]: `port = …`, `clock = follow|ignore`.
-        // These configure the MIDI input rather than mapping to an action.
+        // Top-level keys inside [midi]: `port = …`, `clock = follow|ignore`,
+        // `learn = on|off`. These configure the MIDI input rather than
+        // mapping to an action.
         if (section == "midi") {
             if (k == "port") {
                 setMidiPortHint(v);
                 continue;
             }
+            if (k == "learn") {
+                std::string lo = v;
+                for (char& c : lo) c = (char)std::tolower((unsigned char)c);
+                midiLearn_ = (lo == "1" || lo == "yes" || lo == "true" || lo == "on");
+                continue;
+            }
             if (k == "clock") {
-                // 'ignore' disables follow behavior on main.cpp side; for
-                // now we just stash intent in stderr (wired via a future
-                // flag if needed).
                 if (v == "ignore")
                     std::fprintf(stderr, "[midi] clock=ignore honored by main.cpp side\n");
                 continue;
@@ -878,6 +1114,7 @@ bool Input::loadIni(const std::string& path) {
         float scale = 1.0f;
         bool invert = false;
         float deadzone = 0.0f;
+        int midiChannel = 0;
 
         // Split on whitespace.
         std::vector<std::string> toks;
@@ -892,6 +1129,10 @@ bool Input::loadIni(const std::string& path) {
         if (toks.empty()) continue;
         keyPart = toks[0];
         bool absolute = false;
+        bool relative = false;
+        bool delta = false;
+        bool bipolar = false;
+        bool shifted = false;
         BindContext ctx = CTX_ANY;
         auto parse_ctx = [](const std::string& s) -> BindContext {
             // Lowercase, match section tags. "any", "menu", then the
@@ -925,6 +1166,10 @@ bool Input::loadIni(const std::string& path) {
             if (opt.rfind("scale=", 0) == 0)      scale = (float)std::atof(opt.c_str() + 6);
             else if (opt == "invert")              invert = true;
             else if (opt == "abs" || opt == "absolute") absolute = true;
+            else if (opt == "rel" || opt == "relative" || opt == "mode=relative") relative = true;
+            else if (opt == "delta" || opt == "mode=delta") delta = true;
+            else if (opt == "bipolar" || opt == "mode=bipolar") bipolar = true;
+            else if (opt == "shift" || opt == "shifted") shifted = true;
             else if (opt.rfind("deadzone=", 0) == 0) deadzone = (float)std::atof(opt.c_str() + 9);
             else if (opt.rfind("ctx=", 0) == 0)   ctx = parse_ctx(opt.substr(4));
             else if (opt.rfind("ch=", 0) == 0)    midiChannel = std::atoi(opt.c_str() + 3);
@@ -937,6 +1182,10 @@ bool Input::loadIni(const std::string& path) {
         b.invert   = invert;
         b.deadzone = deadzone;
         b.absolute = absolute;
+        b.relative = relative;
+        b.delta    = delta;
+        b.bipolar  = bipolar;
+        b.shifted  = shifted;
         b.context  = ctx;
 
         if (section == "keyboard" || section.empty()) {
@@ -965,6 +1214,10 @@ bool Input::loadIni(const std::string& path) {
                 b.source  = SRC_MIDI_CC;
                 b.code    = std::atoi(keyPart.c_str() + 3);
                 b.modmask = midiChannel;
+            } else if (keyPart.rfind("cc14:", 0) == 0) {
+                b.source  = SRC_MIDI_CC14;
+                b.code    = std::atoi(keyPart.c_str() + 5);
+                b.modmask = midiChannel;
             } else if (keyPart.rfind("note:", 0) == 0) {
                 b.source  = SRC_MIDI_NOTE;
                 b.code    = std::atoi(keyPart.c_str() + 5);
@@ -982,12 +1235,23 @@ bool Input::loadIni(const std::string& path) {
         // the ctx=optics binding.
         bindings_.erase(std::remove_if(bindings_.begin(), bindings_.end(),
             [&](const Binding& x) {
-                return x.action == b.action && x.source == b.source
-                    && x.context == b.context;
+                if (x.action != b.action || x.source != b.source || x.context != b.context)
+                    return false;
+                if (b.source == SRC_MIDI_CC || b.source == SRC_MIDI_CC14 || b.source == SRC_MIDI_NOTE)
+                    return x.code == b.code && x.modmask == b.modmask
+                        && x.shifted == b.shifted;
+                return true;
             }), bindings_.end());
         bindings_.push_back(b);
     }
     std::fclose(f);
+#ifdef __APPLE__
+    const int added = install_mac_keyboard_aliases(*this, /*onlyIfMissing=*/true);
+    if (added > 0) {
+        std::printf("[bindings] added %d macOS keyboard aliases on top of %s\n",
+                    added, path.c_str());
+    }
+#endif
     return true;
 }
 
@@ -1094,6 +1358,220 @@ void Input::pollGamepad(int jid, float dt, BindContext currentCtx) {
         }
     }
 }
+
+#ifdef __APPLE__
+namespace {
+struct MidiRuntime {
+    bool opened = false;
+    bool prevCcInit[17][128] = {};
+    float prevCc[17][128] = {};
+    bool ccSeen[17][128] = {};
+    uint8_t ccVal[17][128] = {};
+    bool deckShift[3] = {};
+    double clockTimes[24] = {};
+    int clockHead = 0;
+    int clockCount = 0;
+    double lastClockT = 0.0;
+};
+MidiRuntime g_midiRt;
+
+static float midi_relative_delta(int value) {
+    value &= 0x7F;
+    if (value == 0x40 || value == 0) return 0.0f;
+    if (value > 0x40) return (float)(value - 0x40);
+    return (float)(value - 0x40);
+}
+}
+
+void Input::pollMidi(float /*dt*/) {
+    const double now = glfwGetTime();
+
+    char portName[256] = {};
+    int connected = 0;
+    feedback_midi_status(portName, (int)sizeof portName, &connected);
+    if (!connected) {
+        g_midiRt.opened = feedback_midi_open(midiPortHint_.c_str()) != 0;
+        feedback_midi_status(portName, (int)sizeof portName, &connected);
+    } else {
+        g_midiRt.opened = true;
+    }
+    midi_.connected = connected != 0;
+    midi_.portName = midi_.connected ? portName : std::string();
+
+    FeedbackMidiMsg msgs[512];
+    int nmsg = feedback_midi_poll(msgs, 512);
+
+    auto dispatch_note = [&](int ch, int note, int vel, bool on) {
+        if (note == 63 && (ch == 1 || ch == 2)) {
+            g_midiRt.deckShift[ch] = on;
+            midi_.deck1Shift = g_midiRt.deckShift[1];
+            midi_.deck2Shift = g_midiRt.deckShift[2];
+        }
+        const bool softwareShifted =
+            (ch == 8 && g_midiRt.deckShift[1]) ||
+            (ch == 10 && g_midiRt.deckShift[2]);
+
+        midi_.lastNoteCh = ch;
+        midi_.lastNoteNum = note;
+        midi_.lastNoteVel = on ? vel : 0;
+        if (midiLearn_) {
+            std::printf("[midi-learn] ch=%d note:%d vel=%d %s\n",
+                        ch, note, vel, on ? "on" : "off");
+        }
+        if (!handler_) return;
+        for (const Binding& b : bindings_) {
+            if (b.source != SRC_MIDI_NOTE) continue;
+            if (b.code != note) continue;
+            if (b.modmask != 0 && b.modmask != ch) continue;
+            if (b.shifted != softwareShifted) continue;
+            const ActionInfo* info = action_info(b.action);
+            if (!info) continue;
+            float mg = (vel / 127.0f) * b.scale;
+            if (b.invert) mg = -mg;
+            switch (info->kind) {
+            case AK_DISCRETE: if (on) handler_(b.action, 1.0f); break;
+            case AK_TRIGGER:
+                if (on) handler_(b.action, 1.0f);
+                else    handler_(b.action, 0.0f);
+                break;
+            case AK_STEP:
+            case AK_RATE:
+                if (on) handler_(b.action, mg);
+                break;
+            }
+        }
+    };
+
+    auto dispatch_cc_value = [&](const Binding& b, int ch, int ccNum,
+                                 int ccVal, float norm) {
+        const ActionInfo* info = action_info(b.action);
+        if (!info) return;
+
+        float mg = norm;
+        if (b.relative) {
+            mg = midi_relative_delta(ccVal);
+        } else if (b.delta) {
+            if (!g_midiRt.prevCcInit[ch][b.code]) {
+                g_midiRt.prevCcInit[ch][b.code] = true;
+                g_midiRt.prevCc[ch][b.code] = norm;
+                return;
+            }
+            mg = norm - g_midiRt.prevCc[ch][b.code];
+            g_midiRt.prevCc[ch][b.code] = norm;
+        } else if (b.bipolar) {
+            mg = norm * 2.0f - 1.0f;
+        }
+
+        if (b.invert) mg = -mg;
+        mg *= b.scale;
+
+        switch (info->kind) {
+        case AK_RATE:
+        case AK_STEP:
+            if (mg != 0.0f || b.absolute) handler_(b.action, mg);
+            break;
+        case AK_DISCRETE:
+            if (ccVal > 63) handler_(b.action, 1.0f);
+            break;
+        case AK_TRIGGER:
+            handler_(b.action, ccVal > 63 ? 1.0f : 0.0f);
+            break;
+        }
+        (void)ccNum;
+    };
+
+    auto dispatch_cc = [&](int ch, int ccNum, int ccVal) {
+        midi_.lastCcCh = ch;
+        midi_.lastCcNum = ccNum;
+        midi_.lastCcVal = ccVal;
+        g_midiRt.ccSeen[ch][ccNum] = true;
+        g_midiRt.ccVal[ch][ccNum] = (uint8_t)ccVal;
+
+        if (midiLearn_) {
+            std::printf("[midi-learn] ch=%d cc:%d val=%d\n", ch, ccNum, ccVal);
+        }
+        if (!handler_) return;
+
+        for (const Binding& b : bindings_) {
+            if (b.modmask != 0 && b.modmask != ch) continue;
+            if (b.source == SRC_MIDI_CC) {
+                if (b.code != ccNum) continue;
+                dispatch_cc_value(b, ch, ccNum, ccVal, ccVal / 127.0f);
+            } else if (b.source == SRC_MIDI_CC14) {
+                if (b.code != ccNum && b.code + 32 != ccNum) continue;
+                int msbCc = b.code;
+                int lsbCc = b.code + 32;
+                if (lsbCc > 127 || !g_midiRt.ccSeen[ch][msbCc]) continue;
+                int msb = g_midiRt.ccVal[ch][msbCc] & 0x7F;
+                int lsb = g_midiRt.ccSeen[ch][lsbCc] ? (g_midiRt.ccVal[ch][lsbCc] & 0x7F) : 0;
+                int value14 = (msb << 7) | lsb;
+                int displayVal = value14 >> 7;
+                dispatch_cc_value(b, ch, msbCc, displayVal, value14 / 16383.0f);
+            }
+        }
+    };
+
+    for (int i = 0; i < nmsg; i++) {
+        const FeedbackMidiMsg& m = msgs[i];
+        if (m.len == 0) continue;
+        uint8_t b0 = m.b[0], b1 = m.b[1], b2 = m.b[2];
+
+        if (b0 >= 0xF8) {
+            if (b0 == 0xF8) {
+                if (g_midiRt.lastClockT > 0.0) {
+                    double gap = now - g_midiRt.lastClockT;
+                    g_midiRt.clockTimes[g_midiRt.clockHead] = gap;
+                    g_midiRt.clockHead = (g_midiRt.clockHead + 1) % 24;
+                    if (g_midiRt.clockCount < 24) g_midiRt.clockCount++;
+                    if (g_midiRt.clockCount >= 4) {
+                        double sum = 0.0;
+                        for (int k = 0; k < g_midiRt.clockCount; k++) sum += g_midiRt.clockTimes[k];
+                        double avg = sum / g_midiRt.clockCount;
+                        if (avg > 1e-5) {
+                            float bpm = (float)(60.0 / (avg * 24.0));
+                            if (bpm >= 20.f && bpm <= 400.f) midi_.derivedBpm = bpm;
+                        }
+                    }
+                }
+                g_midiRt.lastClockT = now;
+                midi_.clockLive = true;
+            } else if (b0 == 0xFA) {
+                midi_.startPending = true;
+                g_midiRt.clockCount = 0;
+                g_midiRt.clockHead = 0;
+                g_midiRt.lastClockT = 0.0;
+            } else if (b0 == 0xFC) {
+                midi_.stopPending = true;
+            }
+            if (midiLearn_) std::printf("[midi-learn] realtime 0x%02X\n", b0);
+            continue;
+        }
+
+        uint8_t type = b0 & 0xF0;
+        int ch = (b0 & 0x0F) + 1;
+        if (type == 0x90 || type == 0x80) {
+            int note = b1 & 0x7F;
+            int vel = b2 & 0x7F;
+            bool on = (type == 0x90) && vel > 0;
+            dispatch_note(ch, note, vel, on);
+        } else if (type == 0xB0) {
+            dispatch_cc(ch, b1 & 0x7F, b2 & 0x7F);
+        }
+    }
+
+    if (midi_.clockLive && g_midiRt.lastClockT > 0.0 && (now - g_midiRt.lastClockT) > 0.5) {
+        midi_.clockLive = false;
+        g_midiRt.clockCount = 0;
+    }
+}
+
+bool Input::sendMidiNote(int channel, int note, int velocity) {
+    if (channel < 1 || channel > 16 || note < 0 || note > 127) return false;
+    if (velocity < 0) velocity = 0;
+    if (velocity > 127) velocity = 127;
+    return feedback_midi_send_note(channel, note, velocity) != 0;
+}
+#endif  // __APPLE__
 
 // ─────────────────────────────────────────────────────────────────────────
 // MIDI input — teVirtualMIDI primary path, winmm fallback.
@@ -1281,8 +1759,8 @@ namespace {
 }
 #endif  // _WIN32
 
-void Input::pollMidi(float /*dt*/) {
 #ifdef _WIN32
+void Input::pollMidi(float /*dt*/) {
     const double now = glfwGetTime();
 
     // 1. teVirtualMIDI: create our own named port. Retry every 2s so that
@@ -1417,10 +1895,18 @@ void Input::pollMidi(float /*dt*/) {
         midi_.clockLive  = false;
         g_clk.clockCount = 0;
     }
-#else
-    (void)midi_; (void)midiPortHint_;
-#endif
 }
+
+bool Input::sendMidiNote(int, int, int) { return false; }
+#endif  // _WIN32
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+void Input::pollMidi(float) {
+    midi_.connected = false;
+    midi_.portName.clear();
+}
+bool Input::sendMidiNote(int, int, int) { return false; }
+#endif
 
 bool Input::saveIni(const std::string& path) const {
     FILE* f = std::fopen(path.c_str(), "w");
@@ -1443,8 +1929,12 @@ bool Input::saveIni(const std::string& path) const {
 "#   abs        dispatch axis position directly (no dt integration).\n"
 "#              Natural for 'the stick IS the knob' mappings. Sticks\n"
 "#              self-center, so letting go returns the parameter to 0.\n"
+"#   relative   MIDI CC is 0x40-centered relative motion (jog wheels).\n"
+"#   delta      MIDI CC/CC14 dispatches change since previous value.\n"
+"#   bipolar    MIDI absolute value 0..1 is remapped to -1..+1.\n"
+"#   shifted    MIDI note requires DDJ-FLX2 Shift note held.\n"
 "#\n"
-"# Modifier prefixes: Ctrl+ / Alt+ / Shift+\n"
+"# Modifier prefixes: Ctrl+ / Alt+ / Shift+ / Cmd+ (or Super+)\n"
 "# (Shift is reserved as the coarse-step multiplier — using it as a modifier\n"
 "#  is accepted but it only matters if you want to create a distinct binding\n"
 "#  from the bare key.)\n"
@@ -1468,16 +1958,23 @@ bool Input::saveIni(const std::string& path) const {
                     std::fprintf(f, "%-24s = axis:%d", ACTIONS[i].name, b.code);
                 } else if (src == SRC_MIDI_CC) {
                     std::fprintf(f, "%-24s = cc:%d", ACTIONS[i].name, b.code);
+                } else if (src == SRC_MIDI_CC14) {
+                    std::fprintf(f, "%-24s = cc14:%d", ACTIONS[i].name, b.code);
                 } else if (src == SRC_MIDI_NOTE) {
                     std::fprintf(f, "%-24s = note:%d", ACTIONS[i].name, b.code);
                 }
-                if ((src == SRC_MIDI_CC || src == SRC_MIDI_NOTE) && b.modmask != 0) {
+                if ((src == SRC_MIDI_CC || src == SRC_MIDI_CC14 || src == SRC_MIDI_NOTE)
+                    && b.modmask != 0) {
                     std::fprintf(f, " ch=%d", b.modmask);
                 }
                 if (b.scale != 1.0f)  std::fprintf(f, " scale=%.3f", b.scale);
                 if (b.invert)         std::fprintf(f, " invert");
                 if (b.deadzone != 0.0f) std::fprintf(f, " deadzone=%.3f", b.deadzone);
                 if (b.absolute)       std::fprintf(f, " abs");
+                if (b.relative)       std::fprintf(f, " relative");
+                if (b.delta)          std::fprintf(f, " delta");
+                if (b.bipolar)        std::fprintf(f, " bipolar");
+                if (b.shifted)        std::fprintf(f, " shifted");
                 if (b.context != CTX_ANY) {
                     static const char* CTXN[] = {
                         "any","menu","status","layers","warp","optics",
@@ -1497,33 +1994,38 @@ bool Input::saveIni(const std::string& path) const {
     dump_section("gamepad",  SRC_GAMEPAD_BTN);
     dump_section("gamepad",  SRC_GAMEPAD_AXIS);
 
-    // MIDI section: emit a header with a port= hint first, then the two
-    // source types. Defaults leave the map empty — users add their own.
+    // MIDI section: emit a header with a port= hint first, then the source
+    // types. Defaults leave the map empty — users add their own.
     std::fprintf(f,
 "[midi]\n"
-"# Integration with Strudel (https://strudel.cc) or any MIDI controller.\n"
+"# Integration with Strudel (https://strudel.cc), DJ controllers, or any\n"
+"# MIDI source.\n"
 "#\n"
-"# Windows: install loopMIDI (https://www.tobias-erichsen.de/software/loopmidi.html),\n"
-"# create a virtual port called 'loopMIDI Port' or similar, then route\n"
-"# Strudel's MIDI output there with `.midi(\"loopMIDI Port\")`.\n"
+"# Windows: app registers a virtual port via teVirtualMIDI (shipped with\n"
+"# loopMIDI). Strudel can then target it with `.midi(\"feedback\")`. If the\n"
+"# driver isn't installed, we fall back to scanning existing winmm input\n"
+"# ports (hardware controllers, pre-configured loopMIDI bridges).\n"
+"#\n"
+"# macOS: CoreMIDI opens the first source whose name contains the `port`\n"
+"# string below. The default Apple build targets AlphaTheta/Pioneer DDJ-FLX2.\n"
+"port = %s\n"
 "#\n"
 "# Top-level keys:\n"
 "#   port = <substring>   case-insensitive match against device names.\n"
-"#                        Omit to auto-pick the first loopMIDI port.\n"
 "#   clock = follow       follow incoming MIDI Clock for BPM (default).\n"
+"#   learn = off          set on, or launch with --midi-learn, to print\n"
+"#                        incoming messages.\n"
 "#\n"
 "# Binding syntax:\n"
-"#   action.name = note:NN [ch=N]   Note-On/Off. vel becomes magnitude.\n"
-"#   action.name = cc:NN   [ch=N]   CC value 0..127 → magnitude 0..1.\n"
-"#   ch=0 or omitted = match any channel (omni).\n"
-"#\n"
-"# Example drum-trigger map (General MIDI drum channel 10):\n"
-"#   inject.hold     = note:36 ch=10   # kick  → inject pulse\n"
-"#   vfx1.cycle+     = note:38 ch=10   # snare → next effect\n"
-"#   bpm.flash.lock  = note:42 ch=10   # hat   → toggle flash mod\n"
-"#   warp.zoom+      = cc:1            # mod wheel → zoom+\n"
-"\n");
+"#   action.name = note:NN [ch=N]\n"
+"#   action.name = cc:NN   [ch=N] [relative|delta|bipolar]\n"
+"#   action.name = cc14:NN [ch=N] [delta|bipolar]\n"
+"#   Add 'shifted' to require the DDJ-FLX2 Shift button for pad notes.\n"
+"# ch=0 or omitted matches any channel (omni).\n"
+"\n",
+        midiPortHint_.empty() ? "DDJ-FLX2" : midiPortHint_.c_str());
     dump_section("midi",     SRC_MIDI_CC,   /*emitHeader=*/false);
+    dump_section("midi",     SRC_MIDI_CC14, /*emitHeader=*/false);
     dump_section("midi",     SRC_MIDI_NOTE, /*emitHeader=*/false);
 
     std::fclose(f);

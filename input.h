@@ -80,6 +80,8 @@ enum ActionId : int {
     ACT_PATTERN_NOISE, ACT_PATTERN_RINGS, ACT_PATTERN_SPIRAL,
     ACT_PATTERN_POLKA, ACT_PATTERN_STARBURST,
     ACT_PATTERN_ANIM_BOUNCER,
+    ACT_SHAPE_TRIANGLE_HOLD, ACT_SHAPE_STAR_HOLD,
+    ACT_SHAPE_CIRCLE_HOLD, ACT_SHAPE_SQUARE_HOLD,
     ACT_INJECT_HOLD,      // TRIGGER: 1.0 on press, 0.0 on release
 
     // ── App-level actions ────────────────────────────────────────────
@@ -107,6 +109,8 @@ enum ActionId : int {
     ACT_VFX1_CYCLE_FWD, ACT_VFX1_CYCLE_BACK, ACT_VFX1_OFF,
     ACT_VFX1_PARAM_UP, ACT_VFX1_PARAM_DN,
     ACT_VFX1_BSRC_CYCLE,
+    ACT_VFX1_PAD_0, ACT_VFX1_PAD_1, ACT_VFX1_PAD_2, ACT_VFX1_PAD_3,
+    ACT_VFX1_PAD_4, ACT_VFX1_PAD_5, ACT_VFX1_PAD_6, ACT_VFX1_PAD_7,
     ACT_VFX2_CYCLE_FWD, ACT_VFX2_CYCLE_BACK, ACT_VFX2_OFF,
     ACT_VFX2_PARAM_UP, ACT_VFX2_PARAM_DN,
     ACT_VFX2_BSRC_CYCLE,
@@ -126,6 +130,8 @@ enum ActionId : int {
     ACT_TRANS_X_AXIS, ACT_TRANS_Y_AXIS,
     ACT_HUE_AXIS,
     ACT_DECAY_AXIS,
+    ACT_EXTERNAL_AXIS, // absolute 0..1 external/camera blend
+    ACT_SHAPE_COUNT_AXIS, // absolute 0..1 shape count, mapped to 1..16
 
     // ── Music / MIDI integration ─────────────────────────────────────
     // Launches loopMIDI if installed. No-op if a MIDI port already exists.
@@ -160,10 +166,11 @@ enum ActionKind : int { AK_STEP, AK_RATE, AK_DISCRETE, AK_TRIGGER };
 // "omni" (match any channel).
 enum BindSource : int {
     SRC_NONE = 0,
-    SRC_KEY,           // code = GLFW_KEY_*, modmask = GLFW_MOD_*
+    SRC_KEY,           // code = GLFW_KEY_*, modmask = GLFW_MOD_* (Shift usually stripped)
     SRC_GAMEPAD_BTN,   // code = GLFW_GAMEPAD_BUTTON_*
     SRC_GAMEPAD_AXIS,  // code = GLFW_GAMEPAD_AXIS_* (bipolar/rate)
     SRC_MIDI_CC,       // code = CC number,        modmask = channel (0 = omni)
+    SRC_MIDI_CC14,     // code = CC MSB number,    modmask = channel (0 = omni)
     SRC_MIDI_NOTE,     // code = MIDI note number, modmask = channel (0 = omni)
 };
 
@@ -200,7 +207,7 @@ struct Binding {
     ActionId  action   = ACT_NONE;
     BindSource source  = SRC_NONE;
     int       code     = 0;
-    int       modmask  = 0;        // for KEY: exact match on Ctrl/Alt/Shift
+    int       modmask  = 0;        // for KEY: exact match on Ctrl/Alt/Super
     float     scale    = 1.0f;     // multiplier applied to step/axis value
     bool      invert   = false;    // negate value
     float     deadzone = 0.0f;     // axis deadzone (ignored for keys)
@@ -208,6 +215,10 @@ struct Binding {
                                    //   dt integration). Natural for
                                    //   "the stick IS the knob" mappings
                                    //   like output fade. Self-centers.
+    bool      relative = false;    // MIDI CC: signed 0x40-centered delta
+    bool      delta    = false;    // MIDI CC/CC14: dispatch change since last value
+    bool      bipolar  = false;    // MIDI CC/CC14 absolute: 0..1 -> -1..+1
+    bool      shifted  = false;    // MIDI note: require software Shift note held
     BindContext context = CTX_ANY; // gamepad only; keyboard ignores this
 };
 
@@ -244,9 +255,11 @@ public:
     void clear() { bindings_.clear(); }
 
     // Read bindings.ini if present (merged over defaults — file entries
-    // override defaults that target the same action). Returns true if file
-    // was present & parsed without error; returns false (and leaves the
-    // current map intact) if the file wasn't there.
+    // override defaults that target the same action). On macOS, missing
+    // Command-key aliases are backfilled after load so legacy configs stay
+    // usable on Apple keyboards. Returns true if file was present & parsed
+    // without error; returns false (and leaves the current map intact) if
+    // the file wasn't there.
     bool loadIni(const std::string& path);
 
     // Write current bindings.ini (commented, grouped by action group).
@@ -262,10 +275,11 @@ public:
     // from glfwGetTime delta.
     void pollGamepad(int jid, float dt, BindContext currentCtx);
 
-    // MIDI input — opens a winmm port on first call (Windows), re-tries if
-    // loopMIDI is started later. Drains the callback-populated queue on the
-    // main thread and dispatches Note/CC through the existing handler_.
-    // MIDI Clock / Start / Stop update midi_ state which main.cpp reads.
+    // MIDI input — opens a platform backend on first call (winmm on Windows,
+    // CoreMIDI on macOS), retries if a port becomes available later. Drains
+    // the callback-populated queue on the main thread and dispatches Note/CC
+    // through the existing handler_. MIDI Clock / Start / Stop update midi_
+    // state which main.cpp reads.
     void pollMidi(float dt);
 
     // Live MIDI status — snapshot exposed to main.cpp for the BPM section
@@ -284,6 +298,8 @@ public:
         int   lastCcCh    = 0;
         int   lastCcNum   = -1;
         int   lastCcVal   = 0;
+        bool  deck1Shift  = false;
+        bool  deck2Shift  = false;
         // Pending system real-time events — caller consumes by setting back
         // to false after handling.
         bool  startPending = false;
@@ -296,6 +312,8 @@ public:
     // Substring match against enumerated input devices; empty = pick the
     // first loopMIDI-like port found. Set before the first pollMidi call.
     void setMidiPortHint(const std::string& s) { midiPortHint_ = s; }
+    void setMidiLearn(bool enabled) { midiLearn_ = enabled; }
+    bool sendMidiNote(int channel, int note, int velocity);
 
     // Low-level insert (used by installDefaults and loadIni).
     void bind(const Binding& b) { bindings_.push_back(b); }
@@ -308,6 +326,7 @@ private:
     Handler handler_;
     MidiState   midi_;
     std::string midiPortHint_;
+    bool        midiLearn_ = false;
 };
 
 // Global instance; defined in input.cpp.

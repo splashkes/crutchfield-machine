@@ -1,0 +1,57 @@
+# Native Apple Silicon build for the root feedback app.
+#
+# Prereqs:
+#   brew install glfw glew pkg-config
+#
+# Then:
+#   make -f Makefile.macos
+#   make -f Makefile.macos dist
+#   ./feedback --fullscreen
+
+BREW_PREFIX ?= $(shell brew --prefix 2>/dev/null || echo /opt/homebrew)
+CXX         ?= clang++
+ARCH        ?= arm64
+
+CXXFLAGS ?= -O3 -std=c++17 -Wall -Wextra -Wno-deprecated-declarations \
+            -Wno-missing-field-initializers \
+            -DGL_SILENCE_DEPRECATION -arch $(ARCH) -I$(BREW_PREFIX)/include
+OBJCXXFLAGS ?= $(CXXFLAGS) -fobjc-arc
+LDFLAGS  ?= -arch $(ARCH) -L$(BREW_PREFIX)/lib
+LDLIBS   ?= -lglfw -lGLEW -lz \
+            -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo \
+            -framework Foundation -framework AVFoundation -framework CoreMedia \
+            -framework CoreMIDI
+
+SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm recorder.cpp overlay.cpp
+OBJS = $(SRCS:.cpp=.o)
+OBJS := $(OBJS:.mm=.o)
+BIN  = feedback
+DIST_NAME = feedback-macos-arm64
+DIST_DIR  = $(DIST_NAME)
+DIST_ZIP  = $(DIST_NAME).zip
+
+all: $(BIN)
+
+$(BIN): $(OBJS)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+%.o: %.mm
+	$(CXX) $(OBJCXXFLAGS) -c -o $@ $<
+
+dist: $(BIN)
+	rm -rf $(DIST_DIR) $(DIST_ZIP)
+	mkdir -p $(DIST_DIR)
+	cp $(BIN) $(DIST_DIR)/
+	cp -r shaders $(DIST_DIR)/
+	cp -r presets $(DIST_DIR)/
+	cp README.md LICENSE CREDITS.md $(DIST_DIR)/
+	ditto -c -k --sequesterRsrc --keepParent $(DIST_DIR) $(DIST_ZIP)
+
+clean:
+	rm -f $(OBJS) $(BIN)
+	rm -rf $(DIST_DIR) $(DIST_ZIP)
+
+.PHONY: all dist clean

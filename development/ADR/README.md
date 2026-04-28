@@ -95,3 +95,4 @@ Use git commits for those — the history is their ADR.
 | [0016](0016-nan-inf-sanitize-at-output.md) | Sanitize NaN/Inf at `output_fade`, never anywhere else | Accepted | 2026-04-20 |
 | [0017](0017-pixelate-as-alternate-sample.md) | Pixelate takes over the sample stage; optics is bypassed when active | Accepted | 2026-04-20 |
 | [0018](0018-music-to-visual-trigger-bridge.md) | Music → visual bridge: classify at trigger, envelope per bucket | Accepted | 2026-04-20 |
+| [0019](0019-root-app-on-apple-silicon-via-opengl41-and-avfoundation.md) | Keep the root app on Apple Silicon via OpenGL 4.1 + AVFoundation | Accepted | 2026-04-20 |

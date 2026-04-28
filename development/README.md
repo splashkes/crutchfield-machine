@@ -14,6 +14,7 @@ these and are for visitors — they summarise; these are the working material.
 | [DESIGN.md](DESIGN.md) | Philosophy, principles, what this IS and IS NOT, target users, aesthetic direction | The *intent* of the system changes. Not often. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, data flow, file map, performance budget, where features live | A component is added, removed, or significantly restructured. |
 | [LAYERS.md](LAYERS.md) | Shader pipeline order, per-layer reference, hard-vs-soft reorder constraints, float-precision invariant | A layer is added/removed/reordered, or a pipeline invariant changes. |
+| [apple_silicon.md](apple_silicon.md) | Apple Silicon/macOS-specific build, camera, packaging, and permission notes | The native macOS path, caveats, or workflows change. |
 | [ADR/](ADR/README.md) | Architecture Decision Records — one file per non-trivial technical decision, with context and consequences | A decision is made that future-you will need to justify. Append-only. |
 | [RUNBOOK.md](RUNBOOK.md) | Exact commands for build, test, package, release; troubleshooting | A build step, release procedure, or known-problem workaround changes. |
 | [TODO.md](TODO.md) | Prioritized backlog with enough context per item to pick up cold | Work is added, claimed, completed, or re-prioritized. |
@@ -22,10 +23,12 @@ these and are for visitors — they summarise; these are the working material.
 
 1. **DESIGN.md** — understand what we're making and why. 5 min.
 2. **ARCHITECTURE.md** — understand how it's put together. 10 min.
-3. **TODO.md** — find something to work on. 5 min.
-4. **ADR/** — if the item you're working on touches a prior decision,
+3. **apple_silicon.md** — if you're on a Mac or touching the macOS port,
+   read this before building or packaging.
+4. **TODO.md** — find something to work on. 5 min.
+5. **ADR/** — if the item you're working on touches a prior decision,
    read the relevant ADR(s) first. Ignore otherwise.
-5. **RUNBOOK.md** — when you're ready to build, test, or release.
+6. **RUNBOOK.md** — when you're ready to build, test, or release.
 
 ## Format rules
 
@@ -99,6 +102,9 @@ items are done.
 - User-facing documentation — that's `README.md` and `CONTRIBUTING.md`
   at the root.
 - Raw research material — that's `research/`.
+- Platform-specific build/ops notes that would clutter RUNBOOK — those
+  go in `apple_silicon.md` when they are specifically about the native
+  macOS path.
 
 ## Discoverability
 

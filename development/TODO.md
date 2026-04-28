@@ -209,18 +209,21 @@ enum.
 **Effort:** small-medium. Low immediate priority because rarely
 changed, but valuable long-term.
 
-### [P2] Cross-platform smoke of Linux / macOS ports
+### [P2] Package the macOS build as a real `.app`
 
-**Why:** The `linux/` and `macOS/` subdirs exist but are untested
-against current shaders. At minimum, document what state each is in.
-**Where:** `linux/README.md`, `macOS/README.md` — already annotated as
-WIP, but no one has confirmed they even compile against the latest
-shaders.
+**Why:** The native Apple Silicon build now works from the repo root,
+but camera permission UX is still bare-binary territory. A proper `.app`
+bundle improves launch ergonomics, makes privacy settings more legible,
+and is the first step toward codesigning/notarization.
+**Where:** new macOS packaging path; likely `Makefile.macos`, an app
+bundle skeleton, and `development/apple_silicon.md`.
 **Done when:**
-- Build status documented for each platform (does main.cpp compile?
-  do shaders compile? does the app launch?).
-- Known-broken bits listed explicitly.
-**Effort:** small per platform, medium in total.
+- `make -f Makefile.macos dist` can optionally produce an `.app`
+  bundle or a zip containing one.
+- Camera permission prompts are stable and documented against the app
+  bundle, not just the launching terminal.
+- `Info.plist` includes the camera usage description.
+**Effort:** medium.
 
 ---
 

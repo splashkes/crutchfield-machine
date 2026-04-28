@@ -1,4 +1,4 @@
-#version 460 core
+#version 410 core
 // main.frag — orchestrator. Each layer lives in its own file under layers/
 // and is included at build time by the host (simple #include resolution).
 // Layer calls are guarded by bits in uEnable so any layer can be toggled.
@@ -60,6 +60,9 @@ uniform float uExternal;
 // inject
 uniform float uInject;
 uniform int   uPattern;
+uniform float uShapeInject;
+uniform int   uShapeKind;
+uniform int   uShapeCount;
 // pixelate
 uniform int   uPixelateStyle;     // 0 = off; 1..9 = (shape × size)
 uniform int   uPixelateBleedIdx;  // 0 off; 1 soft; 2 CRT; 3 melt; 4 fried; 5 burned
@@ -173,10 +176,12 @@ void main() {
     //  8. external: blend in camera
     if ((uEnable & L_EXTERNAL) != 0) col = external_apply(col, uv);
 
-    //  9. inject: triggered pattern perturbation. Runs BEFORE noise so
-    //     injected patterns pick up sensor-floor texture rather than
-    //     reading as pristine-synthetic against noisy feedback.
-    if ((uEnable & L_INJECT) != 0) col = inject_apply(col, uv);
+    //  9. inject: triggered pattern or held-shape perturbation. Runs
+    //     BEFORE noise so injected patterns pick up sensor-floor texture
+    //     rather than reading as pristine-synthetic against noisy feedback.
+    if ((uEnable & L_INJECT) != 0 || uInject > 0.0 || uShapeInject > 0.0) {
+        col = inject_apply(col, uv);
+    }
 
     // 10. noise: thermal sensor floor — final additive stage before post.
     if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
