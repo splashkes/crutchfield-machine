@@ -77,6 +77,9 @@ enum ActionId : int {
     // ── Patterns + inject ────────────────────────────────────────────
     ACT_PATTERN_HBARS, ACT_PATTERN_VBARS, ACT_PATTERN_DOT,
     ACT_PATTERN_CHECKER, ACT_PATTERN_GRAD,
+    ACT_PATTERN_NOISE, ACT_PATTERN_RINGS, ACT_PATTERN_SPIRAL,
+    ACT_PATTERN_POLKA, ACT_PATTERN_STARBURST,
+    ACT_PATTERN_ANIM_BOUNCER,
     ACT_SHAPE_TRIANGLE_HOLD, ACT_SHAPE_STAR_HOLD,
     ACT_SHAPE_CIRCLE_HOLD, ACT_SHAPE_SQUARE_HOLD,
     ACT_INJECT_HOLD,      // TRIGGER: 1.0 on press, 0.0 on release
@@ -92,6 +95,9 @@ enum ActionId : int {
     ACT_SCREENSHOT,
     ACT_PRESET_SAVE, ACT_PRESET_NEXT, ACT_PRESET_PREV,
     ACT_BLURQ_CYCLE, ACT_CAQ_CYCLE, ACT_NOISEQ_CYCLE, ACT_FIELDS_CYCLE,
+    ACT_PIXELATE_STYLE_CYCLE,
+    ACT_PIXELATE_BLEED_CYCLE,
+    ACT_PIXELATE_BURN_RESEED,
     // Cursor-based quality navigation (D-pad L/R + A in Quality section)
     ACT_QUALITY_CURSOR_UP, ACT_QUALITY_CURSOR_DN, ACT_QUALITY_FIRE_ARMED,
     // Cursor-based pattern navigation (D-pad L/R in Inject section)
@@ -112,6 +118,8 @@ enum ActionId : int {
     // ── Output fade (C6) ─────────────────────────────────────────────
     ACT_OUTFADE_UP, ACT_OUTFADE_DN,
     ACT_OUTFADE_AXIS,   // RATE/AXIS: absolute value in [-1, +1]
+    // Display-only brightness multiplier (applied in blit, not feedback).
+    ACT_BRIGHTNESS_UP, ACT_BRIGHTNESS_DN,
 
     // ── Bipolar axis variants (signed magnitude; gamepad sticks) ─────
     // For sticks, mag is -1..+1 each frame. apply_action scales by the
@@ -125,6 +133,15 @@ enum ActionId : int {
     ACT_EXTERNAL_AXIS, // absolute 0..1 external/camera blend
     ACT_SHAPE_COUNT_AXIS, // absolute 0..1 shape count, mapped to 1..16
 
+    // ── Music / MIDI integration ─────────────────────────────────────
+    // Launches loopMIDI if installed. No-op if a MIDI port already exists.
+    ACT_LAUNCH_LOOPMIDI,
+
+    // Native music engine — preset cycle + play/pause.
+    ACT_MUSIC_NEXT,
+    ACT_MUSIC_PREV,
+    ACT_MUSIC_PLAYPAUSE,
+
     // ── BPM (C7) ─────────────────────────────────────────────────────
     ACT_BPM_TAP,
     ACT_BPM_SYNC_TOGGLE,
@@ -134,14 +151,19 @@ enum ActionId : int {
     ACT_BPM_VFXCYCLE_TOGGLE,
     ACT_BPM_FLASH_TOGGLE,
     ACT_BPM_DECAYDIP_TOGGLE,
+    ACT_BPM_HUEJUMP_TOGGLE,
+    ACT_BPM_HUEJUMP_STEP_UP, ACT_BPM_HUEJUMP_STEP_DN,
+    ACT_BPM_INVERT_TOGGLE,
+    ACT_BPM_INVERT_DIV_UP, ACT_BPM_INVERT_DIV_DN,
 
     ACT__COUNT
 };
 
 enum ActionKind : int { AK_STEP, AK_RATE, AK_DISCRETE, AK_TRIGGER };
 
-// Binding sources. For MIDI, `modmask` is MIDI channel (1..16), or 0 for
-// omni (match any channel).
+// Binding sources. GAMEPAD_* are populated in C2, MIDI_* by the Strudel
+// integration pass. For MIDI: `modmask` is MIDI channel (1..16), or 0 for
+// "omni" (match any channel).
 enum BindSource : int {
     SRC_NONE = 0,
     SRC_KEY,           // code = GLFW_KEY_*, modmask = GLFW_MOD_* (Shift usually stripped)
@@ -174,6 +196,7 @@ enum BindContext : int {
     CTX_SEC_VFX2,
     CTX_SEC_OUTPUT,
     CTX_SEC_BPM,
+    CTX_SEC_MUSIC,
     CTX_SEC_QUALITY,
     CTX_SEC_APP,
     CTX_SEC_BINDINGS,
@@ -252,16 +275,24 @@ public:
     // from glfwGetTime delta.
     void pollGamepad(int jid, float dt, BindContext currentCtx);
 
-    // MIDI input. Opens a platform backend on first call, drains incoming
-    // messages on the main thread, and dispatches Note/CC through handler_.
+    // MIDI input — opens a platform backend on first call (winmm on Windows,
+    // CoreMIDI on macOS), retries if a port becomes available later. Drains
+    // the callback-populated queue on the main thread and dispatches Note/CC
+    // through the existing handler_. MIDI Clock / Start / Stop update midi_
+    // state which main.cpp reads.
     void pollMidi(float dt);
 
+    // Live MIDI status — snapshot exposed to main.cpp for the BPM section
+    // display and for tempo-following. All fields are writer-owned by
+    // pollMidi; consumers may clear the `startPending` / `stopPending`
+    // flags after handling the event.
     struct MidiState {
-        std::string portName;
-        bool  connected   = false;
-        bool  clockLive   = false;
-        float derivedBpm  = 0.0f;
-        int   lastNoteCh  = 0;
+        std::string portName;           // "" if not connected
+        bool  connected   = false;      // port open
+        bool  clockLive   = false;      // F8 arrived within ~500ms
+        float derivedBpm  = 0.0f;       // from rolling window of Clock pulses
+        // Last events received (for display / debugging).
+        int   lastNoteCh  = 0;          // 1..16, 0 = nothing yet
         int   lastNoteNum = -1;
         int   lastNoteVel = 0;
         int   lastCcCh    = 0;
@@ -269,12 +300,17 @@ public:
         int   lastCcVal   = 0;
         bool  deck1Shift  = false;
         bool  deck2Shift  = false;
+        // Pending system real-time events — caller consumes by setting back
+        // to false after handling.
         bool  startPending = false;
         bool  stopPending  = false;
     };
     MidiState&       midi()       { return midi_; }
     const MidiState& midi() const { return midi_; }
 
+    // Preferred port name, parsed from `[midi] port = …` in bindings.ini.
+    // Substring match against enumerated input devices; empty = pick the
+    // first loopMIDI-like port found. Set before the first pollMidi call.
     void setMidiPortHint(const std::string& s) { midiPortHint_ = s; }
     void setMidiLearn(bool enabled) { midiLearn_ = enabled; }
     bool sendMidiNote(int channel, int note, int velocity);

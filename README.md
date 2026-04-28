@@ -52,6 +52,31 @@ picker so scripted launches still work.
 
 If you want to build from source, read on.
 
+## Building on macOS / Linux
+
+The `macOS/` and `linux/` subdirectories each hold a Python prep script
+and a platform-specific camera backend that transform the Windows source
+tree into a native build — no forked `main.cpp`. Full build steps in the
+README inside each directory.
+
+TL;DR:
+
+```bash
+# macOS (Apple Silicon)
+brew install glfw glew
+cd macOS && make                    # → feedback.app
+
+# Linux (Ubuntu/Debian)
+sudo apt install build-essential python3 pkg-config libglfw3-dev \
+                 libglew-dev libgl1-mesa-dev libasound2-dev \
+                 zlib1g-dev ffmpeg
+cd linux && make                    # → build/bin/feedback
+```
+
+The macOS `.app` bundle relocates Homebrew's `libglfw`/`libGLEW` into
+`Contents/Frameworks/` at build time, so a user running the bundle on a
+fresh Mac does not need Homebrew installed.
+
 ## Two ways to build
 
 ### Option A: MSYS2 / MinGW (fastest, recommended)
@@ -151,6 +176,31 @@ the dynamics* if used as the feedback path, not just the output.
 Compare side-by-side with `--precision 16` to see how much of the apparent
 subtlety lives in the extra bits.
 
+### Noise archetype picker
+
+```
+# White noise — balanced, decorrelated per pixel.
+./feedback.exe --noise-q 0
+
+# Pink 1/f — closer to real-CMOS sensor floor.
+./feedback.exe --noise-q 1
+
+# Heavy static — coarse chunky grain, "broken analog TV".
+./feedback.exe --noise-q 2
+
+# VCR — rolling horizontal bright band + chroma-heavy streaking.
+./feedback.exe --noise-q 3
+
+# Dropout — sparse magenta/green block corruption. Glitch flavour
+# shifts per music trigger (kick / snare / hat / bass / synth) — see
+# the Music→visuals section below.
+./feedback.exe --noise-q 4
+```
+
+Amplitude via `uNoise` (key `N` / `M`). Dropout mode specifically
+reads the music-engine's per-trigger envelopes; if the audio engine
+is playing, each drum fires a distinctly flavoured glitch.
+
 ### Iteration count (sub-frames per displayed frame)
 
 ```
@@ -248,6 +298,12 @@ Both timers are independent — set either to 0 to disable.
 
 ## Controls
 
+**New here?** One-page key reference at
+[CHEAT_SHEET.md](CHEAT_SHEET.md) (print it, tape it by the rig). Full
+user docs — best bootup settings, every keybind explained, music
+authoring walkthrough, troubleshooting — at
+[REFERENCE.md](REFERENCE.md).
+
 Press `H` at any time to open the in-window help panel (top-left, drill-down
 by section). It lists every action with the current key binding and the live
 parameter value — the panel stays visible while you play, so you can keep it
@@ -260,7 +316,19 @@ Essentials for quick reference:
 | `H` | Toggle help panel (drill-down, live values) |
 | `F1..F10` / `Ins` / `PgDn` | Toggle layers |
 | `Space` (hold) | Inject current pattern |
-| `1..5` | Pattern select (H-bars, V-bars, dot, checker, gradient) |
+| `1..5` | Pattern select — H-bars / V-bars / dot / checker / gradient |
+| `6..0` | Pattern select — noise / rings / spiral / polka / starburst |
+| `Alt+B` | Trigger bouncer (10-second animated pong ball) |
+| `Home` | Cycle noise archetype (white / pink / heavy static / VCR / dropout) |
+| `Delete` | Cycle pixelate style (off / dots / hard squares / rounded × s/m/l) |
+| `Ctrl+Delete` | Cycle pixelate CRT bleed (off / soft / CRT / melt / fried / burned) |
+| `Alt+Delete` | Reroll the "burned" dead-pixel pattern |
+| `Alt+Up` / `Alt+Down` | Display-only brightness ± |
+| `Ctrl+Up` / `Ctrl+Down` | Output fade — toward white / toward black (feeds back) |
+| `Ctrl+Alt+H` | Toggle beat-driven hue jump |
+| `Ctrl+Alt+=` / `Ctrl+Alt+-` | Hue-jump step ± (0–100; 25 = quarter rotation per beat, 50 = complement) |
+| `Ctrl+Alt+V` | Toggle beat-driven invert flip |
+| `Ctrl+Alt+,` / `Ctrl+Alt+.` | Invert-flip divisor ± (flip every N beats) |
 | `` ` `` | Start / stop EXR recording (writes `./recordings/feedback_<ts>/`) |
 | `PrtSc` | Screenshot — PNG at sim resolution, no HUD (writes `./screenshots/`) |
 | `Ctrl+S` | Save current state as preset |
@@ -269,15 +337,15 @@ Essentials for quick reference:
 | `Tab` | Tap tempo |
 | `Ctrl+Tab` | BPM sync on/off |
 | `C` | Clear fields |
-| `P` | Pause |
-| `Esc` | Quit |
+| `P` | Pause (couples to music; remembers pre-pause music state on resume) |
+| `Esc` | Quit (first press arms confirm: `Y` / second `Esc` = quit, `N` = cancel) |
 
 Everything else — all parameter nudges, V-4 slots, output fade, BPM
 modulations, gamepad maps — is in the help panel and in `bindings.ini`.
 
 Top-level sections: Status · Layers · Warp · Optics · Color · Dynamics ·
-Physics · Thermal · Inject · VFX-1 · VFX-2 · Output · BPM · Quality · App ·
-Bindings.
+Physics · Thermal · Inject · VFX-1 · VFX-2 · Output · BPM · Music ·
+Quality · App · Bindings.
 
 Hold `Shift` for 20× coarse steps on any parameter nudge.
 
@@ -321,6 +389,58 @@ combination of these modulations fires on each beat:
 
 Beat division cycles x2 / x1 / ÷2 / ÷4 via `Alt+Tab`.
 
+External MIDI Clock (e.g. from Strudel) overrides both manual BPM and
+tap-tempo while it's streaming — the BPM section flips to `LOCKED`.
+When the upstream stops, tap takes over again.
+
+### Music engine
+
+feedback.exe ships with a native pattern engine and audio output — no
+external DAW needed to get sound out of it. Pattern syntax follows
+Strudel's mini-notation ([strudel.cc](https://strudel.cc) is the online
+reference). `music/*.strudel` files are plain text; edit and save while
+running to hot-reload within ~250 ms.
+
+| Key | Action |
+|---|---|
+| `Ctrl+Alt+N` / `P` | Next / prev music preset |
+| `Ctrl+Alt+Space` | Music play / pause |
+| `Space` (hold) | Jumps to `01_breakbeat` while held (also injects visual pattern) |
+
+Five electronic presets ship: `01_breakbeat`, `02_climb`, `03_dub_pulse`,
+`04_acid`, `05_pad_drift`. Plus `00_metronome` for scheduler sanity
+checks.
+
+Each preset reads live feedback scalars (`fb.zoom`, `fb.theta`,
+`fb.decay`, etc.) so turning the visual knobs reshapes the music:
+
+- `fb.zoom` flips chord-progression direction and swells gain
+- `fb.theta` modulates synth filter cutoff (turn `W` / `S` to sweep)
+
+Example file content (paste into any `music/NN_name.strudel`):
+
+```js
+stack(
+  s("bd ~ sn ~").room(0.12),
+  s("hh*8").gain(0.4),
+  note("<c2 eb2 g2 bb2>")
+    .s("saw")
+    .lpf(500 + fb.theta * 2800)
+    .gain(0.3)
+)
+```
+
+Drop WAV files named `bd.wav`, `sn.wav`, `hh.wav`, etc. into a
+`samples/` folder next to the exe to override the built-in synth drums
+with your own pack.
+
+**Strudel ↔ feedback**: feedback.exe registers itself as a virtual
+MIDI port called `feedback` (via loopMIDI's teVirtualMIDI driver). In
+Strudel: `.midi("feedback")` routes pattern events into us.
+`midicmd("clock*24,<start stop>/2").midi("feedback")` drives BPM.
+First-run setup happens via `Ctrl+M` or the picker's Music mode —
+winget-installs loopMIDI, virtual port appears automatically.
+
 ### Output fade
 
 Bipolar dial: -1 = full black, +1 = full white. `Ctrl+Up` / `Ctrl+Dn`
@@ -356,8 +476,42 @@ runbook, and prioritized todo list — see
 [`development/`](development/README.md). That's the primary pickup
 point for any agent (human or AI) continuing this work.
 
-Linux and macOS ports exist in `linux/` and `macOS/` but are early and
-not feature-parity with the Windows build — see the README in each.
+Linux and macOS ports live in `linux/` and `macOS/`. They are build-time
+transforms over this same Windows source tree — no forked `main.cpp`,
+no duplicated shaders. Each port applies a small set of targeted patches
+via Python scripts, plus a platform-specific camera backend. See
+[ADR-0014](development/ADR/0014-platform-transforms-for-mac-and-linux.md)
+for the rationale and the README in each platform dir for build steps.
+
+### Music → visual coupling
+
+Two directions of coupling between the music engine and the feedback
+pipeline:
+
+**Visuals → music (`fb.*` scalars, read from patterns):** covered in
+the Music engine section above. `fb.zoom`, `fb.theta`, etc. are live
+numeric globals that `music/*.strudel` patterns can reference to make
+sound respond to what's on screen.
+
+**Music → visuals (per-trigger bridge, auto-flavours dropout noise):**
+every time a sample or synth fires, it's classified into one of five
+buckets (kick / snare / hat / bass / other) by sample-name prefix and
+synth frequency. Each bucket drives a decaying envelope uniform
+(`uMusKick`, etc.) in the shader. The noise layer's **dropout**
+archetype (`Home` until "dropout") reads these and produces a
+distinct visual glitch per drum type:
+
+- **Kick** (`bd`, `kick`) → wide 48-texel blocks pulled to black
+- **Snare** (`sn`, `sd`, `cp`, `rim`) → sharp narrow white flashes
+- **Hat** (`hh`, `oh`, `ch`, `cb`) → tiny 4-texel green-tinted speckle
+- **Bass** (synth notes < 200 Hz) → medium blocks tinted with a
+  slowly-rotating hue
+- **Other** → rare wide rainbow-coloured glitches
+
+So: set noise type to dropout, start music, watch drums punch visible
+glitches through the feedback in their own flavour. See
+[development/LAYERS.md](development/LAYERS.md#music--visual-bridge-dropout-noise)
+for the full mechanics.
 
 ## Background
 

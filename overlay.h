@@ -98,6 +98,11 @@ private:
 
     void drawTextLine(float x, float y, const std::string& text,
                       unsigned char rgba[4], float alpha, float scale = 1.0f);
+    // Same as drawTextLine but lays down a narrow dark strip behind each
+    // non-empty line so the text stays legible over bright feedback.
+    // Used by the help panel — no more full-panel dimming.
+    void drawTextBacked(float x, float y, const std::string& text,
+                        unsigned char rgba[4], float scale = 1.0f);
     void drawFilledRect(float x, float y, float w, float h,
                         unsigned char rgba[4], float alpha);
 

@@ -1,0 +1,18 @@
+// 01_breakbeat — syncopated amen-lite: kick on 1, snare pushed around,
+// hat accents on upbeats, short acid bass stabs under it.
+
+stack(
+  s("bd ~ ~ bd ~ ~ bd ~").gain(0.9).room(0.15),
+  s("~ ~ sn ~ ~ sn ~ sn").room(0.22),
+  s("hh*16").gain(0.25).pan(0.4),
+  s("~ oh ~ ~ ~ ~ oh ~").gain(0.4),
+  // Bass line walks forward or backward based on zoom direction; its
+  // filter wobbles with rotation (turn W/S to sweep it).
+  (fb.zoom > 1
+    ? note("c2 ~ c2 eb2 ~ g2 ~ eb2")
+    : note("eb2 ~ g2 ~ eb2 c2 ~ c2"))
+    .s("saw")
+    .lpf(500 + fb.theta * 2800)
+    .gain(0.25 + Math.min(Math.abs(fb.zoom - 1), 0.2) * 0.8)
+    .attack(0.002).release(0.06)
+)

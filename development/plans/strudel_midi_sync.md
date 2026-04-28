@@ -1,5 +1,22 @@
 # Strudel ↔ feedback integration — research notes
 
+> **Status: SHIPPED in v0.1.3 (2026-04-20).** See ADRs 0010–0013 for
+> the decisions that came out of this planning round. The original
+> plan below is preserved for historical reference; the actual
+> implementation diverged in three important ways:
+>
+> 1. We register as a virtual MIDI port via teVirtualMIDI instead of
+>    opening an existing loopMIDI port (ADR-0011).
+> 2. We built a native standalone music engine rather than only
+>    syncing to an external Strudel instance (ADRs 0010 + 0012).
+> 3. The scheduler advances on frame dt, not wall time (ADR-0013),
+>    for correctness under alt-tab and extension to visual coupling.
+>
+> Both directions of integration now exist: Strudel → feedback via
+> the `feedback` virtual MIDI port, and standalone native playback
+> from `music/*.strudel` files with the visual feedback state
+> exposed as `fb.*` globals.
+
 ## What Strudel is
 
 [Strudel](https://strudel.cc) is a JavaScript port of TidalCycles — a

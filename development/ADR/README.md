@@ -86,4 +86,13 @@ Use git commits for those — the history is their ADR.
 | [0007](0007-action-registry-and-bindings-ini.md) | Action registry + `bindings.ini` as the unified input layer | Accepted | 2026-04-19 |
 | [0008](0008-edirol-v4-single-bus-integration.md) | Edirol V-4 as single-bus effect slots, not a full A/B mixer port | Accepted | 2026-04-19 |
 | [0009](0009-contextual-gamepad-per-help-section.md) | Gamepad controls rebind per help section; menu navigation is the only reserved surface | Accepted | 2026-04-19 |
-| [0010](0010-root-app-on-apple-silicon-via-opengl41-and-avfoundation.md) | Keep the root app on Apple Silicon via OpenGL 4.1 + AVFoundation | Accepted | 2026-04-20 |
+| [0010](0010-embedded-quickjs-music-engine.md) | Embedded QuickJS as the music-engine runtime (no WebView) | Accepted | 2026-04-20 |
+| [0011](0011-virtual-midi-port-not-loopmidi-launch.md) | Register as a virtual MIDI port (teVirtualMIDI) instead of launching loopMIDI's GUI | Accepted | 2026-04-20 |
+| [0012](0012-clean-room-pattern-engine.md) | Clean-room pattern engine, not Strudel's AGPL source | Accepted | 2026-04-20 |
+| [0013](0013-dt-coupled-music-scheduler.md) | Music scheduler advances on frame dt, not wall time | Accepted | 2026-04-20 |
+| [0014](0014-platform-transforms-for-mac-and-linux.md) | Platform ports live as build-time transforms, not forks | Accepted | 2026-04-20 |
+| [0015](0015-pipeline-order-and-float-preservation.md) | Preserve float headroom through the loop, and reorder the feedback-write tail | Accepted | 2026-04-20 |
+| [0016](0016-nan-inf-sanitize-at-output.md) | Sanitize NaN/Inf at `output_fade`, never anywhere else | Accepted | 2026-04-20 |
+| [0017](0017-pixelate-as-alternate-sample.md) | Pixelate takes over the sample stage; optics is bypassed when active | Accepted | 2026-04-20 |
+| [0018](0018-music-to-visual-trigger-bridge.md) | Music → visual bridge: classify at trigger, envelope per bucket | Accepted | 2026-04-20 |
+| [0019](0019-root-app-on-apple-silicon-via-opengl41-and-avfoundation.md) | Keep the root app on Apple Silicon via OpenGL 4.1 + AVFoundation | Accepted | 2026-04-20 |

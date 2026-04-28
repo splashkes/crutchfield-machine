@@ -34,8 +34,16 @@ uniform float uDecay;
 // noise
 uniform float uNoise;
 uniform int   uNoiseQuality;
+// Music → visual envelopes (decay on the host). Dropout mode uses these
+// to produce per-source glitch flavours.
+uniform float uMusKick;
+uniform float uMusSnare;
+uniform float uMusHat;
+uniform float uMusBass;
+uniform float uMusOther;
 // physics (Crutchfield-faithful camera-side knobs)
 uniform int   uInvert;
+uniform int   uInvertPeriod;    // apply the invert op every Nth frame
 uniform float uSensorGamma;
 uniform float uSatKnee;
 uniform float uColorCross;
@@ -55,6 +63,27 @@ uniform int   uPattern;
 uniform float uShapeInject;
 uniform int   uShapeKind;
 uniform int   uShapeCount;
+// pixelate
+uniform int   uPixelateStyle;     // 0 = off; 1..9 = (shape × size)
+uniform int   uPixelateBleedIdx;  // 0 off; 1 soft; 2 CRT; 3 melt; 4 fried; 5 burned
+uniform int   uPixelateBurnSeed;  // increment to re-roll the burn pattern
+
+// ── layer enable bits (mirror the host enum) ────────────────
+// Declared BEFORE the #includes so layer files can reference them —
+// pixelate.glsl needs L_WARP / L_THERMAL to know whether to re-apply
+// those stages to its cell-centre sample position.
+const int L_WARP     = 1<<0;
+const int L_OPTICS   = 1<<1;
+const int L_GAMMA    = 1<<2;
+const int L_COLOR    = 1<<3;
+const int L_CONTRAST = 1<<4;
+const int L_DECAY    = 1<<5;
+const int L_NOISE    = 1<<6;
+const int L_COUPLE   = 1<<7;
+const int L_EXTERNAL = 1<<8;
+const int L_INJECT   = 1<<9;
+const int L_PHYSICS  = 1<<10;
+const int L_THERMAL  = 1<<11;
 
 // ── layer sources (resolved by host before compile) ─────────
 #include "common.glsl"
@@ -70,22 +99,9 @@ uniform int   uShapeCount;
 #include "layers/couple.glsl"
 #include "layers/external.glsl"
 #include "layers/inject.glsl"
+#include "layers/pixelate.glsl"
 #include "layers/vfx_slot.glsl"
 #include "layers/output_fade.glsl"
-
-// ── layer enable bits (mirror the host enum) ────────────────
-const int L_WARP     = 1<<0;
-const int L_OPTICS   = 1<<1;
-const int L_GAMMA    = 1<<2;
-const int L_COLOR    = 1<<3;
-const int L_CONTRAST = 1<<4;
-const int L_DECAY    = 1<<5;
-const int L_NOISE    = 1<<6;
-const int L_COUPLE   = 1<<7;
-const int L_EXTERNAL = 1<<8;
-const int L_INJECT   = 1<<9;
-const int L_PHYSICS  = 1<<10;
-const int L_THERMAL  = 1<<11;
 
 // ── the pipeline ────────────────────────────────────────────
 // Order matters. It corresponds (roughly) to the physical signal path:
@@ -103,17 +119,30 @@ void main() {
     //  heat, larger amplitude creates genuine turbulence.
     if ((uEnable & L_THERMAL) != 0) src_uv = thermal_warp(src_uv);
 
-    //  2. optics: anisotropic blur + chromatic aberration at sample
+    //  2. sample uPrev. When pixelate is on it takes over the sample
+    //     (quantizing to a screen-space grid whose cell-centres get
+    //     warp+thermal re-applied so pixelated content propagates).
+    //     Optics is bypassed in that path — hard blocks don't want
+    //     a blur kernel smearing across cell edges.
     vec4 col;
-    if ((uEnable & L_OPTICS) != 0) col = optics_sample(uPrev, src_uv);
-    else                            col = texture(uPrev, src_uv);
+    if (uPixelateStyle != 0)             col = pixelate_apply(uPrev, src_uv, uv);
+    else if ((uEnable & L_OPTICS) != 0)  col = optics_sample(uPrev, src_uv);
+    else                                  col = texture(uPrev, src_uv);
 
     //  2.4 invert: always-on (toggled by uInvert itself). Sits outside
     //  the physics layer gate because users turning on "V" in the UI
     //  expect it to work regardless of what else is enabled. Crutchfield's
     //  's' parameter still semantically lives in the physics block; the
     //  inversion is just lifted out so it's always visible.
-    if (uInvert == 1) col.rgb = vec3(1.0) - col.rgb;
+    //
+    //  Applied every `uInvertPeriod` frames (default 20) so the
+    //  interaction with feedback produces a slow flip cycle rather than a
+    //  60 Hz strobe. uInvertPeriod = 1 restores the legacy every-frame
+    //  behaviour.
+    int ip = max(uInvertPeriod, 1);
+    if (uInvert == 1 && int(uFrame) - (int(uFrame) / ip) * ip == 0) {
+        col.rgb = vec3(1.0) - col.rgb;
+    }
 
     //  2.5 physics: Crutchfield's camera-side knobs (sensor gamma, soft
     //  saturation knee, RGB cross-coupling). Placed here because these
@@ -134,22 +163,28 @@ void main() {
     //  3b. gamma out — re-encode before mixing with display-gamma signals
     if ((uEnable & L_GAMMA) != 0) col = gamma_out_apply(col);
 
+    //  6. decay: per-frame bleed. Runs BEFORE mixers so fresh partner-field
+    //     and camera content enter at full amplitude against a faded
+    //     background — matching an analog rig where the camera sees live
+    //     content at scene brightness, not CRT-attenuated brightness.
+    //     See development/LAYERS.md §feedback-write stages.
+    if ((uEnable & L_DECAY) != 0) col = decay_apply(col);
+
     //  7. couple: blend in the other field (Kaneko)
     if ((uEnable & L_COUPLE) != 0) col = couple_apply(col, uv);
 
     //  8. external: blend in camera
     if ((uEnable & L_EXTERNAL) != 0) col = external_apply(col, uv);
 
-    //  6. decay: per-frame bleed
-    if ((uEnable & L_DECAY) != 0) col = decay_apply(col);
-
-    //  9. noise: thermal sensor floor
-    if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
-
-    // 10. inject: triggered pattern or held shape perturbation
+    //  9. inject: triggered pattern or held-shape perturbation. Runs
+    //     BEFORE noise so injected patterns pick up sensor-floor texture
+    //     rather than reading as pristine-synthetic against noisy feedback.
     if ((uEnable & L_INJECT) != 0 || uInject > 0.0 || uShapeInject > 0.0) {
         col = inject_apply(col, uv);
     }
+
+    // 10. noise: thermal sensor floor — final additive stage before post.
+    if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
 
     // 11. V-4-style effect slots. Two back-to-back slots, each holding
     //     any of 18 effects (or off). Placed last so effects operate on

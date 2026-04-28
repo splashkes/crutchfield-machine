@@ -1,0 +1,29 @@
+// 05_pad_drift — very long evolving pad chords, muted percussion pulse
+// underneath, slow tempo. Each note rises in over half a second and
+// releases over two. Good for reflective / ambient feedback sessions.
+
+stack(
+  // Soft hat pulse keeps time without fighting the pad.
+  s("hh*8").gain(0.15).pan(0.4),
+  // Quiet kick every other bar, deep.
+  s("bd/2").gain(0.5).lpf(120).room(0.2),
+  // Pad: triangle wave, long ADSR. Zoom flips the chord direction and
+  // modestly swells gain; rotation wobbles the filter slowly across
+  // the sustained note.
+  (fb.zoom > 1
+    ? note("<c3 eb3 g3 bb3>")
+    : note("<bb3 g3 eb3 c3>"))
+    .s("tri")
+    .lpf(900 + fb.theta * 2200)
+    .gain(0.22 + Math.min(Math.abs(fb.zoom - 1), 0.2) * 0.4)
+    .attack(0.55).sustain(0.9).release(2.0)
+    .delay(0.35).room(0.75),
+  // Octave-above ghost line follows the same direction.
+  (fb.zoom > 1
+    ? note("<g4 bb4 c5 eb5>")
+    : note("<eb5 c5 bb4 g4>"))
+    .s("sine").gain(0.15)
+    .lpf(1600 + fb.theta * 2000)
+    .attack(0.45).sustain(0.8).release(1.6)
+    .delay(0.5).room(0.8)
+).slow(2)

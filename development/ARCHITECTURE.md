@@ -34,14 +34,25 @@ thread pools. Everything else is single-threaded.
 ```
 feedback-GBPS/
 ├── main.cpp             ~2500 lines. Window, main loop, CLI, state, apply_action.
-├── input.cpp/h          ~700 lines. Action registry, binding table, kbd/pad/MIDI dispatch.
+├── input.cpp/h          ~750 lines. Action registry, binding table, kbd/pad/MIDI dispatch.
 ├── recorder.cpp/h       ~400 lines. 3-stage capture pipeline.
 ├── overlay.cpp/h        ~500 lines. HUD + drill-down help panel + section legend.
 ├── camera.cpp/h         ~300 lines. Windows Media Foundation webcam API.
 ├── camera_avfoundation.mm macOS AVFoundation webcam backend behind the same API.
+├── music.cpp/h          ~550 lines. Embedded JS runtime + pattern scheduler +
+│                        preset manager + fb.* scalar bridge.
+├── audio.cpp/h          ~500 lines. miniaudio backend, voice pool, sampler,
+│                        synth voices, biquad LPF/HPF, delay bus, Freeverb.
+├── js/engine.js         ~280 lines. Clean-room Strudel-syntax pattern engine
+│                        (Pattern class, mini-notation parser, combinators).
+├── music/*.strudel      User-editable pattern presets (5 shipped + metronome).
+├── samples/*.wav        Optional user drum pack — overrides synth fallbacks.
 ├── exr_write.h          Self-contained EXR writer (half-float ZIP + none).
 ├── stb_image_write.h    Vendored (PNG screenshot).
 ├── stb_easy_font.h      Vendored (overlay text rendering).
+├── vendor/
+│   ├── quickjs/         QuickJS-ng JS runtime (MIT, pure C, ES2020).
+│   └── miniaudio.h      Single-header audio library (MIT/public-domain).
 ├── shaders/
 │   ├── main.vert        Full-screen triangle.
 │   ├── main.frag        Orchestrator — #includes every layer.
@@ -53,12 +64,12 @@ feedback-GBPS/
 ├── presets/*.ini        Curated (01..05) + user-saved (auto_*).
 ├── research/            Source papers, V-4 inventory, A/B-bus holdback doc.
 ├── gallery/             README screenshots.
-├── linux/, macOS/       Platform notes / historical stubs (see their READMEs).
-├── Makefile.macos       Native Apple Silicon build + dist zip.
+├── linux/, macOS/       Platform ports — transform scripts + native camera backend. See ADR-0014.
+├── Makefile.macos       Native Apple Silicon build + dist zip. See ADR-0019.
 ├── Makefile             MSYS2/MinGW build + `make dist` target.
 ├── build_msvc.bat       MSVC/vcpkg alternate (less maintained).
 └── development/         You are here.
-    └── plans/           Forward-looking planning docs (Strudel MIDI sync, etc.).
+    └── plans/           Forward-looking planning docs.
 ```
 
 ## Components
@@ -82,8 +93,9 @@ implement individual layers; `shaders/common.glsl` provides helpers;
 
 **Layer dispatch order is significant.** Warp and thermal happen on
 the *sample* UV (before the texture read); optics performs the read;
-everything else operates on the returned color. Don't reorder without
-understanding what each stage expects.
+everything else operates on the returned color. Full per-layer
+reference, order rationale, and hard-vs-soft reorder constraints live
+in [LAYERS.md](LAYERS.md). Don't reorder without reading it.
 
 **Hot reload:** `\` key triggers `reload_shaders()` in main.cpp, which
 rebuilds the program from disk. If compile fails, the old program
@@ -260,6 +272,81 @@ CPU buffer layout expected by the render loop.
 If no camera is present, no supported format is available, or permission
 is denied, the `external` layer becomes a no-op. Graceful degradation.
 
+### Music → visual trigger bridge
+
+Closes half of the bi-directional loop (the other half being the
+existing `fb.*` video → JS scalars). `audio.cpp::trigger()` and
+`trigger_note()` each classify the event into a bucket (kick / snare
+/ hat / bass / other) via sample-name prefix and synth frequency.
+The classifier writes into a mutex-guarded accumulator which the
+render loop drains once per frame via `Audio::consumeTriggerPulses()`.
+Each drained pulse feeds a per-bucket decaying envelope (~0.88 per
+frame, ~150 ms half-life) in `State`; envelopes are pushed as
+`uMusKick/Snare/Hat/Bass/Other` uniforms to the feedback shader.
+
+Consumers so far: the `noise` layer's `dropout` archetype (mode 4).
+Each bucket produces a distinct glitch flavour — see
+[LAYERS.md §Music → visual bridge](LAYERS.md#music--visual-bridge-dropout-noise)
+and [ADR-0018](ADR/0018-music-to-visual-trigger-bridge.md) for the
+rationale.
+
+Classification is intentionally lightweight (prefix match on sample
+name, frequency threshold for synths). It is NOT trying to be a
+signal-processing analyser — that would be an additional feature on
+top (mentioned in TODO as audio-reactivity via RMS/bands).
+
+### Music + audio engine
+
+**Files:** `music.cpp/h`, `audio.cpp/h`, `js/engine.js`, `music/*.strudel`.
+
+**Purpose:** native pattern-driven audio so feedback makes music without
+requiring an external DAW, and so live visual state can modulate the
+music in real time (the "closed loop" use case). Strudel syntax is
+supported through a clean-room JS reimplementation — see ADR-0012 for
+why not to embed Strudel itself.
+
+**Three layers:**
+
+1. **JS runtime (QuickJS)** — `music.cpp::init()` spins up a JSRuntime
+   + JSContext at startup, loads `js/engine.js` once. The engine
+   exposes `Pattern`, `s()`, `note()`, `stack`, `cat`, mini-notation
+   `parseMini`, and chainable effect setters (`.lpf`, `.delay`,
+   `.room`, `.attack`, `.release`, …). See ADR-0010.
+2. **Scheduler (music.cpp)** — `Music::update(now, dt, bpm)` runs once
+   per render frame. Advances a cycle clock by frame `dt` (not wall
+   time — see ADR-0013). Each frame queries the active pattern over
+   a ~250 ms lookahead window, dedupes events by `hap.whole.begin`,
+   translates each event's onset into a wall-clock delay, and pushes
+   it to the audio module's pending queue.
+3. **Audio engine (audio.cpp)** — miniaudio callback thread runs a
+   24-voice pool at 48 kHz stereo. Each voice is either a sample
+   (WAV/FLAC/MP3 via ma_decoder) or a synth (sine/saw/square/tri
+   with ADSR). Per-voice biquad LPF + HPF; global delay and reverb
+   busses with per-voice send amounts.
+
+**Preset lifecycle:**
+- `Music::scanPresets("music")` sorts `*.strudel` files alphabetically.
+- `Music::loadPreset(i)` reads the file fresh each time and sets the
+  active pattern string. First preset auto-loads at boot.
+- `Music::pollPresetReload()` stat()s the active file every ~250 ms;
+  on mtime change it re-reads and re-sets. Hot-reload for live edits.
+- `Music::pushMomentaryPreset("breakbeat")` / `popMomentaryPreset()`
+  power the hold-Space live gesture — switches to a named preset for
+  the duration of a press and restores on release.
+
+**Video ↔ music bridge:** `Music::setScalar(name, value)` updates a
+property on the JS `fb` global. `main.cpp` publishes 12 scalars per
+frame (`fb.zoom`, `fb.theta`, `fb.decay`, `fb.contrast`, `fb.chroma`,
+`fb.blur`, `fb.noise`, `fb.inject`, `fb.outFade`, `fb.paused`,
+`fb.beatPhase`, `fb.hueRate`). Patterns read them as plain numbers.
+
+**MIDI integration** (separate from the native engine but part of the
+music story): `Input::pollMidi()` in `input.cpp` registers
+feedback.exe as a virtual MIDI *input* port via the teVirtualMIDI
+driver (`virtualMIDICreatePortEx2`). Strudel's Web MIDI output sees
+the port, sends Clock / Start / Stop / Note-On / CC. MIDI Clock drives
+BPM when live. See ADR-0011.
+
 ### Distribution build (Makefile `dist` target)
 
 See [RUNBOOK.md](RUNBOOK.md) for the full procedure. Key: static links
@@ -322,6 +409,10 @@ then lower `--iters`, then lower sim resolution.
 | You want to... | ...touch this |
 |---|---|
 | Add a new visual behavior | `shaders/layers/<name>.glsl` + wiring in `main.frag` + host-side uniform plumb in `main.cpp`. See [CONTRIBUTING.md](../CONTRIBUTING.md). |
+| Add a new pixelate style or CRT-bleed preset | Decode in `shaders/layers/pixelate.glsl` (`pixelate_decode_bleed` for bleed; the shape/size decode for style). Update `PIXELATE_NAMES` / `PIXELATE_BLEED_NAMES` in `main.cpp`. |
+| Add a new noise archetype | New `if (uNoiseQuality == N)` branch in `shaders/layers/noise.glsl`. Extend `NOISE_NAMES` in `main.cpp` (name auto-appears in the cycle via `N_NOISE_TYPES`). |
+| Add a new inject pattern | New `if (id == N)` branch in `inject.glsl::pattern_gen` returning `vec4(rgb, alpha)`. Extend `PATTERN_NAMES` in `main.cpp`. Static patterns return alpha 1.0; sparse / animated patterns return 0.0 for background pixels. Optional: pair with a key binding and an `injectHoldTimer` for long-duration animated patterns. |
+| Add a new music → visual signal | In `audio.cpp::classify_sample()` / `trigger_note()` bucket the event into one of the 5 existing envelopes (kick/snare/hat/bass/other) — or add a new bucket to `TriggerPulses` + `consumeTriggerPulses()`. Shader uniform plumb in `main.cpp`, consume in `noise.glsl` or elsewhere. |
 | Add a new CLI flag | `Cfg` struct, `parse_cli`, help text, `State S` application in `main()`. |
 | Add a new user action | `ActionId` entry in `input.h`; table row in `input.cpp::ACTIONS[]`; default binding in `Input::installDefaults`; `case` in `apply_action` in main.cpp; row in the relevant `section_*` builder. |
 | Rebind an existing action | Edit `bindings.ini` next to the exe — no recompile. |
@@ -330,7 +421,11 @@ then lower `--iters`, then lower sim resolution.
 | Add another CPU capture card | `camera.cpp` / `camera_avfoundation.mm`, depending on platform. |
 | Extend the native macOS path | `Makefile.macos`, `camera_avfoundation.mm`, `development/apple_silicon.md`. |
 | Port to Linux | `linux/` plus whatever root-port decisions supersede it later. |
-| Add real MIDI support | Implement `Input::pollMidi` on top of winmm. Plan captured in `development/plans/strudel_midi_sync.md`. |
+| Add a music preset | Drop a `.strudel` file into `music/`. Edit any number at runtime and save — hot-reloads within ~250 ms. |
+| Add a Pattern combinator | Add a method on `Pattern.prototype` in `js/engine.js`. For a no-op safety net instead of real logic, add the name to `_UNIMPL_METHODS`. |
+| Add a new audio effect | Extend `audio.cpp` with DSP + optional `Voice` fields, add `TriggerOpts`/`NoteOpts` field, marshal from `Event` in `music.cpp`'s scheduler. |
+| Publish a new video→music scalar | Call `Music::setScalar("name", val)` each frame in `main.cpp`. Document the name in the README and the Music help section. |
+| Add a MIDI-driven action | Wire the binding in `bindings.ini [midi]` (see `note:N ch=N` / `cc:N ch=N`). Existing actions work with any MIDI source. |
 
 ## Invariants the code relies on
 
@@ -338,9 +433,34 @@ Break these and things go subtly wrong:
 
 1. **Every layer's `_apply()` function signature is in main.frag's dispatch.**
    If a layer function signature changes, main.frag needs updating too.
+   See [LAYERS.md](LAYERS.md).
 2. **Layer bits in host `L_*` enum match the GLSL `const int L_*`.**
    These are mirrored by hand. Getting them out of sync silently breaks
-   layer toggles.
+   layer toggles. See [LAYERS.md](LAYERS.md).
+2a. **No layer in the default feedback path clamps to [0,1].** The loop
+   is float precisely so HDR overshoot (S-curves, Reinhard pre-knee,
+   additive bloom) is preserved. Use `max(x, 0)` only as NaN defense,
+   never as range compression. See
+   [ADR-0015](ADR/0015-pipeline-order-and-float-preservation.md) and
+   [LAYERS.md §float-precision invariant](LAYERS.md#float-precision-invariant).
+2b. **Sample stage is either optics OR pixelate, never both in the
+   same frame.** When `uPixelateStyle != 0`, `pixelate_apply` takes
+   over the uPrev read — hard block edges can't survive a blur
+   kernel. See [ADR-0017](ADR/0017-pixelate-as-alternate-sample.md).
+2c. **Pattern alpha governs inject sparsity.** `pattern_gen()` returns
+   `vec4(rgb, alpha)` where alpha is the per-pixel inject mask.
+   Animated patterns (e.g. the bouncer) MUST return alpha 0 outside
+   their shape or they'll wipe the feedback field with black.
+2d. **Music-envelope decay is host-owned.** `S.musKick/Snare/Hat/
+   Bass/Other` decay in the main loop after `Audio::
+   consumeTriggerPulses()`. The shader reads them as unvarying
+   uniforms for that frame. If you add a new envelope, own its
+   decay in the same place.
+2e. **Brightness is display-only.** The `uBrightness` multiplier
+   lives in `blit.frag`, NOT in the feedback write. Applying it in
+   the loop would cause cascading feedback explosion (brightness
+   >1 would blow up over N frames). The recorder captures the sim
+   FBO before the blit, so EXR output is brightness-independent.
 3. **`S.p` is the single source of truth for per-layer parameters.**
    Uniforms read from it; presets write from/to it; `apply_action`
    modifies it.
@@ -352,7 +472,8 @@ Break these and things go subtly wrong:
 6. **`CTX_SEC_STATUS + N == section N` in HELP_SECTIONS[].** The
    input layer's context enum and the overlay's section index use the
    same ordinal. Reordering `HELP_SECTIONS[]` breaks gamepad dispatch
-   silently.
+   silently. The array has 17 entries as of v0.1.3 (Music added
+   between BPM and Quality).
 7. **`apply_action` is the only writer to `S.p` in response to user
    input.** Keyboard, gamepad, MIDI, overlay navigation — all go
    through it. If you add a side path (e.g. a demo scheduler), call
@@ -363,6 +484,18 @@ Break these and things go subtly wrong:
    The user's `p.outFade` and `p.decay` are the setpoints; BPM
    modulations ride on top without mutating them. Don't confuse the
    two in preset save/load.
+9. **The music scheduler fires on `hap.whole.begin`, not `part.begin`.**
+   Strudel's queryArc returns every hap whose *part* overlaps the
+   query arc. Firing on `part.begin` re-triggers every frame the
+   window slides across a hap — producing dense "avant garde"
+   noise. The scheduler filters to events where `whole.begin ∈
+   [qStart, qEnd)`. Don't change this back.
+10. **The music cycle clock advances on frame `dt`, not wall time.**
+    Wall-time advancement plus the OS throttling the render thread
+    during alt-tab produced huge cycle jumps and event bursts on
+    refocus. Dt-coupling also gives us "sim slows → music slows"
+    for free. Clamp dt to 100 ms per frame; anything bigger is an
+    execution stall we should skip, not replay.
 
 ## Where the system is brittle
 
