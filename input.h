@@ -167,6 +167,14 @@ enum ActionId : int {
     ACT_DDJ_BANK_HOLD,
     ACT_NOISEQ_WHITE, ACT_NOISEQ_PINK, ACT_NOISEQ_GRAIN, ACT_NOISEQ_SCANLINE,
 
+    // ── MPK Mini A/B/HOLD modal modifiers ────────────────────────────
+    // Software-banked modes for the MPK Mini (and any controller that
+    // doesn't have enough physical buttons for 3 banks of pads/knobs).
+    // Bound by default to keyboard keys, but technically routable from
+    // any source.
+    ACT_MPK_HOLD,        // momentary: held → mode HOLD; released → back to A/B
+    ACT_MPK_B_TOGGLE,    // press once: flip into mode B; press again: flip back
+
     ACT__COUNT
 };
 
@@ -230,6 +238,11 @@ struct Binding {
     bool      delta    = false;    // MIDI CC/CC14: dispatch change since last value
     bool      bipolar  = false;    // MIDI CC/CC14 absolute: 0..1 -> -1..+1
     bool      shifted  = false;    // MIDI note: require software Shift note held
+    int       mpkMode  = -1;       // MPK A/B/HOLD modal filter:
+                                   //   -1 = any mode (default — non-modal binding)
+                                   //    0 = mode A only (default state)
+                                   //    1 = mode B only (B-toggle held on)
+                                   //    2 = mode HOLD only (HOLD modifier held)
     BindContext context = CTX_ANY; // gamepad only; keyboard ignores this
 };
 
@@ -312,6 +325,11 @@ public:
         bool  deck1Shift  = false;
         bool  deck2Shift  = false;
         bool  masterShift = false;
+        // MPK Mini A/B/HOLD modal state — software-banked since the device
+        // has no spare hardware buttons. mpkMode() returns 0/1/2 derived
+        // from these (HOLD overrides B).
+        bool  mpkBMode      = false;  // sticky toggle: A ↔ B
+        bool  mpkHoldActive = false;  // momentary: held → mode HOLD
         // Pending system real-time events — caller consumes by setting back
         // to false after handling.
         bool  startPending = false;
@@ -319,6 +337,15 @@ public:
     };
     MidiState&       midi()       { return midi_; }
     const MidiState& midi() const { return midi_; }
+
+    // MPK Mini modal modifier setters — called by apply_action when the
+    // user presses the bound modifier keys (default: Right Shift / Right Alt).
+    void setMpkHold(bool on)  { midi_.mpkHoldActive = on; }
+    void toggleMpkB()         { midi_.mpkBMode = !midi_.mpkBMode; }
+    int  currentMpkMode() const {
+        if (midi_.mpkHoldActive) return 2;
+        return midi_.mpkBMode ? 1 : 0;
+    }
 
     // Preferred port name, parsed from `[midi] port = …` in bindings.ini.
     // Substring match against enumerated input devices; empty = pick the

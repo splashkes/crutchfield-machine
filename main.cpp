@@ -70,6 +70,8 @@ struct Cfg {
     float demoPresetSec = 0.0f;     // >0 = cycle to next preset every N seconds
     float demoInjectSec = 0.0f;     // >0 = fire an injection every N seconds
     bool midiLearn = false;          // print incoming MIDI messages
+    std::string midiPort;            // override the port hint (substring match against device names)
+    std::string midiUsage;           // path to a usage log file (coalesced one-row-per-action-change)
 };
 
 static std::string g_program_name = "feedback";
@@ -117,6 +119,12 @@ static void print_cli_help() {
       "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
       "  --high-color        windowed, max colour pipeline (float32 + blur-q 2 + ca-q 2 + fields 4)\n"
       "  --midi-learn        print incoming MIDI notes/CCs for controller mapping\n"
+      "  --midi-port NAME    override which MIDI input device to open (substring match)\n"
+      "                      e.g. --midi-port \"MPK\" picks any device whose name contains 'MPK'.\n"
+      "                      Empty string = match any (first non-virtual device wins).\n"
+      "  --midi-usage FILE   write a coalesced usage log to FILE (one line per action change,\n"
+      "                      ---- CLEAR ---- dividers when you hit clear). For figuring out\n"
+      "                      which controls actually get used during a session.\n"
       "  -h, --help          show this help\n\n"
       "On Windows only: launch with NO arguments to get an interactive mode\n"
       "picker for double-click / non-CLI use.\n\n"
@@ -153,6 +161,8 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--demo-inject"))  { c.demoInjectSec = (float)atof(next()); if (c.demoInjectSec < 0) c.demoInjectSec = 0; }
         else if (eq("--demo"))         { c.demoPresetSec = 30.0f; c.demoInjectSec = 8.0f; }
         else if (eq("--midi-learn"))   { c.midiLearn = true; }
+        else if (eq("--midi-port"))    { c.midiPort = next(); }
+        else if (eq("--midi-usage"))   { c.midiUsage = next(); }
         // Convenience bundle — windowed, full-float feedback, max blur/CA,
         // 4-field coupling. For exploring the colour pipeline without
         // committing to fullscreen.
@@ -2420,8 +2430,29 @@ static const ActionLayerReq ACTION_REQS[] = {
     { ACT_INJECT_HOLD,   L_INJECT,   "inject",        "F10" },
 };
 
+// Usage log — opened by --midi-usage FILE, written from apply_action below.
+// Coalesces consecutive same-action calls into one line so a knob sweep is
+// one row, not 128. ACT_CLEAR fires emit a "---- CLEAR ----" divider so
+// performance vs. button exploration is easy to tell apart.
+static FILE*    g_usageLog = nullptr;
+static ActionId g_lastUsageAction = ACT_NONE;
+
 static void apply_action(ActionId id, float mag) {
     auto& p = S.p;
+
+    if (g_usageLog && id != g_lastUsageAction) {
+        g_lastUsageAction = id;
+        const double t = glfwGetTime();
+        if (id == ACT_CLEAR) {
+            std::fprintf(g_usageLog, "%8.2f  ---- CLEAR ----\n", t);
+        } else {
+            const ActionInfo* info = action_info(id);
+            std::fprintf(g_usageLog, "%8.2f  %-30s  %s\n", t,
+                         info ? info->name : "?",
+                         info ? info->desc : "");
+        }
+        std::fflush(g_usageLog);
+    }
 
     // Warn when a parameter action fires but its layer is off. We still
     // apply the change (so presets remain consistent) — just hint at the
@@ -3241,6 +3272,18 @@ static void apply_action(ActionId id, float mag) {
             sync_ddj_filter_leds();
             return;
 
+        // MPK Mini A/B/HOLD modal modifiers — keyboard-driven (Right Shift /
+        // Right Alt by default). HOLD is momentary (TRIGGER fires 1.0 on
+        // press, 0.0 on release). B is sticky (DISCRETE fires 1.0 on press,
+        // each press flips the toggle).
+        case ACT_MPK_HOLD:
+            g_input.setMpkHold(mag > 0.5f);
+            return;
+        case ACT_MPK_B_TOGGLE:
+            g_input.toggleMpkB();
+            S.ov.logEvent(g_input.midi().mpkBMode ? "MPK mode: B" : "MPK mode: A");
+            return;
+
         case ACT_NONE: case ACT__COUNT: return;
     }
     print_status();
@@ -3866,6 +3909,23 @@ int main(int argc, char** argv) {
     // on first run so users have something to edit.
     g_input.installDefaults();
     g_input.setMidiLearn(g_cfg.midiLearn);
+    // CLI override beats both installDefaults() and bindings.ini's [midi] port=.
+    // Pass the flag verbatim — empty string is meaningful (match any device).
+    if (!g_cfg.midiPort.empty()) g_input.setMidiPortHint(g_cfg.midiPort);
+    if (!g_cfg.midiUsage.empty()) {
+        g_usageLog = std::fopen(g_cfg.midiUsage.c_str(), "w");
+        if (!g_usageLog) {
+            std::fprintf(stderr, "[usage] could not open '%s' for writing\n",
+                         g_cfg.midiUsage.c_str());
+        } else {
+            std::fprintf(g_usageLog, "# usage log — one line per action change.\n");
+            std::fprintf(g_usageLog, "# columns: t(seconds)  action.name  description\n");
+            std::fprintf(g_usageLog, "# divider: ---- CLEAR ---- (emitted when ACT_CLEAR fires)\n");
+            std::fflush(g_usageLog);
+            std::fprintf(stdout, "[usage] writing coalesced action log to '%s'\n",
+                         g_cfg.midiUsage.c_str());
+        }
+    }
     g_input.setHandler(apply_action);
 
     // Help panel: ordered section list + provider. Each section's body is

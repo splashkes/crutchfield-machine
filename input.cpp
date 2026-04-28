@@ -26,14 +26,16 @@ struct FeedbackMidiMsg {
     uint8_t len;
 };
 
-#ifdef __APPLE__
+// Platform-neutral MIDI ABI. The implementations live in:
+//   - macOS/midi_coremidi.mm  for __APPLE__  (CoreMIDI)
+//   - input.cpp _WIN32 block  for Windows    (teVirtualMIDI + winmm)
+//   - input.cpp stub block    for everything else (no-op)
 extern "C" {
 int  feedback_midi_open(const char* port_hint);
 int  feedback_midi_poll(FeedbackMidiMsg* out, int max_count);
 void feedback_midi_status(char* name, int name_cap, int* connected);
 int  feedback_midi_send_note(int channel, int note, int velocity);
 }
-#endif
 
 // ─────────────────────────────────────────────────────────────────────────
 // Action catalogue — the table that names every ActionId. Order is free
@@ -241,6 +243,9 @@ static const ActionInfo ACTIONS[] = {
     { ACT_NOISEQ_GRAIN,          "q.noise.grain",     AK_DISCRETE, "Quality", "noise type: grain" },
     { ACT_NOISEQ_SCANLINE,       "q.noise.scanline",  AK_DISCRETE, "Quality", "noise type: scanline" },
 
+    { ACT_MPK_HOLD,              "mpk.hold",          AK_TRIGGER,  "App", "MPK Mini: HOLD modifier (momentary)" },
+    { ACT_MPK_B_TOGGLE,          "mpk.bToggle",       AK_DISCRETE, "App", "MPK Mini: B mode toggle" },
+
     { ACT_LAUNCH_LOOPMIDI,       "music.installMidiDriver", AK_DISCRETE, "BPM", "install MIDI driver (Windows)" },
     { ACT_MUSIC_NEXT,            "music.next",      AK_DISCRETE, "BPM", "next music preset" },
     { ACT_MUSIC_PREV,            "music.prev",      AK_DISCRETE, "BPM", "prev music preset" },
@@ -282,7 +287,7 @@ static void K(Input& in, ActionId a, int key, int mods = 0, float scale = 1.0f) 
 static void MIDI(Input& in, ActionId a, BindSource src, int code, int ch = 0,
                  float scale = 1.0f, bool invert = false, bool relative = false,
                  bool delta = false, bool absolute = false, bool bipolar = false,
-                 bool shifted = false) {
+                 bool shifted = false, int mpkMode = -1) {
     Binding b;
     b.action   = a;
     b.source   = src;
@@ -295,6 +300,7 @@ static void MIDI(Input& in, ActionId a, BindSource src, int code, int ch = 0,
     b.absolute = absolute;
     b.bipolar  = bipolar;
     b.shifted  = shifted;
+    b.mpkMode  = mpkMode;
     in.bind(b);
 }
 
@@ -543,10 +549,19 @@ void Input::installDefaults() {
     K(in, ACT_MUSIC_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_MUSIC_PLAYPAUSE,  GLFW_KEY_SPACE, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
 
-#ifdef __APPLE__
+    // MPK Mini A/B/HOLD modal modifiers — keyboard chord since the MPK Mini
+    // has no spare MIDI buttons. Right Shift = HOLD-momentary; Right Alt =
+    // B-toggle (sticky). The onKey path strips the binding-key's own mod
+    // bit so these match modmask=0.
+    K(in, ACT_MPK_HOLD,        GLFW_KEY_RIGHT_SHIFT);
+    K(in, ACT_MPK_B_TOGGLE,    GLFW_KEY_RIGHT_ALT);
+
     // DDJ-FLX2 performance defaults. These are inert unless a matching
-    // CoreMIDI source is connected, and stay confined to Apple builds for
-    // now while the macOS controller path is being proven out.
+    // MIDI source is connected — Bindings just sit in the table until a
+    // controller actually fires the matching note/CC. Applies to both
+    // platforms: macOS opens the controller via CoreMIDI; Windows opens
+    // it via winmm (the port_hint below tells the winmm scanner what to
+    // match against).
     midiPortHint_ = "DDJ-FLX2";
 
     // Jog wheels: Pioneer relative CC centered on 0x40.
@@ -664,7 +679,94 @@ void Input::installDefaults() {
     MIDI(in, ACT_FIELDS_CYCLE,     SRC_MIDI_NOTE, 5, 10, 1, false, false, false, false, false, true);
     MIDI(in, ACT_BPM_FLASH_TOGGLE, SRC_MIDI_NOTE, 6, 10, 1, false, false, false, false, false, true);
     MIDI(in, ACT_BPM_DECAYDIP_TOGGLE, SRC_MIDI_NOTE, 7, 10, 1, false, false, false, false, false, true);
-#endif
+
+    // ─────────────────────────────────────────────────────────────────────
+    // AKAI MPK Mini defaults — A/B/HOLD modal banking.
+    //
+    // The MPK Mini's hardware Bank A/B button doesn't send MIDI, and there
+    // are no other spare buttons, so the 3 modes are gated by the keyboard
+    // chord above (Right Shift = HOLD; Right Alt = B-toggle).
+    //
+    // Each pad binding is doubled — once for hardware Bank A (ch10 notes
+    // 36-43) and once for Bank B (ch10 notes 44-51) — so the user can
+    // press the bank button without anything breaking.
+    //
+    // Knobs use `delta` mode so they act as effectively endless: only the
+    // change since the last value matters. Switching A/B/HOLD doesn't
+    // create a parameter "snap" because we never read the absolute knob
+    // position.
+    // ─────────────────────────────────────────────────────────────────────
+    auto MPK_KNOB = [&](ActionId a, int cc, int mode, float scale = 1.0f) {
+        MIDI(in, a, SRC_MIDI_CC, cc, /*ch*/1, scale, /*invert*/false,
+             /*relative*/false, /*delta*/true, /*absolute*/false,
+             /*bipolar*/false, /*shifted*/false, /*mpkMode*/mode);
+    };
+    auto MPK_PAD = [&](ActionId a, int padIdx, int mode) {
+        MIDI(in, a, SRC_MIDI_NOTE, 36 + padIdx, /*ch*/10, 1.0f,
+             false, false, false, false, false, false, mode);  // Bank A
+        MIDI(in, a, SRC_MIDI_NOTE, 44 + padIdx, /*ch*/10, 1.0f,
+             false, false, false, false, false, false, mode);  // Bank B
+    };
+
+    // Mode A — warp / spatial.
+    MPK_KNOB(ACT_ZOOM_AXIS,    70, 0,  4.0f);
+    MPK_KNOB(ACT_THETA_AXIS,   71, 0,  4.0f);
+    MPK_KNOB(ACT_TRANS_X_AXIS, 72, 0,  4.0f);
+    MPK_KNOB(ACT_TRANS_Y_AXIS, 73, 0,  4.0f);
+    MPK_KNOB(ACT_BLURX_UP,     74, 0, 60.0f);
+    MPK_KNOB(ACT_BLURY_UP,     75, 0, 60.0f);
+    MPK_KNOB(ACT_GAMMA_UP,     76, 0, 30.0f);
+    MPK_KNOB(ACT_DECAY_AXIS,   77, 0,  1.0f);
+
+    // Mode B — color / dynamics.
+    MPK_KNOB(ACT_HUE_AXIS,     70, 1,  4.0f);
+    MPK_KNOB(ACT_SAT_UP,       71, 1, 60.0f);
+    MPK_KNOB(ACT_CONTRAST_UP,  72, 1, 60.0f);
+    MPK_KNOB(ACT_NOISE_AXIS,   73, 1,  1.0f);
+    MPK_KNOB(ACT_COUPLE_UP,    74, 1, 50.0f);
+    MPK_KNOB(ACT_EXTERNAL_AXIS,75, 1,  1.0f);
+    MPK_KNOB(ACT_OUTFADE_UP,   76, 1, 50.0f);
+    MPK_KNOB(ACT_BRIGHTNESS_UP,77, 1, 50.0f);
+
+    // Mode HOLD — effects / chaos.
+    MPK_KNOB(ACT_THERMAMP_UP,    70, 2, 50.0f);
+    MPK_KNOB(ACT_THERMSPEED_UP,  71, 2, 50.0f);
+    MPK_KNOB(ACT_THERMSWIRL_UP,  72, 2, 50.0f);
+    MPK_KNOB(ACT_THERMSCALE_UP,  73, 2, 50.0f);
+    MPK_KNOB(ACT_VFX1_PARAM_UP,  74, 2, 50.0f);
+    MPK_KNOB(ACT_VFX2_PARAM_UP,  75, 2, 50.0f);
+    MPK_KNOB(ACT_SHAPE_COUNT_AXIS,76, 2, 1.0f);
+    MPK_KNOB(ACT_FX_WET_AXIS,    77, 2, 1.0f);
+
+    // Pads Mode A — patterns.
+    MPK_PAD(ACT_PATTERN_HBARS,    0, 0);
+    MPK_PAD(ACT_PATTERN_VBARS,    1, 0);
+    MPK_PAD(ACT_PATTERN_DOT,      2, 0);
+    MPK_PAD(ACT_PATTERN_CHECKER,  3, 0);
+    MPK_PAD(ACT_PATTERN_GRAD,     4, 0);
+    MPK_PAD(ACT_PATTERN_NOISE,    5, 0);
+    MPK_PAD(ACT_PATTERN_RINGS,    6, 0);
+    MPK_PAD(ACT_PATTERN_SPIRAL,   7, 0);
+
+    // Pads Mode B — layer toggles.
+    MPK_PAD(ACT_LAYER_WARP,       0, 1);
+    MPK_PAD(ACT_LAYER_OPTICS,     1, 1);
+    MPK_PAD(ACT_LAYER_COLOR,      2, 1);
+    MPK_PAD(ACT_LAYER_DECAY,      3, 1);
+    MPK_PAD(ACT_LAYER_NOISE,      4, 1);
+    MPK_PAD(ACT_LAYER_COUPLE,     5, 1);
+    MPK_PAD(ACT_LAYER_EXTERNAL,   6, 1);
+    MPK_PAD(ACT_LAYER_INJECT,     7, 1);
+
+    // Pads Mode HOLD — chaos / transport.
+    MPK_PAD(ACT_VFX1_CYCLE_BACK,  0, 2);
+    MPK_PAD(ACT_VFX1_OFF,         1, 2);
+    MPK_PAD(ACT_VFX1_CYCLE_FWD,   2, 2);
+    MPK_PAD(ACT_BPM_TAP,          3, 2);
+    MPK_PAD(ACT_MUSIC_PREV,       4, 2);
+    MPK_PAD(ACT_MUSIC_PLAYPAUSE,  5, 2);
+    MPK_PAD(ACT_MUSIC_NEXT,       6, 2);
+    MPK_PAD(ACT_CLEAR,            7, 2);
 
     // Help nav — arrow keys dedicated while help is open (the handler checks
     // help visibility and consumes these only then, so they do NOT conflict
@@ -901,7 +1003,20 @@ void Input::onKey(int key, int /*scancode*/, int action, int mods) {
     for (const Binding& b : bindings_) {
         if (b.source != SRC_KEY) continue;
         if (b.code != key) continue;
-        if (b.modmask != matchMods) continue;
+        // If the binding's key IS a modifier key, the press/release event
+        // for that key sets the matching mod flag — strip it from the
+        // effective mods so a modmask=0 binding (e.g. "Right Shift alone")
+        // still matches.
+        int effMods = matchMods;
+        switch (b.code) {
+        case GLFW_KEY_LEFT_CONTROL: case GLFW_KEY_RIGHT_CONTROL:
+            effMods &= ~GLFW_MOD_CONTROL; break;
+        case GLFW_KEY_LEFT_ALT:     case GLFW_KEY_RIGHT_ALT:
+            effMods &= ~GLFW_MOD_ALT;     break;
+        case GLFW_KEY_LEFT_SUPER:   case GLFW_KEY_RIGHT_SUPER:
+            effMods &= ~GLFW_MOD_SUPER;   break;
+        }
+        if (b.modmask != effMods) continue;
 
         const ActionInfo* info = action_info(b.action);
         if (!info) continue;
@@ -1394,10 +1509,19 @@ void Input::pollGamepad(int jid, float dt, BindContext currentCtx) {
     }
 }
 
-#ifdef __APPLE__
+// ─────────────────────────────────────────────────────────────────────────
+// MIDI dispatch — platform-neutral.
+//
+// Reads `FeedbackMidiMsg` events from `feedback_midi_poll` (the platform
+// backend already framed and timestamped them), then translates them
+// against `bindings_` into `handler_(action, magnitude)` calls. The
+// platform backend owns ports + threading; this layer owns CC14 pairing,
+// relative/delta/bipolar CC modes, deck/master-shift state, the master-
+// shift alt-bank dispatch, MIDI-Clock-derived BPM, and midi-learn print.
+// ─────────────────────────────────────────────────────────────────────────
+
 namespace {
 struct MidiRuntime {
-    bool opened = false;
     bool prevCcInit[17][128] = {};
     float prevCc[17][128] = {};
     bool ccSeen[17][128] = {};
@@ -1426,13 +1550,11 @@ void Input::pollMidi(float /*dt*/) {
     int connected = 0;
     feedback_midi_status(portName, (int)sizeof portName, &connected);
     if (!connected) {
-        g_midiRt.opened = feedback_midi_open(midiPortHint_.c_str()) != 0;
+        feedback_midi_open(midiPortHint_.c_str());
         feedback_midi_status(portName, (int)sizeof portName, &connected);
-    } else {
-        g_midiRt.opened = true;
     }
     midi_.connected = connected != 0;
-    midi_.portName = midi_.connected ? portName : std::string();
+    midi_.portName  = midi_.connected ? portName : std::string();
 
     FeedbackMidiMsg msgs[512];
     int nmsg = feedback_midi_poll(msgs, 512);
@@ -1479,11 +1601,13 @@ void Input::pollMidi(float /*dt*/) {
             }
             return;
         }
+        const int curMpkMode = currentMpkMode();
         for (const Binding& b : bindings_) {
             if (b.source != SRC_MIDI_NOTE) continue;
             if (b.code != note) continue;
             if (b.modmask != 0 && b.modmask != ch) continue;
             if (b.shifted != softwareShifted) continue;
+            if (b.mpkMode >= 0 && b.mpkMode != curMpkMode) continue;
             const ActionInfo* info = action_info(b.action);
             if (!info) continue;
             float mg = (vel / 127.0f) * b.scale;
@@ -1552,8 +1676,10 @@ void Input::pollMidi(float /*dt*/) {
         }
         if (!handler_) return;
 
+        const int curMpkMode = currentMpkMode();
         for (const Binding& b : bindings_) {
             if (b.modmask != 0 && b.modmask != ch) continue;
+            if (b.mpkMode >= 0 && b.mpkMode != curMpkMode) continue;
             if (b.source == SRC_MIDI_CC) {
                 if (b.code != ccNum) continue;
                 dispatch_cc_value(b, ch, ccNum, ccVal, ccVal / 127.0f);
@@ -1616,6 +1742,21 @@ void Input::pollMidi(float /*dt*/) {
             dispatch_note(ch, note, vel, on);
         } else if (type == 0xB0) {
             dispatch_cc(ch, b1 & 0x7F, b2 & 0x7F);
+        } else if (midiLearn_) {
+            // Channel-voice messages we don't dispatch but the user may
+            // want to discover: program change (0xC0), channel pressure
+            // (0xD0), pitch bend (0xE0), poly aftertouch (0xA0). Print so
+            // mapping work can route them via bindings.ini once we add
+            // matching SRC_* sources.
+            const char* kindName = "unknown";
+            switch (type) {
+                case 0xA0: kindName = "polyAftertouch"; break;
+                case 0xC0: kindName = "programChange";  break;
+                case 0xD0: kindName = "channelPressure";break;
+                case 0xE0: kindName = "pitchBend";      break;
+            }
+            std::printf("[midi-learn] ch=%d %s b1=%d b2=%d  (status=0x%02X)\n",
+                        ch, kindName, b1, b2, b0);
         }
     }
 
@@ -1631,103 +1772,88 @@ bool Input::sendMidiNote(int channel, int note, int velocity) {
     if (velocity > 127) velocity = 127;
     return feedback_midi_send_note(channel, note, velocity) != 0;
 }
-#endif  // __APPLE__
 
 // ─────────────────────────────────────────────────────────────────────────
-// MIDI input — teVirtualMIDI primary path, winmm fallback.
+// Windows MIDI backend — implements the platform-neutral feedback_midi_*
+// ABI declared near the top of this file.
 //
-// The teVirtualMIDI driver (shipped with loopMIDI — installed once, then
-// always loaded by Windows) exposes a C API for any app to register as a
-// virtual MIDI port. We call virtualMIDICreatePortEx2("feedback", …) and
-// Strudel (or any other MIDI-aware tool) then sees our port in their
-// output device list. Zero user configuration.
+// Two coexistent input sources:
+//   1. teVirtualMIDI ("feedback") — virtual port that Strudel and other
+//      MIDI-aware tools target. Driver ships with loopMIDI; resolved at
+//      runtime via LoadLibrary so the app boots on machines without it.
+//   2. winmm fallback — opens a hardware controller matching `port_hint`
+//      (e.g. "DDJ-FLX2"). Skips our own virtual port name to avoid loops.
 //
-// Functions are resolved at runtime via LoadLibrary so the app still
-// boots on machines without the driver — falling back to scanning existing
-// winmm input ports (hardware controllers, pre-configured loopMIDI bridges).
-//
-// Tempo derivation: MIDI Clock runs at 24 pulses per quarter note. We
-// keep a 24-sample rolling window of inter-pulse gaps and average them.
-// If no pulses arrive for ~500 ms we flag clockLive false and fall back
-// to tap tempo.
+// Both push into the same FeedbackMidiMsg queue. winmm input also pairs
+// a winmm output (midiOutOpen) on the matching device, so sendMidiNote
+// can light up controller LEDs.
 // ─────────────────────────────────────────────────────────────────────────
 
 #ifdef _WIN32
-// Opaque handle — we don't dereference it.
 typedef struct _VM_MIDI_PORT *LPVM_MIDI_PORT;
 typedef void (CALLBACK *LPVM_MIDI_DATA_CB)(LPVM_MIDI_PORT, LPBYTE, DWORD, DWORD_PTR);
 typedef LPVM_MIDI_PORT (WINAPI *pfn_vmCreateEx2)(LPCWSTR, LPVM_MIDI_DATA_CB, DWORD_PTR, DWORD, DWORD);
 typedef void          (WINAPI *pfn_vmClose)(LPVM_MIDI_PORT);
 
-// Subset of TE_VM_FLAGS used here.
 #define TE_VM_FLAGS_PARSE_RX            0x00000001
 #define TE_VM_FLAGS_INSTANTIATE_RX_ONLY 0x00000004
 
 namespace {
-    // Parsed MIDI message — any length 1..3 (we drop SysEx).
-    struct MidiMsg {
-        uint8_t b[3];
-        uint8_t len;
-    };
+    std::mutex                  g_mq_mu;
+    std::deque<FeedbackMidiMsg> g_mq_q;
 
-    // Shared source queue — both the teVirtualMIDI callback and the winmm
-    // callback enqueue into here; pollMidi drains on the main thread.
-    struct MidiQueue {
-        std::mutex          mu;
-        std::deque<MidiMsg> q;
-    };
-    MidiQueue g_mq;
+    void enqueue_msg(uint8_t b0, uint8_t b1, uint8_t b2, uint8_t len) {
+        FeedbackMidiMsg m;
+        m.b[0] = b0; m.b[1] = b1; m.b[2] = b2;
+        m.len  = len;
+        std::lock_guard<std::mutex> lk(g_mq_mu);
+        if (g_mq_q.size() > 4096) return;
+        g_mq_q.push_back(m);
+    }
 
-    // Tempo tracking — main-thread-owned.
-    struct ClockState {
-        double clockTimes[24] = {};
-        int    clockHead  = 0;
-        int    clockCount = 0;
-        double lastClockT = 0.0;
-    };
-    ClockState g_clk;
-
-    // ── teVirtualMIDI dynamic binding ────────────────────────────────
     struct TeVm {
-        HMODULE          dll       = nullptr;
-        pfn_vmCreateEx2  pCreate   = nullptr;
-        pfn_vmClose      pClose    = nullptr;
-        LPVM_MIDI_PORT   port      = nullptr;
+        HMODULE          dll         = nullptr;
+        pfn_vmCreateEx2  pCreate     = nullptr;
+        pfn_vmClose      pClose      = nullptr;
+        LPVM_MIDI_PORT   port        = nullptr;
         std::string      portName;
-        bool             triedLoad = false;
+        bool             triedLoad   = false;
         double           nextAttempt = 0.0;
     };
     TeVm g_te;
 
+    struct WinMidiIn {
+        HMIDIIN     hIn         = nullptr;
+        UINT        devId       = (UINT)-1;
+        std::string devName;
+        double      nextAttempt = 0.0;
+    };
+    WinMidiIn g_mi;
+
+    struct WinMidiOut {
+        HMIDIOUT hOut  = nullptr;
+        UINT     devId = (UINT)-1;
+    };
+    WinMidiOut g_mo;
+
     void CALLBACK te_cb(LPVM_MIDI_PORT, LPBYTE data, DWORD len, DWORD_PTR) {
-        if (!data || len == 0) return;
-        // With PARSE_RX, the driver hands us one complete message per call.
-        // SysEx messages can be arbitrarily long — drop them.
-        if (len > 3) return;
-        MidiMsg m;
-        m.len  = (uint8_t)len;
-        m.b[0] = data[0];
-        m.b[1] = len > 1 ? data[1] : 0;
-        m.b[2] = len > 2 ? data[2] : 0;
-        std::lock_guard<std::mutex> lk(g_mq.mu);
-        if (g_mq.q.size() > 4096) return;
-        g_mq.q.push_back(m);
+        if (!data || len == 0 || len > 3) return;
+        enqueue_msg(data[0],
+                    len > 1 ? data[1] : 0,
+                    len > 2 ? data[2] : 0,
+                    (uint8_t)len);
     }
 
     bool te_try_load() {
         if (g_te.dll) return true;
         if (g_te.triedLoad) return false;
         g_te.triedLoad = true;
-        // teVirtualMIDI64.dll lives in System32 (auto-found via PATH) after
-        // the loopMIDI installer runs. Fall back to the install dir if the
-        // loader can't find it.
         g_te.dll = LoadLibraryA("teVirtualMIDI64.dll");
         if (!g_te.dll) {
             g_te.dll = LoadLibraryA(
                 "C:\\Program Files (x86)\\Tobias Erichsen\\loopMIDI\\teVirtualMIDI64.dll");
         }
         if (!g_te.dll) return false;
-        // reinterpret via void* silences GCC's -Wcast-function-type.
         g_te.pCreate = reinterpret_cast<pfn_vmCreateEx2>(
             reinterpret_cast<void*>(GetProcAddress(g_te.dll, "virtualMIDICreatePortEx2")));
         g_te.pClose  = reinterpret_cast<pfn_vmClose>(
@@ -1739,11 +1865,9 @@ namespace {
         return true;
     }
 
-    // Creates the virtual port. Returns true on success (or if already open).
     bool te_open_port(const std::string& name) {
         if (g_te.port) return true;
         if (!te_try_load()) return false;
-        // Narrow → wide (the driver API is UTF-16).
         std::wstring wname;
         wname.reserve(name.size());
         for (char c : name) wname.push_back((wchar_t)(unsigned char)c);
@@ -1757,31 +1881,18 @@ namespace {
         return true;
     }
 
-    // ── Winmm fallback: enumerate existing input ports ───────────────
-    struct WinMidi {
-        HMIDIIN     hIn   = nullptr;
-        UINT        devId = (UINT)-1;
-        std::string devName;
-        double      nextAttempt = 0.0;
-    };
-    WinMidi g_mi;
-
     void CALLBACK winmm_cb(HMIDIIN, UINT wMsg, DWORD_PTR,
                            DWORD_PTR dwParam1, DWORD_PTR) {
         if (wMsg != MIM_DATA) return;
-        MidiMsg m;
         uint8_t b0 = (uint8_t)( dwParam1        & 0xFF);
         uint8_t b1 = (uint8_t)((dwParam1 >> 8)  & 0xFF);
         uint8_t b2 = (uint8_t)((dwParam1 >> 16) & 0xFF);
-        // Derive length from status byte.
-        if (b0 >= 0xF8)                m.len = 1;
-        else if ((b0 & 0xF0) == 0xC0)  m.len = 2;  // program change
-        else if ((b0 & 0xF0) == 0xD0)  m.len = 2;  // channel pressure
-        else                           m.len = 3;
-        m.b[0] = b0; m.b[1] = b1; m.b[2] = b2;
-        std::lock_guard<std::mutex> lk(g_mq.mu);
-        if (g_mq.q.size() > 4096) return;
-        g_mq.q.push_back(m);
+        uint8_t len;
+        if (b0 >= 0xF8)                len = 1;
+        else if ((b0 & 0xF0) == 0xC0)  len = 2;  // program change
+        else if ((b0 & 0xF0) == 0xD0)  len = 2;  // channel pressure
+        else                           len = 3;
+        enqueue_msg(b0, b1, b2, len);
     }
 
     bool name_contains(const std::string& hay, const std::string& needle) {
@@ -1792,8 +1903,56 @@ namespace {
         return H.find(N) != std::string::npos;
     }
 
+    // Best-effort pair: open a winmm output device whose name overlaps with
+    // the input device. Required for LED feedback to a connected hardware
+    // controller (DDJ-FLX2 pads, layer LEDs).
+    void winmm_open_output_paired(const std::string& inName) {
+        if (g_mo.hOut) return;
+        UINT n = midiOutGetNumDevs();
+        for (UINT i = 0; i < n; i++) {
+            MIDIOUTCAPSA caps = {};
+            if (midiOutGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) continue;
+            std::string nm = caps.szPname;
+            if (!name_contains(nm, inName) && !name_contains(inName, nm)) continue;
+            HMIDIOUT h = nullptr;
+            if (midiOutOpen(&h, i, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) continue;
+            g_mo.hOut = h; g_mo.devId = i;
+            std::fprintf(stdout,
+                "[midi] winmm output paired with '%s' — LED feedback enabled\n",
+                caps.szPname);
+            return;
+        }
+    }
+
+    bool g_enumerated = false;
+    void enumerate_devices_once() {
+        if (g_enumerated) return;
+        g_enumerated = true;
+        UINT nin = midiInGetNumDevs();
+        std::fprintf(stdout, "[midi] %u MIDI input device(s) available:\n", nin);
+        for (UINT i = 0; i < nin; i++) {
+            MIDIINCAPSA caps = {};
+            if (midiInGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) {
+                std::fprintf(stdout, "[midi]   in[%u]: <getDevCaps failed>\n", i);
+                continue;
+            }
+            std::fprintf(stdout, "[midi]   in[%u]: '%s'\n", i, caps.szPname);
+        }
+        UINT nout = midiOutGetNumDevs();
+        std::fprintf(stdout, "[midi] %u MIDI output device(s) available:\n", nout);
+        for (UINT i = 0; i < nout; i++) {
+            MIDIOUTCAPSA caps = {};
+            if (midiOutGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) {
+                std::fprintf(stdout, "[midi]   out[%u]: <getDevCaps failed>\n", i);
+                continue;
+            }
+            std::fprintf(stdout, "[midi]   out[%u]: '%s'\n", i, caps.szPname);
+        }
+    }
+
     void winmm_try_open(const std::string& hint) {
         if (g_mi.hIn) return;
+        enumerate_devices_once();
         UINT n = midiInGetNumDevs();
         if (n == 0) return;
         UINT pick = (UINT)-1;
@@ -1802,170 +1961,100 @@ namespace {
             MIDIINCAPSA caps = {};
             if (midiInGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) continue;
             std::string nm = caps.szPname;
-            // Skip our own virtual port (when te already created it) — reading
-            // our own output would duplicate every event.
-            if (name_contains(nm, "feedback")) continue;
+            if (name_contains(nm, "feedback")) continue;  // skip our own virtual port
             if (!hint.empty() && !name_contains(nm, hint)) continue;
             pick = i; pickName = nm; break;
         }
-        if (pick == (UINT)-1) return;
+        if (pick == (UINT)-1) {
+            // Surface the mismatch — common on first run when the hint is
+            // wrong or the controller isn't plugged in.
+            static bool warned = false;
+            if (!warned && !hint.empty()) {
+                std::fprintf(stdout,
+                    "[midi] no winmm input matches hint '%s' — pass --midi-port NAME or edit [midi] port= in bindings.ini\n",
+                    hint.c_str());
+                warned = true;
+            }
+            return;
+        }
         HMIDIIN h = nullptr;
-        MMRESULT r = midiInOpen(&h, pick, (DWORD_PTR)winmm_cb, 0, CALLBACK_FUNCTION);
-        if (r != MMSYSERR_NOERROR) return;
+        if (midiInOpen(&h, pick, (DWORD_PTR)winmm_cb, 0, CALLBACK_FUNCTION) != MMSYSERR_NOERROR) return;
         if (midiInStart(h) != MMSYSERR_NOERROR) { midiInClose(h); return; }
         g_mi.hIn = h; g_mi.devId = pick; g_mi.devName = pickName;
-        std::fprintf(stdout, "[midi] winmm fallback opened '%s'\n", pickName.c_str());
+        std::fprintf(stdout, "[midi] winmm input opened '%s'\n", pickName.c_str());
+        winmm_open_output_paired(pickName);
     }
-}
-#endif  // _WIN32
+}  // namespace
 
-#ifdef _WIN32
-void Input::pollMidi(float /*dt*/) {
+extern "C" int feedback_midi_open(const char* port_hint) {
     const double now = glfwGetTime();
-
-    // 1. teVirtualMIDI: create our own named port. Retry every 2s so that
-    //    if loopMIDI gets installed after app launch it Just Works.
+    // teVirtualMIDI — always try (Strudel target). Independent of winmm.
     if (!g_te.port && now >= g_te.nextAttempt) {
         te_open_port("feedback");
         g_te.nextAttempt = now + 2.0;
     }
-
-    // 2. Winmm fallback: scan existing ports (hardware controllers, other
-    //    bridges) IF no te port is open. If te is open we let it be the
-    //    sole source of MIDI to avoid double-counting.
-    if (!g_te.port && !g_mi.hIn && now >= g_mi.nextAttempt) {
-        winmm_try_open(midiPortHint_);
+    // winmm — also try, in parallel. Filters out the te port name so
+    // there's no double-counting. Required for hardware controllers (FLX2).
+    if (!g_mi.hIn && now >= g_mi.nextAttempt) {
+        winmm_try_open(port_hint ? std::string(port_hint) : std::string());
         g_mi.nextAttempt = now + 2.0;
     }
+    return (g_te.port || g_mi.hIn) ? 1 : 0;
+}
 
-    // Reflect connection state for the help UI.
-    if (g_te.port) {
-        midi_.connected = true;
-        midi_.portName  = g_te.portName;
-    } else if (g_mi.hIn) {
-        midi_.connected = true;
-        midi_.portName  = g_mi.devName;
-    } else {
-        midi_.connected = false;
-        midi_.portName.clear();
-    }
-
-    // Drain + parse.
-    std::deque<MidiMsg> local;
-    {
-        std::lock_guard<std::mutex> lk(g_mq.mu);
-        local.swap(g_mq.q);
-    }
-
-    for (const MidiMsg& m : local) {
-        uint8_t b0 = m.b[0], b1 = m.b[1], b2 = m.b[2];
-
-        // System real-time — single byte.
-        if (b0 >= 0xF8) {
-            if (b0 == 0xF8) {
-                if (g_clk.lastClockT > 0.0) {
-                    double gap = now - g_clk.lastClockT;
-                    g_clk.clockTimes[g_clk.clockHead] = gap;
-                    g_clk.clockHead = (g_clk.clockHead + 1) % 24;
-                    if (g_clk.clockCount < 24) g_clk.clockCount++;
-                    if (g_clk.clockCount >= 4) {
-                        double sum = 0.0;
-                        for (int i = 0; i < g_clk.clockCount; i++) sum += g_clk.clockTimes[i];
-                        double avg = sum / g_clk.clockCount;
-                        if (avg > 1e-5) {
-                            float bpm = (float)(60.0 / (avg * 24.0));
-                            if (bpm >= 20.f && bpm <= 400.f) midi_.derivedBpm = bpm;
-                        }
-                    }
-                }
-                g_clk.lastClockT = now;
-                midi_.clockLive  = true;
-            } else if (b0 == 0xFA) {
-                midi_.startPending = true;
-                g_clk.clockCount = 0;
-                g_clk.clockHead  = 0;
-                g_clk.lastClockT = 0.0;
-            } else if (b0 == 0xFC) {
-                midi_.stopPending = true;
-            }
-            continue;
-        }
-
-        uint8_t type = b0 & 0xF0;
-        int     ch1  = (b0 & 0x0F) + 1;
-
-        if (type == 0x90 || type == 0x80) {
-            int note = b1 & 0x7F;
-            int vel  = b2 & 0x7F;
-            bool on  = (type == 0x90) && (vel > 0);
-            midi_.lastNoteCh  = ch1;
-            midi_.lastNoteNum = note;
-            midi_.lastNoteVel = on ? vel : 0;
-
-            if (!handler_) continue;
-            for (const Binding& b : bindings_) {
-                if (b.source != SRC_MIDI_NOTE) continue;
-                if (b.code != note) continue;
-                if (b.modmask != 0 && b.modmask != ch1) continue;
-                const ActionInfo* info = action_info(b.action);
-                if (!info) continue;
-                float mg = (vel / 127.0f) * b.scale;
-                if (b.invert) mg = -mg;
-                switch (info->kind) {
-                case AK_DISCRETE: if (on) handler_(b.action, 1.0f); break;
-                case AK_TRIGGER:
-                    if (on)  handler_(b.action, 1.0f);
-                    if (!on) handler_(b.action, 0.0f);
-                    break;
-                case AK_STEP:
-                case AK_RATE:
-                    if (on) handler_(b.action, mg);
-                    break;
-                }
-            }
-        } else if (type == 0xB0) {
-            int ccNum = b1 & 0x7F;
-            int ccVal = b2 & 0x7F;
-            midi_.lastCcCh  = ch1;
-            midi_.lastCcNum = ccNum;
-            midi_.lastCcVal = ccVal;
-
-            if (!handler_) continue;
-            for (const Binding& b : bindings_) {
-                if (b.source != SRC_MIDI_CC) continue;
-                if (b.code != ccNum) continue;
-                if (b.modmask != 0 && b.modmask != ch1) continue;
-                const ActionInfo* info = action_info(b.action);
-                if (!info) continue;
-                float v = ccVal / 127.0f;
-                if (b.invert) v = 1.0f - v;
-                float mg = v * b.scale;
-                switch (info->kind) {
-                case AK_RATE:
-                case AK_STEP:    handler_(b.action, mg); break;
-                case AK_DISCRETE: if (ccVal > 63) handler_(b.action, 1.0f); break;
-                case AK_TRIGGER: handler_(b.action, ccVal > 63 ? 1.0f : 0.0f); break;
-                }
-            }
-        }
-    }
-
-    // Clock timeout.
-    if (midi_.clockLive && g_clk.lastClockT > 0.0 && (now - g_clk.lastClockT) > 0.5) {
-        midi_.clockLive  = false;
-        g_clk.clockCount = 0;
+extern "C" void feedback_midi_status(char* name, int name_cap, int* connected) {
+    bool any = (g_te.port != nullptr) || (g_mi.hIn != nullptr);
+    if (connected) *connected = any ? 1 : 0;
+    if (name && name_cap > 0) {
+        std::string label;
+        if (g_mi.hIn && g_te.port) label = g_mi.devName + " + " + g_te.portName;
+        else if (g_mi.hIn)         label = g_mi.devName;
+        else if (g_te.port)        label = g_te.portName;
+        std::strncpy(name, label.c_str(), (size_t)name_cap - 1);
+        name[name_cap - 1] = 0;
     }
 }
 
-bool Input::sendMidiNote(int, int, int) { return false; }
+extern "C" int feedback_midi_poll(FeedbackMidiMsg* out, int max_count) {
+    if (!out || max_count <= 0) return 0;
+    std::deque<FeedbackMidiMsg> local;
+    {
+        std::lock_guard<std::mutex> lk(g_mq_mu);
+        local.swap(g_mq_q);
+    }
+    int n = 0;
+    for (const FeedbackMidiMsg& m : local) {
+        if (n >= max_count) break;
+        out[n++] = m;
+    }
+    return n;
+}
+
+extern "C" int feedback_midi_send_note(int channel, int note, int velocity) {
+    if (!g_mo.hOut) return 0;
+    if (channel < 1 || channel > 16) return 0;
+    if (note < 0 || note > 127) return 0;
+    if (velocity < 0) velocity = 0;
+    if (velocity > 127) velocity = 127;
+    // Status byte: 0x90 (Note On) when velocity > 0, else 0x80 (Note Off).
+    uint8_t status = (velocity > 0 ? 0x90 : 0x80) | (uint8_t)(channel - 1);
+    DWORD msg = (DWORD)status
+              | ((DWORD)(note     & 0x7F) << 8)
+              | ((DWORD)(velocity & 0x7F) << 16);
+    return midiOutShortMsg(g_mo.hOut, msg) == MMSYSERR_NOERROR ? 1 : 0;
+}
 #endif  // _WIN32
 
 #if !defined(__APPLE__) && !defined(_WIN32)
-void Input::pollMidi(float) {
-    midi_.connected = false;
-    midi_.portName.clear();
+extern "C" {
+int  feedback_midi_open(const char*) { return 0; }
+int  feedback_midi_poll(FeedbackMidiMsg*, int) { return 0; }
+void feedback_midi_status(char* name, int name_cap, int* connected) {
+    if (connected) *connected = 0;
+    if (name && name_cap > 0) name[0] = 0;
 }
-bool Input::sendMidiNote(int, int, int) { return false; }
+int  feedback_midi_send_note(int, int, int) { return 0; }
+}
 #endif
 
 bool Input::saveIni(const std::string& path) const {
