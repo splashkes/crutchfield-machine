@@ -315,9 +315,10 @@ void Overlay::draw() {
         unsigned char fg[4] = { 235, 235, 240, 255 };
 
         int nLines = (int)lines_.size();
+        int visibleLines = std::min(nLines, 4);
         // No backing rect — white text on the live feedback. Deliberate.
         // Keep the text at full alpha against whatever colour is behind.
-        for (int i = 0; i < nLines; i++) {
+        for (int i = 0; i < visibleLines; i++) {
             const auto& line = lines_[nLines - 1 - i];
             float y = (float)(winH_ - bottomPad - (i+1) * lineH + 4);
             drawTextLine((float)leftPad, y, line.text, fg, alpha, TEXT_SCALE);

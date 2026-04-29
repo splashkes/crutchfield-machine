@@ -149,6 +149,7 @@ void main() {
     // so downstream signal stages process them as part of the feedback image.
     if (uPatternInject > 0.0) col = pattern_layer_apply(col, uv);
     if (uShapeInject > 0.0) col = shape_inject_apply(col, uv);
+    vec4 fxDry = col;
 
     //  2.4 invert: always-on (toggled by uInvert itself). Sits outside
     //  the physics layer gate because users turning on "V" in the UI
@@ -209,7 +210,7 @@ void main() {
     // 11.5 Effect dry/wet: crossfade the raw previous feedback image against
     //      the processed cycle. Triggered inject and output fade stay after
     //      this mixer so performance hits remain decisive.
-    col = mix(dry, col, clamp(uFxWet, 0.0, 1.0));
+    col = mix(fxDry, col, clamp(uFxWet, 0.0, 1.0));
 
     // 12. inject: triggered pattern perturbation
     if ((uEnable & L_INJECT) != 0 || uInject > 0.0) {

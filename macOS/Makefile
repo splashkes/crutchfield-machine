@@ -86,6 +86,7 @@ $(APP_NAME): $(BIN) Info.plist
 	install_name_tool -change $(GLEW_DYLIB) @executable_path/../Frameworks/libGLEW.2.3.dylib $(APP_BIN_DIR)/feedback
 	install_name_tool -id @rpath/libglfw.3.dylib $(APP_FW_DIR)/libglfw.3.dylib
 	install_name_tool -id @rpath/libGLEW.2.3.dylib $(APP_FW_DIR)/libGLEW.2.3.dylib
+	codesign --force --deep --sign - $(APP_NAME)
 
 dist: $(APP_NAME)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)

@@ -604,17 +604,13 @@ void Input::installDefaults() {
     MIDI(in, ACT_FX_WET_MODE_TOGGLE, SRC_MIDI_NOTE,  1, 7);  // SMART FADER
     MIDI(in, ACT_DDJ_BANK_HOLD,   SRC_MIDI_NOTE, 99, 7);  // master cue: alternate pad bank
 
-    // Pads, normal mode: deck 1 still selects inject patterns, and pads 1-4
-    // additionally hold persistent shape injections. Deck 2 toggles layers.
+    // Pads, normal mode: deck 1 holds persistent shape injections. Pattern
+    // selection lives under the master-shift bank so a shape pad never also
+    // changes the current inject pattern.
     MIDI(in, ACT_SHAPE_TRIANGLE_HOLD, SRC_MIDI_NOTE, 0,  8);
     MIDI(in, ACT_SHAPE_STAR_HOLD,     SRC_MIDI_NOTE, 1,  8);
     MIDI(in, ACT_SHAPE_CIRCLE_HOLD,   SRC_MIDI_NOTE, 2,  8);
     MIDI(in, ACT_SHAPE_SQUARE_HOLD,   SRC_MIDI_NOTE, 3,  8);
-    MIDI(in, ACT_PATTERN_HBARS,     SRC_MIDI_NOTE, 0,  8);
-    MIDI(in, ACT_PATTERN_VBARS,     SRC_MIDI_NOTE, 1,  8);
-    MIDI(in, ACT_PATTERN_DOT,       SRC_MIDI_NOTE, 2,  8);
-    MIDI(in, ACT_PATTERN_CHECKER,   SRC_MIDI_NOTE, 3,  8);
-    MIDI(in, ACT_PATTERN_GRAD,      SRC_MIDI_NOTE, 4,  8);
     MIDI(in, ACT_VFX1_CYCLE_BACK,   SRC_MIDI_NOTE, 5,  8);
     MIDI(in, ACT_VFX1_CYCLE_FWD,    SRC_MIDI_NOTE, 6,  8);
     MIDI(in, ACT_VFX1_OFF,          SRC_MIDI_NOTE, 7,  8);
@@ -1459,23 +1455,15 @@ void Input::pollMidi(float /*dt*/) {
                         ch, note, vel, on ? "on" : "off");
         }
         if (!handler_) return;
-        if (g_midiRt.masterShift && (ch == 8 || ch == 10) && note >= 0 && note <= 7) {
+        if (g_midiRt.masterShift && ch == 10 && note >= 0 && note <= 7) {
             if (on) {
-                if (ch == 8) {
-                    static const ActionId patternBank[5] = {
-                        ACT_PATTERN_HBARS, ACT_PATTERN_VBARS, ACT_PATTERN_DOT,
-                        ACT_PATTERN_CHECKER, ACT_PATTERN_GRAD
-                    };
-                    if (note < 5) handler_(patternBank[note], 1.0f);
-                } else {
-                    static const ActionId noiseBank[4] = {
-                        ACT_NOISEQ_WHITE, ACT_NOISEQ_PINK,
-                        ACT_NOISEQ_GRAIN, ACT_NOISEQ_SCANLINE
-                    };
-                    if (note < 4) handler_(noiseBank[note], 1.0f);
-                    else if (note == 4) handler_(ACT_LAYER_NOISE, 1.0f);
-                    else if (note == 5) handler_(ACT_LAYER_INJECT, 1.0f);
-                }
+                static const ActionId noiseBank[4] = {
+                    ACT_NOISEQ_WHITE, ACT_NOISEQ_PINK,
+                    ACT_NOISEQ_GRAIN, ACT_NOISEQ_SCANLINE
+                };
+                if (note < 4) handler_(noiseBank[note], 1.0f);
+                else if (note == 4) handler_(ACT_LAYER_NOISE, 1.0f);
+                else if (note == 5) handler_(ACT_LAYER_INJECT, 1.0f);
             }
             return;
         }
