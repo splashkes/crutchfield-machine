@@ -35,6 +35,59 @@ int  feedback_midi_send_note(int channel, int note, int velocity);
 }
 #endif
 
+namespace {
+struct MidiRuntime {
+    bool opened = false;
+    bool prevCcInit[17][128] = {};
+    float prevCc[17][128] = {};
+    bool ccSeen[17][128] = {};
+    uint8_t ccVal[17][128] = {};
+    bool deckShift[3] = {};
+    bool masterShift = false;
+    double clockTimes[24] = {};
+    int clockHead = 0;
+    int clockCount = 0;
+    double lastClockT = 0.0;
+};
+MidiRuntime g_midiRt;
+
+static float midi_relative_delta(int value) {
+    value &= 0x7F;
+    if (value == 0x40 || value == 0) return 0.0f;
+    if (value > 0x40) return (float)(value - 0x40);
+    return (float)(value - 0x40);
+}
+
+static void midi_handle_realtime(Input::MidiState& midi, uint8_t status, double now) {
+    if (status == 0xF8) {
+        if (g_midiRt.lastClockT > 0.0) {
+            double gap = now - g_midiRt.lastClockT;
+            g_midiRt.clockTimes[g_midiRt.clockHead] = gap;
+            g_midiRt.clockHead = (g_midiRt.clockHead + 1) % 24;
+            if (g_midiRt.clockCount < 24) g_midiRt.clockCount++;
+            if (g_midiRt.clockCount >= 4) {
+                double sum = 0.0;
+                for (int k = 0; k < g_midiRt.clockCount; k++) sum += g_midiRt.clockTimes[k];
+                double avg = sum / g_midiRt.clockCount;
+                if (avg > 1e-5) {
+                    float bpm = (float)(60.0 / (avg * 24.0));
+                    if (bpm >= 20.f && bpm <= 400.f) midi.derivedBpm = bpm;
+                }
+            }
+        }
+        g_midiRt.lastClockT = now;
+        midi.clockLive = true;
+    } else if (status == 0xFA) {
+        midi.startPending = true;
+        g_midiRt.clockCount = 0;
+        g_midiRt.clockHead = 0;
+        g_midiRt.lastClockT = 0.0;
+    } else if (status == 0xFC) {
+        midi.stopPending = true;
+    }
+}
+} // namespace
+
 // ─────────────────────────────────────────────────────────────────────────
 // Action catalogue — the table that names every ActionId. Order is free
 // but stable names matter because bindings.ini refers to them by name.
@@ -543,10 +596,9 @@ void Input::installDefaults() {
     K(in, ACT_MUSIC_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_MUSIC_PLAYPAUSE,  GLFW_KEY_SPACE, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
 
-#ifdef __APPLE__
-    // DDJ-FLX2 performance defaults. These are inert unless a matching
-    // CoreMIDI source is connected, and stay confined to Apple builds for
-    // now while the macOS controller path is being proven out.
+    // DDJ-FLX2 performance defaults. These are inert unless a matching MIDI
+    // source is connected. Keep them in the shared binding map so macOS,
+    // Windows, and future platform builds get the same controller contract.
     midiPortHint_ = "DDJ-FLX2";
 
     // Jog wheels: Pioneer relative CC centered on 0x40.
@@ -660,7 +712,6 @@ void Input::installDefaults() {
     MIDI(in, ACT_FIELDS_CYCLE,     SRC_MIDI_NOTE, 5, 10, 1, false, false, false, false, false, true);
     MIDI(in, ACT_BPM_FLASH_TOGGLE, SRC_MIDI_NOTE, 6, 10, 1, false, false, false, false, false, true);
     MIDI(in, ACT_BPM_DECAYDIP_TOGGLE, SRC_MIDI_NOTE, 7, 10, 1, false, false, false, false, false, true);
-#endif
 
     // Help nav — arrow keys dedicated while help is open (the handler checks
     // help visibility and consumes these only then, so they do NOT conflict
@@ -1391,30 +1442,6 @@ void Input::pollGamepad(int jid, float dt, BindContext currentCtx) {
 }
 
 #ifdef __APPLE__
-namespace {
-struct MidiRuntime {
-    bool opened = false;
-    bool prevCcInit[17][128] = {};
-    float prevCc[17][128] = {};
-    bool ccSeen[17][128] = {};
-    uint8_t ccVal[17][128] = {};
-    bool deckShift[3] = {};
-    bool masterShift = false;
-    double clockTimes[24] = {};
-    int clockHead = 0;
-    int clockCount = 0;
-    double lastClockT = 0.0;
-};
-MidiRuntime g_midiRt;
-
-static float midi_relative_delta(int value) {
-    value &= 0x7F;
-    if (value == 0x40 || value == 0) return 0.0f;
-    if (value > 0x40) return (float)(value - 0x40);
-    return (float)(value - 0x40);
-}
-}
-
 void Input::pollMidi(float /*dt*/) {
     const double now = glfwGetTime();
 
@@ -1565,32 +1592,7 @@ void Input::pollMidi(float /*dt*/) {
         uint8_t b0 = m.b[0], b1 = m.b[1], b2 = m.b[2];
 
         if (b0 >= 0xF8) {
-            if (b0 == 0xF8) {
-                if (g_midiRt.lastClockT > 0.0) {
-                    double gap = now - g_midiRt.lastClockT;
-                    g_midiRt.clockTimes[g_midiRt.clockHead] = gap;
-                    g_midiRt.clockHead = (g_midiRt.clockHead + 1) % 24;
-                    if (g_midiRt.clockCount < 24) g_midiRt.clockCount++;
-                    if (g_midiRt.clockCount >= 4) {
-                        double sum = 0.0;
-                        for (int k = 0; k < g_midiRt.clockCount; k++) sum += g_midiRt.clockTimes[k];
-                        double avg = sum / g_midiRt.clockCount;
-                        if (avg > 1e-5) {
-                            float bpm = (float)(60.0 / (avg * 24.0));
-                            if (bpm >= 20.f && bpm <= 400.f) midi_.derivedBpm = bpm;
-                        }
-                    }
-                }
-                g_midiRt.lastClockT = now;
-                midi_.clockLive = true;
-            } else if (b0 == 0xFA) {
-                midi_.startPending = true;
-                g_midiRt.clockCount = 0;
-                g_midiRt.clockHead = 0;
-                g_midiRt.lastClockT = 0.0;
-            } else if (b0 == 0xFC) {
-                midi_.stopPending = true;
-            }
+            midi_handle_realtime(midi_, b0, now);
             if (midiLearn_) std::printf("[midi-learn] realtime 0x%02X\n", b0);
             continue;
         }
@@ -1666,15 +1668,6 @@ namespace {
     };
     MidiQueue g_mq;
 
-    // Tempo tracking — main-thread-owned.
-    struct ClockState {
-        double clockTimes[24] = {};
-        int    clockHead  = 0;
-        int    clockCount = 0;
-        double lastClockT = 0.0;
-    };
-    ClockState g_clk;
-
     // ── teVirtualMIDI dynamic binding ────────────────────────────────
     struct TeVm {
         HMODULE          dll       = nullptr;
@@ -1748,9 +1741,13 @@ namespace {
     // ── Winmm fallback: enumerate existing input ports ───────────────
     struct WinMidi {
         HMIDIIN     hIn   = nullptr;
+        HMIDIOUT    hOut  = nullptr;
         UINT        devId = (UINT)-1;
+        UINT        outDevId = (UINT)-1;
         std::string devName;
+        std::string outName;
         double      nextAttempt = 0.0;
+        double      nextOutputAttempt = 0.0;
     };
     WinMidi g_mi;
 
@@ -1804,6 +1801,28 @@ namespace {
         g_mi.hIn = h; g_mi.devId = pick; g_mi.devName = pickName;
         std::fprintf(stdout, "[midi] winmm fallback opened '%s'\n", pickName.c_str());
     }
+
+    void winmm_try_open_output(const std::string& hint) {
+        if (g_mi.hOut) return;
+        UINT n = midiOutGetNumDevs();
+        if (n == 0) return;
+        UINT pick = (UINT)-1;
+        std::string pickName;
+        for (UINT i = 0; i < n; i++) {
+            MIDIOUTCAPSA caps = {};
+            if (midiOutGetDevCapsA(i, &caps, sizeof caps) != MMSYSERR_NOERROR) continue;
+            std::string nm = caps.szPname;
+            if (name_contains(nm, "feedback")) continue;
+            if (!hint.empty() && !name_contains(nm, hint)) continue;
+            pick = i; pickName = nm; break;
+        }
+        if (pick == (UINT)-1) return;
+        HMIDIOUT h = nullptr;
+        MMRESULT r = midiOutOpen(&h, pick, 0, 0, CALLBACK_NULL);
+        if (r != MMSYSERR_NOERROR) return;
+        g_mi.hOut = h; g_mi.outDevId = pick; g_mi.outName = pickName;
+        std::fprintf(stdout, "[midi] winmm output opened '%s'\n", pickName.c_str());
+    }
 }
 #endif  // _WIN32
 
@@ -1818,16 +1837,23 @@ void Input::pollMidi(float /*dt*/) {
         g_te.nextAttempt = now + 2.0;
     }
 
-    // 2. Winmm fallback: scan existing ports (hardware controllers, other
-    //    bridges) IF no te port is open. If te is open we let it be the
-    //    sole source of MIDI to avoid double-counting.
-    if (!g_te.port && !g_mi.hIn && now >= g_mi.nextAttempt) {
+    // 2. Winmm hardware/bridge input: scan existing ports alongside the
+    //    virtual port. The scanner skips our own "feedback" port, so a
+    //    Strudel bridge and a physical DDJ controller can coexist.
+    if (!g_mi.hIn && now >= g_mi.nextAttempt) {
         winmm_try_open(midiPortHint_);
         g_mi.nextAttempt = now + 2.0;
     }
+    if (!g_mi.hOut && now >= g_mi.nextOutputAttempt) {
+        winmm_try_open_output(midiPortHint_);
+        g_mi.nextOutputAttempt = now + 2.0;
+    }
 
     // Reflect connection state for the help UI.
-    if (g_te.port) {
+    if (g_te.port && g_mi.hIn) {
+        midi_.connected = true;
+        midi_.portName  = g_te.portName + " + " + g_mi.devName;
+    } else if (g_te.port) {
         midi_.connected = true;
         midi_.portName  = g_te.portName;
     } else if (g_mi.hIn) {
@@ -1845,107 +1871,169 @@ void Input::pollMidi(float /*dt*/) {
         local.swap(g_mq.q);
     }
 
+    auto dispatch_note = [&](int ch, int note, int vel, bool on) {
+        if (note == 63 && (ch == 1 || ch == 2)) {
+            g_midiRt.deckShift[ch] = on;
+            midi_.deck1Shift = g_midiRt.deckShift[1];
+            midi_.deck2Shift = g_midiRt.deckShift[2];
+        }
+        if (note == 99 && ch == 7) {
+            g_midiRt.masterShift = on;
+            midi_.masterShift = g_midiRt.masterShift;
+        }
+        const bool softwareShifted =
+            (ch == 8 && g_midiRt.deckShift[1]) ||
+            (ch == 10 && g_midiRt.deckShift[2]);
+
+        midi_.lastNoteCh = ch;
+        midi_.lastNoteNum = note;
+        midi_.lastNoteVel = on ? vel : 0;
+        if (midiLearn_) {
+            std::printf("[midi-learn] ch=%d note:%d vel=%d %s\n",
+                        ch, note, vel, on ? "on" : "off");
+        }
+        if (!handler_) return;
+        if (g_midiRt.masterShift && ch == 10 && note >= 0 && note <= 7) {
+            if (on) {
+                static const ActionId noiseBank[4] = {
+                    ACT_NOISEQ_WHITE, ACT_NOISEQ_PINK,
+                    ACT_NOISEQ_GRAIN, ACT_NOISEQ_SCANLINE
+                };
+                if (note < 4) handler_(noiseBank[note], 1.0f);
+                else if (note == 4) handler_(ACT_LAYER_NOISE, 1.0f);
+                else if (note == 5) handler_(ACT_LAYER_INJECT, 1.0f);
+            }
+            return;
+        }
+        for (const Binding& b : bindings_) {
+            if (b.source != SRC_MIDI_NOTE) continue;
+            if (b.code != note) continue;
+            if (b.modmask != 0 && b.modmask != ch) continue;
+            if (b.shifted != softwareShifted) continue;
+            const ActionInfo* info = action_info(b.action);
+            if (!info) continue;
+            float mg = (vel / 127.0f) * b.scale;
+            if (b.invert) mg = -mg;
+            switch (info->kind) {
+            case AK_DISCRETE: if (on) handler_(b.action, 1.0f); break;
+            case AK_TRIGGER:
+                if (on) handler_(b.action, 1.0f);
+                else    handler_(b.action, 0.0f);
+                break;
+            case AK_STEP:
+            case AK_RATE:
+                if (on) handler_(b.action, mg);
+                break;
+            }
+        }
+    };
+
+    auto dispatch_cc_value = [&](const Binding& b, int ch, int ccNum,
+                                 int ccVal, float norm) {
+        const ActionInfo* info = action_info(b.action);
+        if (!info) return;
+
+        float mg = norm;
+        if (b.relative) {
+            mg = midi_relative_delta(ccVal);
+        } else if (b.delta) {
+            if (!g_midiRt.prevCcInit[ch][b.code]) {
+                g_midiRt.prevCcInit[ch][b.code] = true;
+                g_midiRt.prevCc[ch][b.code] = norm;
+                return;
+            }
+            mg = norm - g_midiRt.prevCc[ch][b.code];
+            g_midiRt.prevCc[ch][b.code] = norm;
+        } else if (b.bipolar) {
+            mg = norm * 2.0f - 1.0f;
+        }
+
+        if (b.invert) mg = -mg;
+        mg *= b.scale;
+
+        switch (info->kind) {
+        case AK_RATE:
+        case AK_STEP:
+            if (mg != 0.0f || b.absolute) handler_(b.action, mg);
+            break;
+        case AK_DISCRETE:
+            if (ccVal > 63) handler_(b.action, 1.0f);
+            break;
+        case AK_TRIGGER:
+            handler_(b.action, ccVal > 63 ? 1.0f : 0.0f);
+            break;
+        }
+        (void)ccNum;
+    };
+
+    auto dispatch_cc = [&](int ch, int ccNum, int ccVal) {
+        midi_.lastCcCh = ch;
+        midi_.lastCcNum = ccNum;
+        midi_.lastCcVal = ccVal;
+        g_midiRt.ccSeen[ch][ccNum] = true;
+        g_midiRt.ccVal[ch][ccNum] = (uint8_t)ccVal;
+
+        if (midiLearn_) {
+            std::printf("[midi-learn] ch=%d cc:%d val=%d\n", ch, ccNum, ccVal);
+        }
+        if (!handler_) return;
+
+        for (const Binding& b : bindings_) {
+            if (b.modmask != 0 && b.modmask != ch) continue;
+            if (b.source == SRC_MIDI_CC) {
+                if (b.code != ccNum) continue;
+                dispatch_cc_value(b, ch, ccNum, ccVal, ccVal / 127.0f);
+            } else if (b.source == SRC_MIDI_CC14) {
+                if (b.code != ccNum && b.code + 32 != ccNum) continue;
+                int msbCc = b.code;
+                int lsbCc = b.code + 32;
+                if (lsbCc > 127 || !g_midiRt.ccSeen[ch][msbCc]) continue;
+                int msb = g_midiRt.ccVal[ch][msbCc] & 0x7F;
+                int lsb = g_midiRt.ccSeen[ch][lsbCc] ? (g_midiRt.ccVal[ch][lsbCc] & 0x7F) : 0;
+                int value14 = (msb << 7) | lsb;
+                int displayVal = value14 >> 7;
+                dispatch_cc_value(b, ch, msbCc, displayVal, value14 / 16383.0f);
+            }
+        }
+    };
+
     for (const MidiMsg& m : local) {
         uint8_t b0 = m.b[0], b1 = m.b[1], b2 = m.b[2];
-
-        // System real-time — single byte.
         if (b0 >= 0xF8) {
-            if (b0 == 0xF8) {
-                if (g_clk.lastClockT > 0.0) {
-                    double gap = now - g_clk.lastClockT;
-                    g_clk.clockTimes[g_clk.clockHead] = gap;
-                    g_clk.clockHead = (g_clk.clockHead + 1) % 24;
-                    if (g_clk.clockCount < 24) g_clk.clockCount++;
-                    if (g_clk.clockCount >= 4) {
-                        double sum = 0.0;
-                        for (int i = 0; i < g_clk.clockCount; i++) sum += g_clk.clockTimes[i];
-                        double avg = sum / g_clk.clockCount;
-                        if (avg > 1e-5) {
-                            float bpm = (float)(60.0 / (avg * 24.0));
-                            if (bpm >= 20.f && bpm <= 400.f) midi_.derivedBpm = bpm;
-                        }
-                    }
-                }
-                g_clk.lastClockT = now;
-                midi_.clockLive  = true;
-            } else if (b0 == 0xFA) {
-                midi_.startPending = true;
-                g_clk.clockCount = 0;
-                g_clk.clockHead  = 0;
-                g_clk.lastClockT = 0.0;
-            } else if (b0 == 0xFC) {
-                midi_.stopPending = true;
-            }
+            midi_handle_realtime(midi_, b0, now);
+            if (midiLearn_) std::printf("[midi-learn] realtime 0x%02X\n", b0);
             continue;
         }
 
         uint8_t type = b0 & 0xF0;
-        int     ch1  = (b0 & 0x0F) + 1;
-
+        int ch = (b0 & 0x0F) + 1;
         if (type == 0x90 || type == 0x80) {
             int note = b1 & 0x7F;
-            int vel  = b2 & 0x7F;
-            bool on  = (type == 0x90) && (vel > 0);
-            midi_.lastNoteCh  = ch1;
-            midi_.lastNoteNum = note;
-            midi_.lastNoteVel = on ? vel : 0;
-
-            if (!handler_) continue;
-            for (const Binding& b : bindings_) {
-                if (b.source != SRC_MIDI_NOTE) continue;
-                if (b.code != note) continue;
-                if (b.modmask != 0 && b.modmask != ch1) continue;
-                const ActionInfo* info = action_info(b.action);
-                if (!info) continue;
-                float mg = (vel / 127.0f) * b.scale;
-                if (b.invert) mg = -mg;
-                switch (info->kind) {
-                case AK_DISCRETE: if (on) handler_(b.action, 1.0f); break;
-                case AK_TRIGGER:
-                    if (on)  handler_(b.action, 1.0f);
-                    if (!on) handler_(b.action, 0.0f);
-                    break;
-                case AK_STEP:
-                case AK_RATE:
-                    if (on) handler_(b.action, mg);
-                    break;
-                }
-            }
+            int vel = b2 & 0x7F;
+            bool on = (type == 0x90) && vel > 0;
+            dispatch_note(ch, note, vel, on);
         } else if (type == 0xB0) {
-            int ccNum = b1 & 0x7F;
-            int ccVal = b2 & 0x7F;
-            midi_.lastCcCh  = ch1;
-            midi_.lastCcNum = ccNum;
-            midi_.lastCcVal = ccVal;
-
-            if (!handler_) continue;
-            for (const Binding& b : bindings_) {
-                if (b.source != SRC_MIDI_CC) continue;
-                if (b.code != ccNum) continue;
-                if (b.modmask != 0 && b.modmask != ch1) continue;
-                const ActionInfo* info = action_info(b.action);
-                if (!info) continue;
-                float v = ccVal / 127.0f;
-                if (b.invert) v = 1.0f - v;
-                float mg = v * b.scale;
-                switch (info->kind) {
-                case AK_RATE:
-                case AK_STEP:    handler_(b.action, mg); break;
-                case AK_DISCRETE: if (ccVal > 63) handler_(b.action, 1.0f); break;
-                case AK_TRIGGER: handler_(b.action, ccVal > 63 ? 1.0f : 0.0f); break;
-                }
-            }
+            dispatch_cc(ch, b1 & 0x7F, b2 & 0x7F);
         }
     }
 
-    // Clock timeout.
-    if (midi_.clockLive && g_clk.lastClockT > 0.0 && (now - g_clk.lastClockT) > 0.5) {
-        midi_.clockLive  = false;
-        g_clk.clockCount = 0;
+    if (midi_.clockLive && g_midiRt.lastClockT > 0.0 && (now - g_midiRt.lastClockT) > 0.5) {
+        midi_.clockLive = false;
+        g_midiRt.clockCount = 0;
     }
 }
 
-bool Input::sendMidiNote(int, int, int) { return false; }
+bool Input::sendMidiNote(int channel, int note, int velocity) {
+    if (channel < 1 || channel > 16 || note < 0 || note > 127) return false;
+    if (velocity < 0) velocity = 0;
+    if (velocity > 127) velocity = 127;
+    if (!g_mi.hOut) winmm_try_open_output(midiPortHint_);
+    if (!g_mi.hOut) return false;
+    DWORD msg = (DWORD)(0x90 | ((channel - 1) & 0x0F))
+              | ((DWORD)(note & 0x7F) << 8)
+              | ((DWORD)(velocity & 0x7F) << 16);
+    return midiOutShortMsg(g_mi.hOut, msg) == MMSYSERR_NOERROR;
+}
 #endif  // _WIN32
 
 #if !defined(__APPLE__) && !defined(_WIN32)
@@ -2043,7 +2131,8 @@ bool Input::saveIni(const std::string& path) const {
     dump_section("gamepad",  SRC_GAMEPAD_AXIS);
 
     // MIDI section: emit a header with a port= hint first, then the source
-    // types. Defaults leave the map empty — users add their own.
+    // types. Defaults include the DDJ-FLX2 performance map and can be edited
+    // or replaced by users with other controllers.
     std::fprintf(f,
 "[midi]\n"
 "# Integration with Strudel (https://strudel.cc), DJ controllers, or any\n"
@@ -2055,7 +2144,7 @@ bool Input::saveIni(const std::string& path) const {
 "# ports (hardware controllers, pre-configured loopMIDI bridges).\n"
 "#\n"
 "# macOS: CoreMIDI opens the first source whose name contains the `port`\n"
-"# string below. The default Apple build targets AlphaTheta/Pioneer DDJ-FLX2.\n"
+"# string below. The default map targets AlphaTheta/Pioneer DDJ-FLX2.\n"
 "port = %s\n"
 "#\n"
 "# Top-level keys:\n"
