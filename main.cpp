@@ -224,6 +224,9 @@ struct Params {
     float contrast = 1.020f;
     // decay
     float decay = 0.995f;
+    float borderSize = 0.075f;
+    float borderSoftness = 0.065f;
+    float borderDecay = 0.72f;
     // noise
     float noise = 0.002f;
     // couple
@@ -891,6 +894,9 @@ static bool preset_write(const std::string& path) {
 "\n"
 "[dynamics]\n"
 "decay    = %.6f\n"
+"borderSize = %.6f\n"
+"borderSoftness = %.6f\n"
+"borderDecay = %.6f\n"
 "noise    = %.6f\n"
 "couple   = %.6f\n"
 "external = %.6f\n"
@@ -973,7 +979,8 @@ static bool preset_write(const std::string& path) {
         p.zoom, p.theta, p.pivotX, p.pivotY, p.transX, p.transY,
         p.chroma, p.blurX, p.blurY, p.blurAngle,
         p.gamma, p.hueRate, p.satGain, p.contrast,
-        p.decay, p.noise, p.couple, p.external, p.fxWet, p.sourceWet, p.fxWetMode,
+        p.decay, p.borderSize, p.borderSoftness, p.borderDecay,
+        p.noise, p.couple, p.external, p.fxWet, p.sourceWet, p.fxWetMode,
         p.pattern, p.patternInject, p.shapeKind, p.shapeCount, p.shapeSize, p.shapeAngle,
         p.invert, p.invertPeriod, p.sensorGamma, p.satKnee, p.colorCross,
         p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl,
@@ -1088,6 +1095,9 @@ static bool preset_load(const std::string& path) {
         } else if (section == "dynamics") {
             float fv = (float)atof(v.c_str());
             if      (k == "decay")    p.decay    = fv;
+            else if (k == "borderSize") p.borderSize = fmaxf(0.0f, fminf(0.35f, fv));
+            else if (k == "borderSoftness") p.borderSoftness = fmaxf(0.001f, fminf(0.35f, fv));
+            else if (k == "borderDecay") p.borderDecay = fmaxf(0.0f, fminf(1.0f, fv));
             else if (k == "noise")    p.noise    = fv;
             else if (k == "couple")   p.couple   = fv;
             else if (k == "external") p.external = fv;
@@ -1723,7 +1733,7 @@ static std::string section_thermal() {
 static std::string section_inject() {
     const auto& p = S.p;
     auto cur = [&](int i) { return i == p.pattern ? "\x10" : " "; };
-    char b[1024];
+    char b[1400];
     snprintf(b, sizeof b,
         "%s  1  %s\n"
         "%s  2  %s\n"
@@ -1736,6 +1746,9 @@ static std::string section_inject() {
         "%s  9  %s\n"
         "%s  0  %s\n"
         "%s Alt+B %s   (hold %.1f s)\n"
+        "\n"
+        "%-7s triangle hold   %-7s star hold\n"
+        "%-7s circle hold     %-7s square hold\n"
         "\n"
         "DP-L/R cursor   A tap-inject   LT/RT hold\n"
         "%-5s  inject (hold)     F10  toggle inject layer",
@@ -1750,6 +1763,10 @@ static std::string section_inject() {
         cur(8), PATTERN_NAMES[8],
         cur(9), PATTERN_NAMES[9],
         cur(10), PATTERN_NAMES[10], p.injectHoldTimer,
+        keys_for(ACT_SHAPE_TRIANGLE_HOLD).c_str(),
+        keys_for(ACT_SHAPE_STAR_HOLD).c_str(),
+        keys_for(ACT_SHAPE_CIRCLE_HOLD).c_str(),
+        keys_for(ACT_SHAPE_SQUARE_HOLD).c_str(),
         keys_for(ACT_INJECT_HOLD).c_str());
     return b;
 }
@@ -3317,6 +3334,9 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     float effOutFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + p.flashDecay));
     float effDecay   = (p.decayDipTimer > 0.0f) ? 0.90f : p.decay;
     U1f("uDecay", effDecay);
+    U1f("uBorderSize", p.borderSize);
+    U1f("uBorderSoftness", p.borderSoftness);
+    U1f("uBorderDecay", p.borderDecay);
     U1f("uNoise", p.noise);
     U1i("uNoiseQuality", S.noiseQ);
     // Music → visual envelopes for dropout flavouring.

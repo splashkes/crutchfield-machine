@@ -319,6 +319,7 @@ Essentials for quick reference:
 | `1..5` | Pattern select — H-bars / V-bars / dot / checker / gradient |
 | `6..0` | Pattern select — noise / rings / spiral / polka / starburst |
 | `Alt+B` | Trigger bouncer (10-second animated pong ball) |
+| `Alt+1..4` (hold) | Shape obstacles — triangle / star / circle / square |
 | `Home` | Cycle noise archetype (white / pink / heavy static / VCR / dropout) |
 | `Delete` | Cycle pixelate style (off / dots / hard squares / rounded × s/m/l) |
 | `Ctrl+Delete` | Cycle pixelate CRT bleed (off / soft / CRT / melt / fried / burned) |

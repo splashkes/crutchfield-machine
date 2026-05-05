@@ -167,6 +167,10 @@ off, F5 to activate*").
 | `0` | Starburst / radial rays |
 | `Alt+B` | **Bouncer** — low-res pong box, runs 10 seconds |
 | `Space` (hold) | Inject current pattern while held |
+| `Alt+1` (hold) | Triangle shape obstacle |
+| `Alt+2` (hold) | Star shape obstacle |
+| `Alt+3` (hold) | Circle shape obstacle |
+| `Alt+4` (hold) | Square shape obstacle |
 
 The bouncer is the only animated pattern and uses a host-side hold
 timer that bypasses the normal inject fade. All other patterns fire

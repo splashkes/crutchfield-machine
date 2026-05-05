@@ -386,6 +386,24 @@ an aesthetic calibration pass.
   new post-ADR-0015 / ADR-0017 character.
 **Effort:** small (one session of dial-in).
 
+### [P2] Tune border and shape-obstacle variants
+
+**Why:** The first border/shape-interaction pass established the basic
+mechanics: a soft decay frame and shape boundaries that reflect/hot-
+saturate the feedback flow. The feel is promising, but the border
+needs more performance options before it is a polished control surface.
+**Where:** `shaders/layers/decay.glsl`, `shaders/layers/inject.glsl`,
+`Params`/uniform wiring in `main.cpp` and `macOS/main.cpp`.
+**Done when:**
+- Border has at least 2-3 selectable characters, e.g. decay sink,
+  saturated hot frame, mirror/reflect frame.
+- Border strength/width defaults feel useful on first launch without
+  eating the whole attractor.
+- Shape reflection strength and saturation can be tuned without editing
+  shader constants.
+- README/REFERENCE/help panel describe the final controls.
+**Effort:** small-medium.
+
 ---
 
 ## Recently completed

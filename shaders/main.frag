@@ -31,6 +31,9 @@ uniform float uHueRate, uSatGain;
 uniform float uContrast;
 // decay
 uniform float uDecay;
+uniform float uBorderSize;
+uniform float uBorderSoftness;
+uniform float uBorderDecay;
 // noise
 uniform float uNoise;
 uniform int   uNoiseQuality;
@@ -131,6 +134,11 @@ void main() {
     src_uv = vfx_warp_uv(src_uv, 0);
     src_uv = vfx_warp_uv(src_uv, 1);
 
+    // Held shape injections act as soft obstacles in the feedback flow:
+    // pixels near their boundary reflect part of the source-UV motion before
+    // sampling the previous frame. The colour injection still happens below.
+    if (uShapeInject > 0.0) src_uv = shape_interact_uv(src_uv, uv);
+
     //  2. sample uPrev. When pixelate is on it takes over the sample
     //     (quantizing to a screen-space grid whose cell-centres get
     //     warp+thermal re-applied so pixelated content propagates).
@@ -190,7 +198,7 @@ void main() {
     //     background — matching an analog rig where the camera sees live
     //     content at scene brightness, not CRT-attenuated brightness.
     //     See development/LAYERS.md §feedback-write stages.
-    if ((uEnable & L_DECAY) != 0) col = decay_apply(col);
+    if ((uEnable & L_DECAY) != 0) col = decay_apply(col, uv);
 
     //  7. couple: blend in the other field (Kaneko)
     if ((uEnable & L_COUPLE) != 0) col = couple_apply(col, uv);

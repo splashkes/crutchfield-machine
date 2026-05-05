@@ -149,10 +149,76 @@ vec3 shape_gen(vec2 uv, out float mask) {
     return col;
 }
 
+float shape_mask_at(vec2 uv) {
+    int count = clamp(uShapeCount, 1, 16);
+    float fc = float(count);
+    float cols = ceil(sqrt(fc));
+    float rows = ceil(fc / cols);
+    float cell = min(1.0 / cols, 1.0 / rows);
+    float aspect = uRes.x / max(uRes.y, 1.0);
+    float m = 0.0;
+
+    for (int i = 0; i < 16; i++) {
+        if (i >= count) break;
+        float fi = float(i);
+        float x = mod(fi, cols);
+        float y = floor(fi / cols);
+        vec2 center = vec2((x + 0.5) / cols, (y + 0.5) / rows);
+        vec2 q = (uv - center) / (cell * 0.22 * uShapeSize);
+        q.x *= aspect;
+        float cs = cos(uShapeAngle);
+        float sn = sin(uShapeAngle);
+        q = mat2(cs, -sn, sn, cs) * q;
+        float sm = shape_mask(q, uShapeKind);
+        m = max(m, sm);
+    }
+
+    return clamp(m, 0.0, 1.0);
+}
+
+vec4 shape_field(vec2 uv) {
+    float px = 1.5 / max(min(uRes.x, uRes.y), 1.0);
+    float m = shape_mask_at(uv);
+    float mx0 = shape_mask_at(uv - vec2(px, 0.0));
+    float mx1 = shape_mask_at(uv + vec2(px, 0.0));
+    float my0 = shape_mask_at(uv - vec2(0.0, px));
+    float my1 = shape_mask_at(uv + vec2(0.0, px));
+    vec2 grad = vec2(mx1 - mx0, my1 - my0);
+    float edge = smoothstep(0.025, 0.18, length(grad));
+    return vec4(m, edge, grad);
+}
+
+vec2 shape_interact_uv(vec2 src_uv, vec2 uv) {
+    vec4 sf = shape_field(uv);
+    float force = clamp(uShapeInject, 0.0, 1.0);
+    if (force <= 0.0 || sf.y <= 0.0) return src_uv;
+
+    vec2 n = normalize(sf.zw + vec2(1e-5, 0.0));
+    vec2 flow = src_uv - uv;
+    vec2 reflected = reflect(flow, n);
+    float bounce = sf.y * force * 0.70;
+    vec2 push = n * sf.y * force * 0.006;
+    return mix(src_uv, uv + reflected + push, bounce);
+}
+
+vec3 shape_signal_apply(vec3 rgb, vec2 uv) {
+    vec4 sf = shape_field(uv);
+    float force = clamp(uShapeInject, 0.0, 1.0);
+    float hot = clamp((sf.x * 0.30 + sf.y * 0.85) * force, 0.0, 1.0);
+    if (hot <= 0.0) return rgb;
+
+    vec3 hsv = rgb2hsv(max(rgb, vec3(0.0)));
+    hsv.y = min(hsv.y * (1.0 + 1.65 * hot) + 0.20 * hot, 2.5);
+    hsv.z = hsv.z * (1.0 + 0.25 * hot) + 0.12 * sf.y * force;
+    vec3 saturated = hsv2rgb(hsv);
+    return mix(rgb, saturated, hot);
+}
+
 vec4 shape_inject_apply(vec4 c, vec2 uv) {
     vec3 rgb = c.rgb;
     float shapeMask = 0.0;
     vec3 shape = shape_gen(uv, shapeMask);
+    rgb = shape_signal_apply(rgb, uv);
     rgb = mix(rgb, shape, shapeMask * uShapeInject);
     return vec4(rgb, c.a);
 }
