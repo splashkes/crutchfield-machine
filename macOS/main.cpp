@@ -577,14 +577,6 @@ static int vfx_pad_bank_index_for_effect(int effect) {
 }
 
 static void sync_ddj_filter_leds() {
-    if (g_input.midi().masterShift) {
-        for (int note = 0; note < 8; note++) {
-            int velocity = (note <= 4 && note == S.p.pattern) ? 0x7F : 0x00;
-            g_input.sendMidiNote(/*deck 1 pad channel*/ 8, note, velocity);
-            g_input.sendMidiNote(/*documented shifted deck 1 pad channel*/ 9, note, 0x00);
-        }
-        return;
-    }
     const bool reveal = g_input.midi().deck1Shift;
     const int selected = vfx_pad_bank_index_for_effect(S.p.vfxSlot[0]);
     for (int note = 0; note < VFX_PAD_BANK_COUNT; note++) {
@@ -3272,7 +3264,9 @@ int main(int argc, char** argv) {
     }
     {
 #ifdef __APPLE__
-        std::string bindingsPath = "bindings.ini";
+        std::string bindingsPath = g_user_base.empty()
+            ? std::string("bindings.ini")
+            : (g_user_base + "bindings.ini");
 #else
         std::string bindingsPath = g_shader_base.empty()
             ? std::string("bindings.ini")
@@ -3461,6 +3455,7 @@ int main(int argc, char** argv) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, latest.tex);
         glUniform1i(glGetUniformLocation(progBlit, "uSrc"), 0);
+        glUniform1f(glGetUniformLocation(progBlit, "uBrightness"), 1.0f);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         // Record from the sim-resolution texture (not the display framebuffer)

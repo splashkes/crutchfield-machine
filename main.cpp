@@ -669,14 +669,6 @@ static int vfx_pad_bank_index_for_effect(int effect) {
 }
 
 static void sync_ddj_filter_leds() {
-    if (g_input.midi().masterShift) {
-        for (int note = 0; note < 8; note++) {
-            int velocity = (note <= 4 && note == S.p.pattern) ? 0x7F : 0x00;
-            g_input.sendMidiNote(/*deck 1 pad channel*/ 8, note, velocity);
-            g_input.sendMidiNote(/*documented shifted deck 1 pad channel*/ 9, note, 0x00);
-        }
-        return;
-    }
     const bool reveal = g_input.midi().deck1Shift;
     const int selected = vfx_pad_bank_index_for_effect(S.p.vfxSlot[0]);
     for (int note = 0; note < VFX_PAD_BANK_COUNT; note++) {
