@@ -91,6 +91,13 @@ implement individual layers; `shaders/common.glsl` provides helpers;
 5. After all sim iterations (`--iters N`, default 1), `blit.frag` copies
    the field-0 FBO to the default framebuffer for display.
 
+Sphere volume mode (`Alt+S`) is a separate branch of the same shader
+contract. The host binds ping-pong `GL_TEXTURE_3D` fields as
+`uPrevVol`/`uOtherVol`, renders every z-slice into the destination
+volume, and lets `blit.frag` raymarch the result. The normal mode branch
+returns through the original 2D FBO pipeline before any volume sampling
+runs, so flat feedback remains independent of the sphere path.
+
 **Layer dispatch order is significant.** Warp and thermal happen on
 the *sample* UV (before the texture read); optics performs the read;
 everything else operates on the returned color. Full per-layer
@@ -106,6 +113,8 @@ keeps running and the error is printed. Live-editable.
 **The `State S` singleton** holds everything the app tracks:
 - Window size, sim size, fullscreen flag.
 - Array of up to 4 `FBO` structs (each a ping-pong pair).
+- Array of up to 4 `VolumeFBO` structs for the true 3D sphere mode
+  (also ping-pong pairs), plus display-only mouse rotation state.
 - `Params p` — every per-layer parameter as a named field, including
   V-4 effect slot state (`vfxSlot[2]`, `vfxParam[2]`, `vfxBSource[2]`),
   output fade, and BPM fields (`bpm`, `beatOrigin`, `divIdx`,

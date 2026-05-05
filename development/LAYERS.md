@@ -58,7 +58,7 @@ on the warped coordinate system, which feels right for "air between the
 rig" — but thermal-before-warp is also defensible and would produce
 shimmer that appears in untransformed image space.
 
-### Sample — `optics`, `pixelate`, or sphere topology
+### Sample — `optics`, `pixelate`, or sphere volume
 
 Optics is the normal read from `uPrev`. It fuses anisotropic blur and
 chromatic aberration into one sampling operation because both are
@@ -79,16 +79,19 @@ the processed colour with a raw `texture()` read) broke this — the
 pipeline's work downstream of pixelate was ignored by the cell
 samples and the effect failed to propagate.
 
-Sphere mode (`Alt+S`) also takes over the sampling stage. The feedback
-texture is treated as an octahedral atlas of directions on a sphere:
-the shader decodes the current pixel into a unit vector, applies
-spherical rotations/tangent drift using the existing warp controls,
-samples neighbouring sphere directions for a reverb-like blur, and
-re-encodes those directions back into atlas UVs. This is deliberately
-different from wrapping the flat output over a ball; the feedback read
-itself moves across sphere topology before downstream colour/dynamics
-stages run. The final `blit.frag` display pass renders the atlas as a
-front-facing sphere when this mode is active.
+Sphere mode (`Alt+S`) is now a separate true 3D feedback path. The host
+allocates ping-pong `GL_TEXTURE_3D` volume fields and renders every
+z-slice for each feedback step. `layers/sphere.glsl` maps each slice
+pixel to a point inside a unit ball, samples neighbouring 3D positions
+for reverb/wave propagation, and applies a soft spherical boundary
+condition before the normal colour/dynamics stages continue.
+
+This is deliberately not an octahedral atlas, cubemap, or flat texture
+wrapped over a sphere. There is no equator/stitch in the simulation
+state. `blit.frag` raymarches the 3D volume for display, and left mouse
+drag rotates only that display view; it does not rotate or distort the
+underlying feedback field. Flat mode is kept on the original 2D FBO path
+and returns before any sphere-volume logic runs.
 
 ### Camera-side — `invert`, `physics`
 

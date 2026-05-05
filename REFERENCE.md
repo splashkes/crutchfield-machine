@@ -184,7 +184,8 @@ once and fade over ~20 frames.
 | `F12` | CA sampler: 3-sample → 5-ramp → 8-wavelength |
 | `Home` | Noise type: **white → pink 1/f → heavy static → VCR → dropout** |
 | `End` | Coupled fields: 1 → 2 → 3 → 4 |
-| `Alt+S` | Sphere topology/display prototype: off ↔ octahedral sphere |
+| `Alt+S` | Sphere volume mode: off ↔ true 3D feedback field |
+| Left mouse drag | Rotate the sphere volume view in pitch/yaw (display only) |
 | `Delete` | Pixelate style: **off → dots s/m/l → squares s/m/l → rounded s/m/l** (10 states) |
 | `Ctrl+Delete` | Pixelate CRT bleed: **off → soft → CRT → melt → fried → burned** |
 | `Alt+Delete` | Reroll "burned" dead-pixel pattern (only audible when bleed = burned) |

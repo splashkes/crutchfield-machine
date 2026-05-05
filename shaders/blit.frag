@@ -2,6 +2,7 @@
 in  vec2 vUV;
 out vec4 oCol;
 uniform sampler2D uSrc;
+uniform sampler3D uSrcVol;
 uniform vec2 uRes;
 uniform float uTime;
 // Display-only brightness multiplier. Intentionally applied in the blit
@@ -11,19 +12,30 @@ uniform float uTime;
 // before blit and is therefore also unaffected.
 uniform float uBrightness;
 uniform int uSphereMode;
+uniform vec2 uViewRot;
 
-vec2 sphere_oct_encode(vec3 n) {
-    n /= (abs(n.x) + abs(n.y) + abs(n.z) + 1e-6);
-    vec2 e = n.xy;
-    if (n.z < 0.0) {
-        e = (1.0 - abs(e.yx)) * sign(e.xy);
-    }
-    return e * 0.5 + 0.5;
+float luma(vec3 c) {
+    return dot(max(c, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
 }
 
 vec3 sphere_rotate_y(vec3 p, float a) {
     float c = cos(a), s = sin(a);
     return vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+}
+
+vec3 sphere_rotate_x(vec3 p, float a) {
+    float c = cos(a), s = sin(a);
+    return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);
+}
+
+vec3 sphere_view_rotate(vec3 p) {
+    p = sphere_rotate_x(p, uViewRot.x);
+    p = sphere_rotate_y(p, uViewRot.y + uTime * 0.045);
+    return p;
+}
+
+vec4 sphere_vol_tex(vec3 p) {
+    return texture(uSrcVol, clamp(p * 0.5 + 0.5, vec3(0.0), vec3(1.0)));
 }
 
 void main() {
@@ -32,16 +44,41 @@ void main() {
         float aspect = uRes.x / max(uRes.y, 1.0);
         vec2 p = vUV * 2.0 - 1.0;
         p.x *= aspect;
+
         float r2 = dot(p, p);
-        if (r2 > 0.92 * 0.92) {
+        float baseR = 0.88;
+        float feather = 0.06;
+        if (r2 > (baseR + feather) * (baseR + feather)) {
             oCol = vec4(0.0, 0.0, 0.0, 1.0);
             return;
         }
-        vec3 n = normalize(vec3(p, sqrt(max(0.0, 0.92 * 0.92 - r2))));
-        n = sphere_rotate_y(n, uTime * 0.045);
-        c = texture(uSrc, sphere_oct_encode(n));
-        float light = 0.52 + 0.48 * max(n.z, 0.0);
-        c.rgb *= light;
+
+        float zFront = sqrt(max(0.0, baseR * baseR - r2));
+        float zBack = -zFront;
+        float edge = 1.0 - smoothstep(baseR - feather, baseR + feather, sqrt(r2));
+
+        vec3 accum = vec3(0.0);
+        float alpha = 0.0;
+        const int STEPS = 56;
+        for (int i = 0; i < STEPS; i++) {
+            float t = (float(i) + 0.5) / float(STEPS);
+            vec3 q = vec3(p, mix(zFront, zBack, t)) / baseR;
+            q = sphere_view_rotate(q);
+            vec4 s = sphere_vol_tex(q);
+            float density = smoothstep(0.025, 0.95, luma(s.rgb));
+            float a = density * 0.055 * (1.0 - alpha);
+            float depthLight = 0.72 + 0.28 * (1.0 - t);
+            accum += s.rgb * a * depthLight;
+            alpha += a;
+            if (alpha > 0.985) break;
+        }
+
+        // Add a subtle front-surface read so sparse fields still read as a
+        // sphere before the volume has filled in.
+        vec3 n = normalize(vec3(p, zFront));
+        n = sphere_view_rotate(n / baseR);
+        vec3 shell = sphere_vol_tex(n).rgb;
+        c = vec4((accum + shell * 0.18) * edge, 1.0);
     } else {
         c = texture(uSrc, vUV);
     }

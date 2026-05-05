@@ -27,7 +27,7 @@ Hold `Alt+1` triangle · `Alt+2` star · `Alt+3` circle · `Alt+4` square
 
 `PgUp` blur kernel · `F12` CA sampler · `Home` noise archetype · `End` fields
 `Delete` pixelate style · `Ctrl+Del` CRT bleed · `Alt+Del` reroll burn
-`Alt+S` sphere topology/display prototype
+`Alt+S` true 3D sphere volume · left-drag rotate sphere view
 
 ## Output
 

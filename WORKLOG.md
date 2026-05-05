@@ -1,3 +1,24 @@
+# Worklog — 2026-05-05 true sphere volume
+
+- Replaced the octahedral sphere-atlas prototype with a true volumetric
+  feedback path. `Alt+S` now switches the simulation from the normal 2D
+  ping-pong FBOs to ping-pong `GL_TEXTURE_3D` fields, rendered one
+  z-slice at a time.
+- `shaders/layers/sphere.glsl` treats each fragment as a 3D point inside
+  a unit ball, samples neighbouring 3D positions for reverb/wave
+  propagation, and applies a soft spherical boundary. This removes the
+  equator/fold artifacts from atlas storage.
+- `shaders/blit.frag` raymarches the 3D volume for display. Left mouse
+  drag rotates the displayed volume in pitch/yaw without rotating the
+  simulation state itself.
+- Restored normal mode by giving `main.frag` an explicit early 2D branch
+  matching the flat feedback pipeline and by binding 3D sampler uniforms
+  away from the 2D texture units.
+- The shared root `main.cpp` contains the core volume path; the macOS
+  entry point mirrors the host plumbing needed for the app bundle.
+
+---
+
 # Worklog — 2026-05-05 sphere topology prototype
 
 - Added first-pass sphere mode on `Alt+S`. The simulation texture is

@@ -118,8 +118,63 @@ const int L_THERMAL  = 1<<11;
 // camera optics → analog electronics → mixing → sensor noise → triggering.
 void main() {
     vec2 uv     = vUV;
+
+    if (uSphereMode == 0) {
+        vec2 src_uv = uv;
+        vec4 dry    = texture(uPrev, uv);
+
+        if ((uEnable & L_WARP) != 0) src_uv = warp_apply(uv);
+        if ((uEnable & L_THERMAL) != 0) src_uv = thermal_warp(src_uv);
+
+        src_uv = vfx_warp_uv(src_uv, 0);
+        src_uv = vfx_warp_uv(src_uv, 1);
+        if (uShapeInject > 0.0) src_uv = shape_interact_uv(src_uv, uv);
+
+        vec4 col;
+        if (uPixelateStyle != 0)             col = pixelate_apply(uPrev, src_uv, uv);
+        else if ((uEnable & L_OPTICS) != 0)  col = optics_sample(uPrev, src_uv);
+        else                                  col = texture(uPrev, src_uv);
+
+        col = mix(dry, col, clamp(uSourceWet, 0.0, 1.0));
+
+        if (uPatternInject > 0.0) col = pattern_layer_apply(col, uv);
+        if (uShapeInject > 0.0) col = shape_inject_apply(col, uv);
+        vec4 fxDry = col;
+
+        int ip = max(uInvertPeriod, 1);
+        if (uInvert == 1 && int(uFrame) - (int(uFrame) / ip) * ip == 0) {
+            col.rgb = vec3(1.0) - col.rgb;
+        }
+
+        if ((uEnable & L_PHYSICS) != 0) col = physics_apply(col);
+        if ((uEnable & L_GAMMA) != 0) col = gamma_in_apply(col);
+        if ((uEnable & L_COLOR) != 0) col = color_apply(col);
+        if ((uEnable & L_CONTRAST) != 0) col = contrast_apply(col);
+        if ((uEnable & L_GAMMA) != 0) col = gamma_out_apply(col);
+        if ((uEnable & L_DECAY) != 0) col = decay_apply(col, uv);
+        if ((uEnable & L_COUPLE) != 0) col = couple_apply(col, uv);
+        if ((uEnable & L_EXTERNAL) != 0) col = external_apply(col, uv);
+        if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
+
+        col = vfx_apply(col, uv, 0);
+        col = vfx_apply(col, uv, 1);
+        col = mix(fxDry, col, clamp(uFxWet, 0.0, 1.0));
+
+        if ((uEnable & L_INJECT) != 0 || uInject > 0.0) {
+            col = inject_apply(col, uv);
+        }
+
+        col = output_fade_apply(col);
+        oCol = vec4(col.rgb, 1.0);
+        return;
+    }
+
     vec2 src_uv = uv;
-    vec4 dry    = texture(uPrev, uv);
+    vec3 sphereP = sphere_volume_pos(uv);
+    vec3 sphereSrcP = sphereP;
+    vec4 dry = (uSphereMode != 0)
+        ? sphere_sample_volume(uPrevVol, sphereP)
+        : texture(uPrev, uv);
 
     //  1. geometric warp (modifies the sample location)
     if ((uEnable & L_WARP) != 0) src_uv = warp_apply(uv);
@@ -139,7 +194,7 @@ void main() {
     // pixels near their boundary reflect part of the source-UV motion before
     // sampling the previous frame. The colour injection still happens below.
     if (uShapeInject > 0.0) src_uv = shape_interact_uv(src_uv, uv);
-    if (uSphereMode != 0) src_uv = sphere_source_uv(uv, src_uv);
+    if (uSphereMode != 0) sphereSrcP = sphere_source_pos(sphereP, uv, src_uv);
 
     //  2. sample uPrev. When pixelate is on it takes over the sample
     //     (quantizing to a screen-space grid whose cell-centres get
@@ -147,7 +202,7 @@ void main() {
     //     Optics is bypassed in that path — hard blocks don't want
     //     a blur kernel smearing across cell edges.
     vec4 col;
-    if (uSphereMode != 0)                col = sphere_sample(uPrev, src_uv);
+    if (uSphereMode != 0)                col = sphere_sample_volume(uPrevVol, sphereSrcP);
     else if (uPixelateStyle != 0)        col = pixelate_apply(uPrev, src_uv, uv);
     else if ((uEnable & L_OPTICS) != 0)  col = optics_sample(uPrev, src_uv);
     else                                  col = texture(uPrev, src_uv);
@@ -201,10 +256,16 @@ void main() {
     //     background — matching an analog rig where the camera sees live
     //     content at scene brightness, not CRT-attenuated brightness.
     //     See development/LAYERS.md §feedback-write stages.
-    if ((uEnable & L_DECAY) != 0) col = decay_apply(col, uv);
+    if ((uEnable & L_DECAY) != 0) {
+        if (uSphereMode != 0) col = sphere_decay_apply(col, sphereP);
+        else col = decay_apply(col, uv);
+    }
 
     //  7. couple: blend in the other field (Kaneko)
-    if ((uEnable & L_COUPLE) != 0) col = couple_apply(col, uv);
+    if ((uEnable & L_COUPLE) != 0) {
+        if (uSphereMode != 0) col = sphere_couple_apply(col, sphereP);
+        else col = couple_apply(col, uv);
+    }
 
     //  8. external: blend in camera
     if ((uEnable & L_EXTERNAL) != 0) col = external_apply(col, uv);
@@ -230,6 +291,8 @@ void main() {
 
     // 13. Output fade — bipolar to black / white. The V-4's Output Fade dial.
     col = output_fade_apply(col);
+
+    if (uSphereMode != 0) col.rgb *= sphere_inside_mask(sphereP);
 
     oCol = vec4(col.rgb, 1.0);
 }

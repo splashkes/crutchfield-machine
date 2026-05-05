@@ -334,6 +334,15 @@ static const char* VFX_BSRC_NAMES[] = { "camera", "self-reproc" };
 
 // ── framebuffer-object helper ─────────────────────────────────────────────
 struct FBO { GLuint fbo = 0, tex = 0; int w = 0, h = 0; };
+struct VolumeFBO { GLuint fbo = 0, tex = 0; int size = 0; };
+
+static void feedback_texture_format(GLenum& internalFmt, GLenum& type) {
+    switch (g_cfg.precision) {
+        case 8:  internalFmt = GL_RGBA8;    type = GL_UNSIGNED_BYTE; break;
+        case 32: internalFmt = GL_RGBA32F;  type = GL_FLOAT;         break;
+        default: internalFmt = GL_RGBA16F;  type = GL_HALF_FLOAT;    break;
+    }
+}
 
 static void resize_fbo(FBO& f, int w, int h) {
     if (!f.fbo) glGenFramebuffers(1, &f.fbo);
@@ -341,11 +350,7 @@ static void resize_fbo(FBO& f, int w, int h) {
     f.w = w; f.h = h;
     glBindTexture(GL_TEXTURE_2D, f.tex);
     GLenum internalFmt, type;
-    switch (g_cfg.precision) {
-        case 8:  internalFmt = GL_RGBA8;    type = GL_UNSIGNED_BYTE; break;
-        case 32: internalFmt = GL_RGBA32F;  type = GL_FLOAT;         break;
-        default: internalFmt = GL_RGBA16F;  type = GL_HALF_FLOAT;    break;
-    }
+    feedback_texture_format(internalFmt, type);
     glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, w, h, 0, GL_RGBA, type, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -360,6 +365,35 @@ static void resize_fbo(FBO& f, int w, int h) {
 static void clear_fbo(FBO& f) {
     glBindFramebuffer(GL_FRAMEBUFFER, f.fbo);
     glClearColor(0,0,0,1); glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static void resize_volume_fbo(VolumeFBO& f, int size) {
+    if (!f.fbo) glGenFramebuffers(1, &f.fbo);
+    if (!f.tex) glGenTextures(1, &f.tex);
+    f.size = size;
+    GLenum internalFmt, type;
+    feedback_texture_format(internalFmt, type);
+    glBindTexture(GL_TEXTURE_3D, f.tex);
+    glTexImage3D(GL_TEXTURE_3D, 0, internalFmt, size, size, size, 0,
+                 GL_RGBA, type, nullptr);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_3D, 0);
+}
+
+static void clear_volume_fbo(VolumeFBO& f) {
+    glBindFramebuffer(GL_FRAMEBUFFER, f.fbo);
+    glViewport(0, 0, f.size, f.size);
+    glClearColor(0,0,0,1);
+    for (int z = 0; z < f.size; z++) {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  f.tex, 0, z);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -479,7 +513,12 @@ struct State {
     // Up to 4 feedback fields. Each is a ping-pong pair.
     // Fields beyond `activeFields` are unused (not created).
     FBO field[4][2];                   // field[i][0] and field[i][1]
+    VolumeFBO volumeField[4][2];        // true 3D sphere-mode ping-pong fields
+    int volumeSize = 96;
     bool writeA = true;                // toggles which slot we're writing to
+    bool mouseDrag = false;
+    double mouseLastX = 0.0, mouseLastY = 0.0;
+    float viewRotX = 0.0f, viewRotY = 0.0f;
 
     int  enable = L_WARP | L_OPTICS | L_COLOR | L_CONTRAST
                 | L_DECAY | L_NOISE | L_INJECT;
@@ -1617,7 +1656,7 @@ static std::string section_quality() {
         cur(2), keys_for(ACT_NOISEQ_CYCLE).c_str(), ns[S.noiseQ],
         cur(3), keys_for(ACT_FIELDS_CYCLE).c_str(), S.activeFields,
         cur(4), keys_for(ACT_SPHERE_TOGGLE).c_str(),
-                S.p.sphereMode ? "oct" : "off");
+                S.p.sphereMode ? "3D" : "off");
     return b;
 }
 
@@ -2453,7 +2492,7 @@ static void apply_action(ActionId id, float mag) {
         case ACT_SPHERE_TOGGLE: {
             p.sphereMode = p.sphereMode ? 0 : 1;
             S.needClear = true;
-            S.ov.logEvent(p.sphereMode ? "sphere topology: ON" : "sphere topology: off");
+            S.ov.logEvent(p.sphereMode ? "sphere volume: ON" : "sphere volume: off");
             return;
         }
         case ACT_FIELDS_CYCLE: {
@@ -2737,6 +2776,29 @@ static void size_cb(GLFWwindow*, int w, int h) {
     S.ov.resize(w, h);
 }
 
+static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
+    if (button != GLFW_MOUSE_BUTTON_LEFT) return;
+    if (action == GLFW_PRESS) {
+        S.mouseDrag = true;
+        glfwGetCursorPos(win, &S.mouseLastX, &S.mouseLastY);
+    } else if (action == GLFW_RELEASE) {
+        S.mouseDrag = false;
+    }
+}
+
+static void cursor_pos_cb(GLFWwindow*, double x, double y) {
+    if (!S.mouseDrag) return;
+    double dx = x - S.mouseLastX;
+    double dy = y - S.mouseLastY;
+    S.mouseLastX = x;
+    S.mouseLastY = y;
+    S.viewRotY += (float)dx * 0.0065f;
+    S.viewRotX += (float)dy * 0.0065f;
+    const float limit = 1.45f;
+    if (S.viewRotX < -limit) S.viewRotX = -limit;
+    if (S.viewRotX >  limit) S.viewRotX =  limit;
+}
+
 // ── one feedback step for a single field ──────────────────────────────────
 static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
@@ -2749,6 +2811,10 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     glBindTexture(GL_TEXTURE_2D, otherSrc.tex);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : src.tex);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][0].tex);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][1].tex);
 
     #define U1f(n, v)  glUniform1f (glGetUniformLocation(progFeedback, n), (v))
     #define U1i(n, v)  glUniform1i (glGetUniformLocation(progFeedback, n), (v))
@@ -2756,11 +2822,14 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     #define U2f(n, x, y) glUniform2f(glGetUniformLocation(progFeedback, n), (x), (y))
 
     U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
+    U1i("uPrevVol", 3); U1i("uOtherVol", 4);
     U2f("uRes", (float)dst.w, (float)dst.h);
     U1f("uTime", (float)glfwGetTime());
     U1ui("uFrame", S.frame);
     U1i("uEnable", S.enable);
     U1i("uFieldId", fieldId);
+    U1f("uVolumeSlice", 0.0f);
+    U1f("uVolumeSize", (float)S.volumeSize);
 
     auto& p = S.p;
     U1f("uZoom", p.zoom); U1f("uTheta", p.theta);
@@ -2825,6 +2894,96 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+static void render_volume_field(int fieldId, VolumeFBO& src, VolumeFBO& dst,
+                                VolumeFBO& otherSrc, FBO& flatFallback) {
+    glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
+    glViewport(0, 0, dst.size, dst.size);
+    glUseProgram(progFeedback);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : flatFallback.tex);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_3D, src.tex);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_3D, otherSrc.tex);
+
+    U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
+    U1i("uPrevVol", 3); U1i("uOtherVol", 4);
+    U2f("uRes", (float)dst.size, (float)dst.size);
+    U1f("uTime", (float)glfwGetTime());
+    U1ui("uFrame", S.frame);
+    U1i("uEnable", S.enable);
+    U1i("uFieldId", fieldId);
+    U1f("uVolumeSize", (float)dst.size);
+
+    auto& p = S.p;
+    U1f("uZoom", p.zoom); U1f("uTheta", p.theta);
+    U1f("uPivotX", p.pivotX); U1f("uPivotY", p.pivotY);
+    U1f("uTransX", p.transX); U1f("uTransY", p.transY);
+    U1f("uChroma", p.chroma);
+    U1f("uBlurX", p.blurX); U1f("uBlurY", p.blurY); U1f("uBlurAngle", p.blurAngle);
+    U1i("uBlurQuality", S.blurQ);
+    U1i("uCAQuality",   S.caQ);
+    U1f("uGamma", p.gamma);
+    U1f("uHueRate", p.hueRate); U1f("uSatGain", p.satGain);
+    U1f("uContrast", p.contrast);
+    float effOutFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + p.flashDecay));
+    float effDecay   = (p.decayDipTimer > 0.0f) ? 0.90f : p.decay;
+    U1f("uDecay", effDecay);
+    U1f("uBorderSize", p.borderSize);
+    U1f("uBorderSoftness", p.borderSoftness);
+    U1f("uBorderDecay", p.borderDecay);
+    U1f("uNoise", p.noise);
+    U1i("uNoiseQuality", S.noiseQ);
+    U1i("uInvert",      p.invert);
+    U1f("uSensorGamma", p.sensorGamma);
+    U1f("uSatKnee",     p.satKnee);
+    U1f("uColorCross",  p.colorCross);
+    U1f("uThermAmp",    p.thermAmp);
+    U1f("uThermScale",  p.thermScale);
+    U1f("uThermSpeed",  p.thermSpeed);
+    U1f("uThermRise",   p.thermRise);
+    U1f("uThermSwirl",  p.thermSwirl);
+    U1f("uCouple", p.couple);
+    U1f("uExternal", p.external);
+    U1f("uFxWet", p.fxWet);
+    U1f("uSourceWet", p.sourceWet);
+    U1i("uSphereMode", p.sphereMode);
+    U1f("uSphereReverb", p.sphereReverb);
+    U1f("uInject", p.inject);
+    U1i("uPattern", p.pattern);
+    U1f("uPatternInject", p.patternInject);
+    U1f("uShapeInject", p.shapeInject);
+    U1i("uShapeKind", p.shapeKind);
+    U1i("uShapeCount", p.shapeCount);
+    U1f("uShapeSize", p.shapeSize);
+    U1f("uShapeAngle", p.shapeAngle);
+
+    {
+        GLint lEff = glGetUniformLocation(progFeedback, "uVfxEffect");
+        GLint lPar = glGetUniformLocation(progFeedback, "uVfxParam");
+        GLint lSrc = glGetUniformLocation(progFeedback, "uVfxBSource");
+        if (lEff >= 0) glUniform1iv(lEff, 2, p.vfxSlot);
+        if (lPar >= 0) glUniform1fv(lPar, 2, p.vfxParam);
+        if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
+    }
+    U1f("uOutFade", effOutFade);
+    U1f("uBpmPhase", p.beatPhase);
+    U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
+
+    for (int z = 0; z < dst.size; z++) {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  dst.tex, 0, z);
+        U1f("uVolumeSlice", (float)z);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 // ── post-session encode prompt ──────────────────────────────────────────
@@ -3320,6 +3479,8 @@ int main(int argc, char** argv) {
 
     glfwSetKeyCallback(win, key_cb);
     glfwSetFramebufferSizeCallback(win, size_cb);
+    glfwSetMouseButtonCallback(win, mouse_button_cb);
+    glfwSetCursorPosCallback(win, cursor_pos_cb);
 
     progFeedback = build_feedback_program();
     progBlit     = build_blit_program();
@@ -3336,9 +3497,12 @@ int main(int argc, char** argv) {
     glBindVertexArray(mainVAO);
 
     // Create simulation FBOs at the simulation resolution, ONCE.
+    S.volumeSize = (S.simW < 900 || S.simH < 600) ? 64 : 96;
     for (int f = 0; f < S.activeFields; f++) {
         resize_fbo(S.field[f][0], S.simW, S.simH);
         resize_fbo(S.field[f][1], S.simW, S.simH);
+        resize_volume_fbo(S.volumeField[f][0], S.volumeSize);
+        resize_volume_fbo(S.volumeField[f][1], S.volumeSize);
     }
 
     int fbw, fbh; glfwGetFramebufferSize(win, &fbw, &fbh);
@@ -3442,6 +3606,8 @@ int main(int argc, char** argv) {
             for (int f = 0; f < S.activeFields; f++) {
                 clear_fbo(S.field[f][0]);
                 clear_fbo(S.field[f][1]);
+                clear_volume_fbo(S.volumeField[f][0]);
+                clear_volume_fbo(S.volumeField[f][1]);
             }
             S.needClear = false;
         }
@@ -3468,10 +3634,18 @@ int main(int argc, char** argv) {
                 const int N = S.activeFields;
                 for (int f = 0; f < N; f++) {
                     int otherIdx = (f + 1) % N;
-                    render_field(f,
-                                 S.field[f][srcSlot],
-                                 S.field[f][dstSlot],
-                                 S.field[otherIdx][srcSlot]);
+                    if (S.p.sphereMode) {
+                        render_volume_field(f,
+                                            S.volumeField[f][srcSlot],
+                                            S.volumeField[f][dstSlot],
+                                            S.volumeField[otherIdx][srcSlot],
+                                            S.field[f][srcSlot]);
+                    } else {
+                        render_field(f,
+                                     S.field[f][srcSlot],
+                                     S.field[f][dstSlot],
+                                     S.field[otherIdx][srcSlot]);
+                    }
                 }
                 S.writeA = !S.writeA;
                 S.frame++;
@@ -3486,11 +3660,15 @@ int main(int argc, char** argv) {
         glUseProgram(progBlit);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, latest.tex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_3D, S.volumeField[0][srcSlot].tex);
         glUniform1i(glGetUniformLocation(progBlit, "uSrc"), 0);
+        glUniform1i(glGetUniformLocation(progBlit, "uSrcVol"), 1);
         glUniform2f(glGetUniformLocation(progBlit, "uRes"), (float)S.winW, (float)S.winH);
         glUniform1f(glGetUniformLocation(progBlit, "uTime"), (float)glfwGetTime());
         glUniform1f(glGetUniformLocation(progBlit, "uBrightness"), 1.0f);
         glUniform1i(glGetUniformLocation(progBlit, "uSphereMode"), S.p.sphereMode);
+        glUniform2f(glGetUniformLocation(progBlit, "uViewRot"), S.viewRotX, S.viewRotY);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         // Record from the sim-resolution texture (not the display framebuffer)
@@ -3539,6 +3717,8 @@ int main(int argc, char** argv) {
         for (int s = 0; s < 2; s++) {
             if (S.field[f][s].fbo) glDeleteFramebuffers(1, &S.field[f][s].fbo);
             if (S.field[f][s].tex) glDeleteTextures(1, &S.field[f][s].tex);
+            if (S.volumeField[f][s].fbo) glDeleteFramebuffers(1, &S.volumeField[f][s].fbo);
+            if (S.volumeField[f][s].tex) glDeleteTextures(1, &S.volumeField[f][s].tex);
         }
     }
     if (S.camTex)      glDeleteTextures(1, &S.camTex);
