@@ -98,6 +98,10 @@ volume, and lets `blit.frag` raymarch the result. The normal mode branch
 returns through the original 2D FBO pipeline before any volume sampling
 runs, so flat feedback remains independent of the sphere path.
 
+Preset files include a `[sphere]` section for the volume toggle, reverb,
+and display-only view rotation. Older presets without that section load
+with sphere mode off, which keeps legacy flat presets deterministic.
+
 **Layer dispatch order is significant.** Warp and thermal happen on
 the *sample* UV (before the texture read); optics performs the read;
 everything else operates on the returned color. Full per-layer

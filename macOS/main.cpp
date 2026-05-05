@@ -956,6 +956,13 @@ static bool preset_write(const std::string& path) {
 "param2   = %.6f\n"
 "bsource2 = %d\n"
 "\n"
+"[sphere]\n"
+"# mode: 0=normal 2D FBO, 1=true 3D volume. viewRot is display-only.\n"
+"mode     = %d\n"
+"reverb   = %.6f\n"
+"viewRotX = %.6f\n"
+"viewRotY = %.6f\n"
+"\n"
 "[output]\n"
 "# Output fade: bipolar, -1=black, 0=through, +1=white.\n"
 "fade     = %.6f\n"
@@ -985,6 +992,7 @@ static bool preset_write(const std::string& path) {
         p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl,
         p.vfxSlot[0], p.vfxParam[0], p.vfxBSource[0],
         p.vfxSlot[1], p.vfxParam[1], p.vfxBSource[1],
+        p.sphereMode, p.sphereReverb, S.viewRotX, S.viewRotY,
         p.outFade,
         p.bpm, p.divIdx,
         p.bpmSyncOn   ? "on" : "off",
@@ -1006,6 +1014,13 @@ static void ensure_active_field_fbos() {
             clear_fbo(S.field[fi][0]);
             clear_fbo(S.field[fi][1]);
         }
+        if (S.volumeField[fi][0].fbo == 0) {
+            int size = S.volumeSize > 0 ? S.volumeSize : 96;
+            resize_volume_fbo(S.volumeField[fi][0], size);
+            resize_volume_fbo(S.volumeField[fi][1], size);
+            clear_volume_fbo(S.volumeField[fi][0]);
+            clear_volume_fbo(S.volumeField[fi][1]);
+        }
     }
 }
 
@@ -1019,6 +1034,8 @@ static void preset_reset_creative_defaults() {
     S.activeFields = g_cfg.fields;
     S.armedLayer = 0;
     S.armedQuality = 0;
+    S.viewRotX = 0.0f;
+    S.viewRotY = 0.0f;
 }
 
 // Load file at path, mutating S. Returns true on success.
@@ -1145,6 +1162,12 @@ static bool preset_load(const std::string& path) {
             else if (k == "param2")   p.vfxParam[1]   = fmaxf(0.f, fminf(1.f, fv));
             else if (k == "bsource1") p.vfxBSource[0] = (n & 1);
             else if (k == "bsource2") p.vfxBSource[1] = (n & 1);
+        } else if (section == "sphere") {
+            float fv = (float)atof(v.c_str());
+            if      (k == "mode")     p.sphereMode = atoi(v.c_str()) ? 1 : 0;
+            else if (k == "reverb")   p.sphereReverb = fmaxf(0.0f, fminf(1.0f, fv));
+            else if (k == "viewRotX") S.viewRotX = fmaxf(-1.45f, fminf(1.45f, fv));
+            else if (k == "viewRotY") S.viewRotY = fv;
         } else if (section == "output") {
             float fv = (float)atof(v.c_str());
             if (k == "fade") p.outFade = fmaxf(-1.f, fminf(1.f, fv));
@@ -1161,6 +1184,7 @@ static bool preset_load(const std::string& path) {
     }
     fclose(f);
     ensure_active_field_fbos();
+    S.needClear = true;
     sync_ddj_layer_leds();
     sync_ddj_filter_leds();
     return true;

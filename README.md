@@ -264,7 +264,9 @@ is playing, each drum fires a distinctly flavoured glitch.
 ```
 
 In-app: `Ctrl+S` saves the current state as `presets/auto_<timestamp>.ini`,
-`Ctrl+N`/`Ctrl+P` cycle through loaded presets.
+`Ctrl+N`/`Ctrl+P` cycle through loaded presets. Presets include the
+normal/sphere mode switch, sphere reverb, and display rotation; older
+presets without a `[sphere]` section load in normal flat mode.
 
 ### Auto-demo / unattended mode
 

@@ -190,6 +190,11 @@ once and fade over ~20 frames.
 | `Ctrl+Delete` | Pixelate CRT bleed: **off → soft → CRT → melt → fried → burned** |
 | `Alt+Delete` | Reroll "burned" dead-pixel pattern (only audible when bleed = burned) |
 
+Preset save/load records the sphere mode, sphere reverb, and display
+rotation under `[sphere]`. Presets saved before this section existed load
+as normal flat mode, which avoids accidentally staying in sphere mode when
+recalling an older 2D preset.
+
 **Dropout noise + music** — the most fun pairing in the whole app.
 Set noise to `dropout` (cycle `Home` four times), start music, each
 drum fires a distinct glitch character.
