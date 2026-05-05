@@ -233,6 +233,8 @@ struct Params {
     // source/transform dry/wet mix before color/dynamics. 1.0 = full transform.
     float sourceWet = 1.0f;
     int   fxWetMode = 0; // 0=full effect path, 1=source/transform path
+    int   sphereMode = 0;
+    float sphereReverb = 0.35f;
     // inject
     float inject = 0.0f;
     int   pattern = 0;
@@ -1607,12 +1609,15 @@ static std::string section_quality() {
         "%s  %-5s  CA sampler  : %s\n"
         "%s  %-5s  noise type  : %s\n"
         "%s  %-5s  fields      : %d\n"
+        "%s  %-5s  sphere      : %s\n"
         "\n"
         "DP-L/R move cursor   A cycle armed",
         cur(0), keys_for(ACT_BLURQ_CYCLE).c_str(),  blur[S.blurQ],
         cur(1), keys_for(ACT_CAQ_CYCLE  ).c_str(),  ca[S.caQ],
         cur(2), keys_for(ACT_NOISEQ_CYCLE).c_str(), ns[S.noiseQ],
-        cur(3), keys_for(ACT_FIELDS_CYCLE).c_str(), S.activeFields);
+        cur(3), keys_for(ACT_FIELDS_CYCLE).c_str(), S.activeFields,
+        cur(4), keys_for(ACT_SPHERE_TOGGLE).c_str(),
+                S.p.sphereMode ? "oct" : "off");
     return b;
 }
 
@@ -2135,16 +2140,16 @@ static void apply_action(ActionId id, float mag) {
             return;
         }
 
-        // Quality cursor — 4 entries: blur, ca, noise, fields.
+        // Quality cursor — 5 entries: blur, ca, noise, fields, sphere.
         case ACT_QUALITY_CURSOR_UP:
-            S.armedQuality = (S.armedQuality - 1 + 4) % 4;
-            { static const char* N[] = {"blur","CA","noise","fields"};
+            S.armedQuality = (S.armedQuality - 1 + 5) % 5;
+            { static const char* N[] = {"blur","CA","noise","fields","sphere"};
               char b[64]; snprintf(b, sizeof b, "quality armed: %s", N[S.armedQuality]);
               S.ov.logEvent(b); }
             return;
         case ACT_QUALITY_CURSOR_DN:
-            S.armedQuality = (S.armedQuality + 1) % 4;
-            { static const char* N[] = {"blur","CA","noise","fields"};
+            S.armedQuality = (S.armedQuality + 1) % 5;
+            { static const char* N[] = {"blur","CA","noise","fields","sphere"};
               char b[64]; snprintf(b, sizeof b, "quality armed: %s", N[S.armedQuality]);
               S.ov.logEvent(b); }
             return;
@@ -2154,6 +2159,7 @@ static void apply_action(ActionId id, float mag) {
                 case 1: apply_action(ACT_CAQ_CYCLE,    1.0f); break;
                 case 2: apply_action(ACT_NOISEQ_CYCLE, 1.0f); break;
                 case 3: apply_action(ACT_FIELDS_CYCLE, 1.0f); break;
+                case 4: apply_action(ACT_SPHERE_TOGGLE, 1.0f); break;
             }
             return;
 
@@ -2443,6 +2449,12 @@ static void apply_action(ActionId id, float mag) {
             printf("[noise-q] %s\n", n[S.noiseQ]);
             char b[64]; snprintf(b, sizeof b, "noise: %s", n[S.noiseQ]);
             S.ov.logEvent(b); sync_ddj_layer_leds(); return;
+        }
+        case ACT_SPHERE_TOGGLE: {
+            p.sphereMode = p.sphereMode ? 0 : 1;
+            S.needClear = true;
+            S.ov.logEvent(p.sphereMode ? "sphere topology: ON" : "sphere topology: off");
+            return;
         }
         case ACT_FIELDS_CYCLE: {
             S.activeFields = (S.activeFields % 4) + 1;
@@ -2785,6 +2797,8 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1f("uExternal", p.external);
     U1f("uFxWet", p.fxWet);
     U1f("uSourceWet", p.sourceWet);
+    U1i("uSphereMode", p.sphereMode);
+    U1f("uSphereReverb", p.sphereReverb);
     U1f("uInject", p.inject);
     U1i("uPattern", p.pattern);
     U1f("uPatternInject", p.patternInject);
@@ -3473,7 +3487,10 @@ int main(int argc, char** argv) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, latest.tex);
         glUniform1i(glGetUniformLocation(progBlit, "uSrc"), 0);
+        glUniform2f(glGetUniformLocation(progBlit, "uRes"), (float)S.winW, (float)S.winH);
+        glUniform1f(glGetUniformLocation(progBlit, "uTime"), (float)glfwGetTime());
         glUniform1f(glGetUniformLocation(progBlit, "uBrightness"), 1.0f);
+        glUniform1i(glGetUniformLocation(progBlit, "uSphereMode"), S.p.sphereMode);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         // Record from the sim-resolution texture (not the display framebuffer)

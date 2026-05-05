@@ -1,3 +1,18 @@
+# Worklog — 2026-05-05 sphere topology prototype
+
+- Added first-pass sphere mode on `Alt+S`. The simulation texture is
+  interpreted as an octahedral sphere atlas rather than a flat plane:
+  feedback sampling decodes the current pixel to a sphere direction,
+  applies spherical motion/tangent drift, samples geodesic neighbours
+  for a reverb-like blur, then re-encodes back to the atlas.
+- `blit.frag` renders the octahedral atlas as a lit front-facing sphere
+  in the window, so the mode is not just a square texture viewed flat.
+- This is intentionally an early version-3 prototype. It keeps the
+  current 2D FBO storage for now, but the feedback topology is spherical
+  rather than planar wrapping.
+
+---
+
 # Worklog — 2026-05-05 border + shape interaction prototype
 
 - Added a soft border decay field to the decay layer. The normal global

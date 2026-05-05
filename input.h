@@ -98,6 +98,7 @@ enum ActionId : int {
     ACT_PIXELATE_STYLE_CYCLE,
     ACT_PIXELATE_BLEED_CYCLE,
     ACT_PIXELATE_BURN_RESEED,
+    ACT_SPHERE_TOGGLE,
     // Cursor-based quality navigation (D-pad L/R + A in Quality section)
     ACT_QUALITY_CURSOR_UP, ACT_QUALITY_CURSOR_DN, ACT_QUALITY_FIRE_ARMED,
     // Cursor-based pattern navigation (D-pad L/R in Inject section)

@@ -404,6 +404,24 @@ needs more performance options before it is a polished control surface.
 - README/REFERENCE/help panel describe the final controls.
 **Effort:** small-medium.
 
+### [P2] Promote sphere topology prototype into a full spherical field
+
+**Why:** `Alt+S` now proves the core version-3 direction: feedback
+sampling operates through an octahedral sphere atlas and the display
+pass renders it as a sphere. It still uses the existing 2D FBO rather
+than dedicated cubemap/geodesic storage, and its controls are rough.
+**Where:** `shaders/layers/sphere.glsl`, `shaders/blit.frag`,
+`main.cpp`, `macOS/main.cpp`.
+**Done when:**
+- Sphere mode has explicit controls for reverb radius, rotation/spin,
+  and display lighting rather than shader constants.
+- Seams/folds are audited under high blur/reverb and documented.
+- Recording/screenshot behavior is decided: atlas, sphere render, or
+  both.
+- If octahedral artifacts become limiting, graduate storage to a real
+  cubemap field with face-aware rendering.
+**Effort:** medium-large.
+
 ---
 
 ## Recently completed

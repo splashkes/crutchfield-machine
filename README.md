@@ -324,6 +324,7 @@ Essentials for quick reference:
 | `Delete` | Cycle pixelate style (off / dots / hard squares / rounded × s/m/l) |
 | `Ctrl+Delete` | Cycle pixelate CRT bleed (off / soft / CRT / melt / fried / burned) |
 | `Alt+Delete` | Reroll the "burned" dead-pixel pattern |
+| `Alt+S` | Toggle sphere topology/display prototype |
 | `Alt+Up` / `Alt+Down` | Display-only brightness ± |
 | `Ctrl+Up` / `Ctrl+Down` | Output fade — toward white / toward black (feeds back) |
 | `Ctrl+Alt+H` | Toggle beat-driven hue jump |

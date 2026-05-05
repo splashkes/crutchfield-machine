@@ -158,6 +158,7 @@ static const ActionInfo ACTIONS[] = {
     { ACT_PIXELATE_STYLE_CYCLE, "q.pixelate",     AK_DISCRETE, "Quality", "cycle pixelate style" },
     { ACT_PIXELATE_BLEED_CYCLE, "q.pixelateBleed",AK_DISCRETE, "Quality", "cycle pixelate bleed (CRT feel)" },
     { ACT_PIXELATE_BURN_RESEED, "q.pixelateBurnReseed", AK_DISCRETE, "Quality", "reroll burned pixel pattern (preset 'burned')" },
+    { ACT_SPHERE_TOGGLE,    "q.sphere",           AK_DISCRETE, "Quality", "toggle sphere topology/display" },
     { ACT_QUALITY_CURSOR_UP,"q.cursor.up",        AK_DISCRETE, "Quality", "cursor prev" },
     { ACT_QUALITY_CURSOR_DN,"q.cursor.dn",        AK_DISCRETE, "Quality", "cursor next" },
     { ACT_QUALITY_FIRE_ARMED,"q.cycleArmed",      AK_DISCRETE, "Quality", "cycle armed quality" },
@@ -480,6 +481,7 @@ void Input::installDefaults() {
     K(in, ACT_PIXELATE_STYLE_CYCLE, GLFW_KEY_DELETE);
     K(in, ACT_PIXELATE_BLEED_CYCLE, GLFW_KEY_DELETE, GLFW_MOD_CONTROL);
     K(in, ACT_PIXELATE_BURN_RESEED, GLFW_KEY_DELETE, GLFW_MOD_ALT);
+    K(in, ACT_SPHERE_TOGGLE,        GLFW_KEY_S, GLFW_MOD_ALT);
     K(in, ACT_PRINT_HELP_STDOUT, GLFW_KEY_SLASH);  // '?' / shifted slash
 
 #ifdef __APPLE__

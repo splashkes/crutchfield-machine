@@ -96,6 +96,7 @@ const int L_THERMAL  = 1<<11;
 
 // ── layer sources (resolved by host before compile) ─────────
 #include "common.glsl"
+#include "layers/sphere.glsl"
 #include "layers/warp.glsl"
 #include "layers/thermal.glsl"
 #include "layers/optics.glsl"
@@ -138,6 +139,7 @@ void main() {
     // pixels near their boundary reflect part of the source-UV motion before
     // sampling the previous frame. The colour injection still happens below.
     if (uShapeInject > 0.0) src_uv = shape_interact_uv(src_uv, uv);
+    if (uSphereMode != 0) src_uv = sphere_source_uv(uv, src_uv);
 
     //  2. sample uPrev. When pixelate is on it takes over the sample
     //     (quantizing to a screen-space grid whose cell-centres get
@@ -145,7 +147,8 @@ void main() {
     //     Optics is bypassed in that path — hard blocks don't want
     //     a blur kernel smearing across cell edges.
     vec4 col;
-    if (uPixelateStyle != 0)             col = pixelate_apply(uPrev, src_uv, uv);
+    if (uSphereMode != 0)                col = sphere_sample(uPrev, src_uv);
+    else if (uPixelateStyle != 0)        col = pixelate_apply(uPrev, src_uv, uv);
     else if ((uEnable & L_OPTICS) != 0)  col = optics_sample(uPrev, src_uv);
     else                                  col = texture(uPrev, src_uv);
 

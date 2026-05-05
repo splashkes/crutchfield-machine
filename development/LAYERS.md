@@ -58,7 +58,7 @@ on the warped coordinate system, which feels right for "air between the
 rig" — but thermal-before-warp is also defensible and would produce
 shimmer that appears in untransformed image space.
 
-### Sample — `optics` or `pixelate`
+### Sample — `optics`, `pixelate`, or sphere topology
 
 Optics is the normal read from `uPrev`. It fuses anisotropic blur and
 chromatic aberration into one sampling operation because both are
@@ -78,6 +78,17 @@ behaviour we want. An earlier post-sample placement (which overwrote
 the processed colour with a raw `texture()` read) broke this — the
 pipeline's work downstream of pixelate was ignored by the cell
 samples and the effect failed to propagate.
+
+Sphere mode (`Alt+S`) also takes over the sampling stage. The feedback
+texture is treated as an octahedral atlas of directions on a sphere:
+the shader decodes the current pixel into a unit vector, applies
+spherical rotations/tangent drift using the existing warp controls,
+samples neighbouring sphere directions for a reverb-like blur, and
+re-encodes those directions back into atlas UVs. This is deliberately
+different from wrapping the flat output over a ball; the feedback read
+itself moves across sphere topology before downstream colour/dynamics
+stages run. The final `blit.frag` display pass renders the atlas as a
+front-facing sphere when this mode is active.
 
 ### Camera-side — `invert`, `physics`
 
