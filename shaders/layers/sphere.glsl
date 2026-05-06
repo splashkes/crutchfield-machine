@@ -38,7 +38,7 @@ float sphere_inside_mask(vec3 p) {
 
 float sphere_boundary_mask(vec3 p) {
     float r = length(p);
-    return smoothstep(0.72, 1.0, r);
+    return smoothstep(0.88, 1.02, r);
 }
 
 vec3 sphere_volume_uv(vec3 p) {
@@ -76,7 +76,7 @@ vec3 sphere_source_pos(vec3 p, vec2 uv, vec2 planarSrc) {
 
 vec4 sphere_sample_volume(sampler3D tex, vec3 p) {
     float r = 0.012 + clamp(uSphereReverb, 0.0, 1.0) * 0.055;
-    vec4 c = sphere_tex(tex, p) * 0.30;
+    vec4 c = sphere_tex(tex, p) * 0.34;
     c += sphere_tex(tex, p + vec3( r, 0.0, 0.0)) * 0.075;
     c += sphere_tex(tex, p + vec3(-r, 0.0, 0.0)) * 0.075;
     c += sphere_tex(tex, p + vec3(0.0,  r, 0.0)) * 0.075;
@@ -96,7 +96,8 @@ vec4 sphere_sample_volume(sampler3D tex, vec3 p) {
 
 vec4 sphere_decay_apply(vec4 c, vec3 p) {
     float wall = sphere_boundary_mask(p);
-    float borderMul = mix(1.0, clamp(uBorderDecay, 0.0, 1.0), wall);
+    float wallDecay = mix(1.0, clamp(uBorderDecay, 0.0, 1.0), 0.35);
+    float borderMul = mix(1.0, wallDecay, wall);
     float inside = sphere_inside_mask(p);
     return vec4(c.rgb * uDecay * borderMul * inside, c.a);
 }

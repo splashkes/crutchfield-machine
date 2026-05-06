@@ -2787,6 +2787,11 @@ static void apply_action(ActionId id, float mag) {
 }
 
 static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && S.ov.helpVisible()) {
+        S.ov.helpBack();
+        return;
+    }
+
     // Input routes to apply_action via the handler installed in main().
     // Kept as a thin forward so gamepad/MIDI (C2+) plug in the same way.
     g_input.onKey(key, scancode, action, mods);

@@ -3347,6 +3347,12 @@ static void apply_action(ActionId id, float mag) {
 }
 
 static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && S.ov.helpVisible()) {
+        S.ov.helpBack();
+        S.quitConfirmPending = false;
+        return;
+    }
+
     // Exit-confirm modal intercept. When the first Esc puts us in
     // "really quit?" mode, capture Y / N here BEFORE the normal binding
     // dispatch so we don't also fire the usual Y/N keybinds.
