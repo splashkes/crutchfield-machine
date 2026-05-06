@@ -29,6 +29,11 @@ Hold `Alt+1` triangle · `Alt+2` star · `Alt+3` circle · `Alt+4` square
 `Delete` pixelate style · `Ctrl+Del` CRT bleed · `Alt+Del` reroll burn
 `Alt+S` true 3D sphere volume · left-drag rotate sphere view
 
+## Control UI
+
+`H` open/close YAML-driven UI · `Tab` section · `↑/↓` select · `←/→` nudge
+`Enter` exact value entry / toggle · `P` pin selected control · `Esc` close UI
+
 ## Output
 
 `Ctrl+↑/↓` fade (feeds back) · `Alt+↑/↓` brightness (display only)
@@ -47,7 +52,7 @@ Modulations — `Ctrl+Alt+` `I` inject · `S` strobe · `V` vfx-cycle · `F` fla
 
 ## App
 
-`H` help panel · `C` clear fields · `P` pause (couples to music)
+`H` control UI · `C` clear fields · `P` pause (couples to music)
 `\` reload shaders · `F11` fullscreen · `?` / `/` print help to stdout
 `` ` `` record EXR · `PrtSc` screenshot · `Ctrl+S` save preset · `Ctrl+N/P` cycle presets
 `Esc` quit — arms confirm (`Y` / 2nd `Esc` = quit, `N` = cancel)

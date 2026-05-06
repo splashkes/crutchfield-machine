@@ -306,16 +306,16 @@ user docs — best bootup settings, every keybind explained, music
 authoring walkthrough, troubleshooting — at
 [REFERENCE.md](REFERENCE.md).
 
-Press `H` at any time to open the in-window help panel (top-left, drill-down
-by section). It lists every action with the current key binding and the live
-parameter value — the panel stays visible while you play, so you can keep it
-open while turning knobs.
+Press `H` at any time to open the in-window control UI. It is driven by
+`ui.yaml`, with section navigation, sliders, toggle buttons, pinned controls,
+exact numeric entry (`Enter` on a selected value), and a live layer visualizer.
+The small top dock stays visible when the full panel is closed.
 
 Essentials for quick reference:
 
 | Key | Action |
 |---|---|
-| `H` | Toggle help panel (drill-down, live values) |
+| `H` | Toggle control UI (YAML layout, sliders, pins, layer viz) |
 | `F1..F10` / `Ins` / `PgDn` | Toggle layers |
 | `Space` (hold) | Inject current pattern |
 | `1..5` | Pattern select — H-bars / V-bars / dot / checker / gradient |
@@ -346,7 +346,9 @@ Essentials for quick reference:
 | `Esc` | Quit (first press arms confirm: `Y` / second `Esc` = quit, `N` = cancel) |
 
 Everything else — all parameter nudges, V-4 slots, output fade, BPM
-modulations, gamepad maps — is in the help panel and in `bindings.ini`.
+modulations, gamepad maps — is in `bindings.ini` and the project reference.
+UI section/pin order is in `ui.yaml`; platform bundles copy the same file
+next to their runtime assets.
 
 Top-level sections: Status · Layers · Warp · Optics · Color · Dynamics ·
 Physics · Thermal · Inject · VFX-1 · VFX-2 · Output · BPM · Music ·

@@ -39,6 +39,7 @@
 #include "camera.h"
 #include "recorder.h"
 #include "overlay.h"
+#include "ui_panel.h"
 #include "input.h"
 #include "music.h"
 #include "audio.h"
@@ -627,6 +628,7 @@ struct State {
 
     Recorder rec;
     Overlay  ov;
+    UiPanel  ui;
     // List of recording directories created this session (filled when each
     // recording stops). Used by the post-exit ffmpeg-encode prompt.
     std::vector<std::string> recordingsThisSession;
@@ -732,6 +734,179 @@ static void select_ddj_vfx_pad(int idx) {
     sync_ddj_filter_leds();
 }
 
+static std::string fmt_float(float v) {
+    char b[48];
+    snprintf(b, sizeof b, "%.3f", v);
+    return b;
+}
+
+static std::string fmt_pct(float v) {
+    char b[48];
+    snprintf(b, sizeof b, "%.0f%%", v * 100.0f);
+    return b;
+}
+
+static std::string fmt_toggle(float v) {
+    return v >= 0.5f ? "ON" : "off";
+}
+
+static void ui_add_slider(std::vector<UiControl>& out, const char* id,
+                          const char* label, float lo, float hi, float step,
+                          std::function<float()> get,
+                          std::function<void(float)> set,
+                          std::function<std::string(float)> format = nullptr) {
+    UiControl c;
+    c.id = id;
+    c.label = label;
+    c.kind = UiControlKind::Slider;
+    c.minValue = lo;
+    c.maxValue = hi;
+    c.step = step;
+    c.get = std::move(get);
+    c.set = std::move(set);
+    c.format = std::move(format);
+    out.push_back(std::move(c));
+}
+
+static void ui_add_integer(std::vector<UiControl>& out, const char* id,
+                           const char* label, float lo, float hi, float step,
+                           std::function<float()> get,
+                           std::function<void(float)> set,
+                           std::function<std::string(float)> format = nullptr) {
+    UiControl c;
+    c.id = id;
+    c.label = label;
+    c.kind = UiControlKind::Integer;
+    c.minValue = lo;
+    c.maxValue = hi;
+    c.step = step;
+    c.get = std::move(get);
+    c.set = std::move(set);
+    c.format = std::move(format);
+    out.push_back(std::move(c));
+}
+
+static void ui_add_toggle(std::vector<UiControl>& out, const char* id,
+                          const char* label,
+                          std::function<float()> get,
+                          std::function<void(float)> set) {
+    UiControl c;
+    c.id = id;
+    c.label = label;
+    c.kind = UiControlKind::Toggle;
+    c.minValue = 0.0f;
+    c.maxValue = 1.0f;
+    c.step = 1.0f;
+    c.get = std::move(get);
+    c.set = std::move(set);
+    c.format = fmt_toggle;
+    out.push_back(std::move(c));
+}
+
+static std::vector<UiControl> build_ui_controls() {
+    std::vector<UiControl> controls;
+
+    auto layer = [&](const char* id, const char* label, int bit) {
+        ui_add_toggle(controls, id, label,
+            [bit]() { return (S.enable & bit) ? 1.0f : 0.0f; },
+            [bit](float v) {
+                if (v >= 0.5f) S.enable |= bit;
+                else S.enable &= ~bit;
+                sync_ddj_layer_leds();
+            });
+    };
+
+    layer("layer.warp", "Warp", L_WARP);
+    layer("layer.optics", "Optics", L_OPTICS);
+    layer("layer.gamma", "Gamma", L_GAMMA);
+    layer("layer.color", "Color", L_COLOR);
+    layer("layer.contrast", "Contrast", L_CONTRAST);
+    layer("layer.decay", "Decay", L_DECAY);
+    layer("layer.noise", "Noise", L_NOISE);
+    layer("layer.couple", "Couple", L_COUPLE);
+    layer("layer.external", "External", L_EXTERNAL);
+    layer("layer.inject", "Inject", L_INJECT);
+    layer("layer.physics", "Physics", L_PHYSICS);
+    layer("layer.thermal", "Thermal", L_THERMAL);
+
+    ui_add_slider(controls, "decay", "Decay", 0.90f, 1.0f, 0.0005f,
+        []() { return S.p.decay; }, [](float v) { S.p.decay = fmaxf(0.90f, fminf(1.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "contrast", "Contrast", 0.0f, 4.0f, 0.01f,
+        []() { return S.p.contrast; }, [](float v) { S.p.contrast = fmaxf(0.0f, fminf(4.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "gamma", "Gamma", 0.10f, 3.0f, 0.01f,
+        []() { return S.p.gamma; }, [](float v) { S.p.gamma = fmaxf(0.10f, fminf(3.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "satGain", "Saturation", 0.0f, 3.0f, 0.01f,
+        []() { return S.p.satGain; }, [](float v) { S.p.satGain = fmaxf(0.0f, fminf(3.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "hueRate", "Hue Rate", -0.05f, 0.05f, 0.0005f,
+        []() { return S.p.hueRate; }, [](float v) { S.p.hueRate = fmaxf(-0.05f, fminf(0.05f, v)); }, fmt_float);
+    ui_add_slider(controls, "outFade", "Output Fade", -1.0f, 1.0f, 0.01f,
+        []() { return S.p.outFade; }, [](float v) { S.p.outFade = fmaxf(-1.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "brightness", "Brightness", 0.0f, 4.0f, 0.02f,
+        []() { return S.p.brightness; }, [](float v) { S.p.brightness = fmaxf(0.0f, fminf(4.0f, v)); }, fmt_float);
+
+    ui_add_slider(controls, "zoom", "Zoom", 0.92f, 1.08f, 0.0005f,
+        []() { return S.p.zoom; }, [](float v) { S.p.zoom = fmaxf(0.92f, fminf(1.08f, v)); }, fmt_float);
+    ui_add_slider(controls, "theta", "Rotation", -0.08f, 0.08f, 0.0005f,
+        []() { return S.p.theta; }, [](float v) { S.p.theta = fmaxf(-0.08f, fminf(0.08f, v)); }, fmt_float);
+    ui_add_slider(controls, "external", "External", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.external; }, [](float v) { S.p.external = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "sourceWet", "Source Wet", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.sourceWet; }, [](float v) { S.p.sourceWet = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "fxWet", "FX Wet", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.fxWet; }, [](float v) { S.p.fxWet = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "borderSize", "Border Size", 0.0f, 0.5f, 0.005f,
+        []() { return S.p.borderSize; }, [](float v) { S.p.borderSize = fmaxf(0.0f, fminf(0.5f, v)); }, fmt_float);
+    ui_add_slider(controls, "borderSoftness", "Border Soft", 0.0f, 0.35f, 0.005f,
+        []() { return S.p.borderSoftness; }, [](float v) { S.p.borderSoftness = fmaxf(0.0f, fminf(0.35f, v)); }, fmt_float);
+    ui_add_slider(controls, "borderDecay", "Border Decay", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.borderDecay; }, [](float v) { S.p.borderDecay = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "couple", "Couple", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.couple; }, [](float v) { S.p.couple = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "noise", "Noise", 0.0f, 0.05f, 0.0005f,
+        []() { return S.p.noise; }, [](float v) { S.p.noise = fmaxf(0.0f, fminf(0.05f, v)); }, fmt_float);
+
+    ui_add_toggle(controls, "sphereMode", "Sphere Mode",
+        []() { return S.p.sphereMode ? 1.0f : 0.0f; },
+        [](float v) {
+            int next = v >= 0.5f ? 1 : 0;
+            if (S.p.sphereMode != next) {
+                S.p.sphereMode = next;
+                S.needClear = true;
+            }
+        });
+    ui_add_slider(controls, "sphereReverb", "Sphere Reverb", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.sphereReverb; }, [](float v) { S.p.sphereReverb = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "viewRotX", "View Pitch", -1.45f, 1.45f, 0.02f,
+        []() { return S.viewRotX; }, [](float v) { S.viewRotX = fmaxf(-1.45f, fminf(1.45f, v)); }, fmt_float);
+    ui_add_slider(controls, "viewRotY", "View Yaw", -6.28f, 6.28f, 0.02f,
+        []() { return S.viewRotY; }, [](float v) { S.viewRotY = v; }, fmt_float);
+
+    ui_add_integer(controls, "pattern", "Pattern", 0.0f, (float)(N_PATTERNS - 1), 1.0f,
+        []() { return (float)S.p.pattern; },
+        [](float v) { S.p.pattern = (int)fmaxf(0.0f, fminf((float)(N_PATTERNS - 1), roundf(v))); sync_ddj_filter_leds(); },
+        [](float v) { return PATTERN_NAMES[(int)fmaxf(0.0f, fminf((float)(N_PATTERNS - 1), roundf(v)))]; });
+    ui_add_integer(controls, "shapeKind", "Shape", 0.0f, 3.0f, 1.0f,
+        []() { return (float)S.p.shapeKind; },
+        [](float v) { S.p.shapeKind = (int)fmaxf(0.0f, fminf(3.0f, roundf(v))); },
+        [](float v) {
+            static const char* names[] = {"triangle", "star", "circle", "square"};
+            return names[(int)fmaxf(0.0f, fminf(3.0f, roundf(v)))];
+        });
+    ui_add_integer(controls, "shapeCount", "Shape Count", 1.0f, 16.0f, 1.0f,
+        []() { return (float)S.p.shapeCount; },
+        [](float v) { S.p.shapeCount = (int)fmaxf(1.0f, fminf(16.0f, roundf(v))); }, fmt_float);
+    ui_add_slider(controls, "shapeSize", "Shape Size", 0.1f, 4.0f, 0.05f,
+        []() { return S.p.shapeSize; }, [](float v) { S.p.shapeSize = fmaxf(0.1f, fminf(4.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "shapeAngle", "Shape Angle", -3.14159f, 3.14159f, 0.02f,
+        []() { return S.p.shapeAngle; }, [](float v) { S.p.shapeAngle = v; }, fmt_float);
+
+    return controls;
+}
+
+static std::string ui_layout_path() {
+    return g_shader_base.empty() ? std::string("ui.yaml") : (g_shader_base + "ui.yaml");
+}
+
 // ── help text ─────────────────────────────────────────────────────────────
 static void print_help() {
     printf(
@@ -748,7 +923,7 @@ static void print_help() {
       " Delete   cycle pixelate (off / dots / squares / rounded, s·m·l)\n"
       " Ctrl+Del cycle pixelate bleed (off / soft / CRT / melt / fried / burned)\n"
       " Alt+Del  reroll burn pattern (only audible when bleed = burned)\n"
-      " H        toggle help overlay (in-window; full key list lives there)\n"
+      " H        toggle control UI (YAML layout; sliders, pins, layer viz)\n"
       " `        start/stop EXR recording (./recordings/feedback_<ts>/)\n"
       " PrtSc    screenshot (PNG, sim resolution, no HUD)\n"
       " \\        reload shaders from disk\n"
@@ -2872,8 +3047,10 @@ static void apply_action(ActionId id, float mag) {
             S.ov.logEvent(S.paused ? "paused" : "running");
             return;
         }
-        case ACT_HELP: S.ov.toggleHelp();
-            printf("[help] %s\n", S.ov.helpVisible() ? "shown" : "hidden"); return;
+        case ACT_HELP:
+            S.ui.toggle();
+            printf("[ui] %s\n", S.ui.visible() ? "shown" : "hidden");
+            return;
         case ACT_RELOAD_SHADERS: reload_shaders();
             S.ov.logEvent("shaders reloaded"); return;
         case ACT_FULLSCREEN: {
@@ -3347,6 +3524,10 @@ static void apply_action(ActionId id, float mag) {
 }
 
 static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
+    if (S.ui.visible() && S.ui.key(key, action, mods)) {
+        S.quitConfirmPending = false;
+        return;
+    }
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && S.ov.helpVisible()) {
         S.ov.helpBack();
         S.quitConfirmPending = false;
@@ -3378,15 +3559,22 @@ static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
     g_input.onKey(key, scancode, action, mods);
 }
 
+static void char_cb(GLFWwindow*, unsigned int codepoint) {
+    S.ui.textInput(codepoint);
+}
 
 static void size_cb(GLFWwindow*, int w, int h) {
     // EXR sequence recording is FBO-based (sim resolution) — window resize
     // is unrelated, so we don't need to stop recording.
     S.winW = w; S.winH = h;
     S.ov.resize(w, h);
+    S.ui.resize(w, h);
 }
 
 static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
+    double x = 0.0, y = 0.0;
+    glfwGetCursorPos(win, &x, &y);
+    if (S.ui.mouseButton(button, action, x, y)) return;
     if (button != GLFW_MOUSE_BUTTON_LEFT) return;
     if (action == GLFW_PRESS) {
         S.mouseDrag = true;
@@ -3397,6 +3585,7 @@ static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
 }
 
 static void cursor_pos_cb(GLFWwindow*, double x, double y) {
+    if (S.ui.cursor(x, y)) return;
     if (!S.mouseDrag) return;
     double dx = x - S.mouseLastX;
     double dy = y - S.mouseLastY;
@@ -4138,6 +4327,7 @@ int main(int argc, char** argv) {
     }
 
     glfwSetKeyCallback(win, key_cb);
+    glfwSetCharCallback(win, char_cb);
     glfwSetFramebufferSizeCallback(win, size_cb);
     glfwSetMouseButtonCallback(win, mouse_button_cb);
     glfwSetCursorPosCallback(win, cursor_pos_cb);
@@ -4154,6 +4344,11 @@ int main(int argc, char** argv) {
     if (!S.ov.init()) {
         fprintf(stderr, "[overlay] init failed (continuing without overlay)\n");
     }
+    if (!S.ui.init()) {
+        fprintf(stderr, "[ui] init failed (continuing without control panel)\n");
+    }
+    S.ui.loadLayout(ui_layout_path());
+    S.ui.setControls(build_ui_controls());
     glBindVertexArray(mainVAO);
 
     // Create simulation FBOs at the simulation resolution, ONCE.
@@ -4168,6 +4363,7 @@ int main(int argc, char** argv) {
     int fbw, fbh; glfwGetFramebufferSize(win, &fbw, &fbh);
     S.winW = fbw; S.winH = fbh;
     S.ov.resize(fbw, fbh);
+    S.ui.resize(fbw, fbh);
 
     // Camera setup (optional).
     if (S.cam.open(640, 480)) {
@@ -4410,6 +4606,7 @@ int main(int argc, char** argv) {
         // Help provider is pulled per-frame from inside Overlay::draw, so
         // values shown in a section stay live. Nothing to push here.
         S.ov.draw();
+        S.ui.draw();
 
         glfwSwapBuffers(win);
 
@@ -4447,6 +4644,7 @@ int main(int argc, char** argv) {
             S.recordingsThisSession.push_back(S.rec.lastDir());
     }
     S.ov.shutdown();
+    S.ui.shutdown();
 
     // Release GL resources before tearing down the context. Fields are
     // created lazily, so zero-check each slot before deleting.

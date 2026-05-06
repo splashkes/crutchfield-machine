@@ -1,0 +1,24 @@
+title: Crutchfield Control
+pinned: [decay, external, sphereMode, sphereReverb, outFade]
+
+sections:
+  - id: layers
+    label: Layers
+    visualizer: layers
+    controls: [layer.warp, layer.optics, layer.gamma, layer.color, layer.contrast, layer.decay, layer.noise, layer.couple, layer.external, layer.inject, layer.physics, layer.thermal]
+
+  - id: tone
+    label: Tone
+    controls: [decay, contrast, gamma, satGain, hueRate, outFade, brightness]
+
+  - id: feedback
+    label: Feedback
+    controls: [zoom, theta, external, sourceWet, fxWet, borderSize, borderSoftness, borderDecay, couple, noise]
+
+  - id: sphere
+    label: Sphere
+    controls: [sphereMode, sphereReverb, viewRotX, viewRotY]
+
+  - id: inject
+    label: Inject
+    controls: [pattern, shapeKind, shapeCount, shapeSize, shapeAngle]

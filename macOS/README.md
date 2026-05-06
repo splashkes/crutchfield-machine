@@ -69,6 +69,9 @@ Use `--midi-learn` to print incoming notes and CCs while touching controls.
 - The sphere mode host code mirrors the shared root `main.cpp` volume
   path so the app bundle can run the same true 3D feedback mode as the
   portable build.
+- The control UI is shared core code (`ui_panel.*`) and the app bundle copies
+  the root `ui.yaml` into `Contents/Resources`; macOS-specific changes should
+  stay in resource/config swaps where possible.
 - A downloaded release zip will still need normal macOS signing/notarization
   work if you want Gatekeeper to trust double-click launches on other
   machines without manual override.

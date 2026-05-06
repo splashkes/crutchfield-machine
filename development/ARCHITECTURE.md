@@ -202,11 +202,11 @@ readers block; PBOs back up; capture drops.
 **Known issue:** exit-time encoder drain blocks the main thread for
 up to ~30s with no UI feedback. See TODO.md.
 
-### Overlay / HUD
+### Overlay / HUD / Control UI
 
-**Files:** `overlay.cpp`, `overlay.h`.
+**Files:** `overlay.cpp`, `overlay.h`, `ui_panel.cpp`, `ui_panel.h`, `ui.yaml`.
 
-Three distinct on-screen surfaces:
+Four distinct on-screen surfaces:
 
 1. **HUD toasts (bottom-left)** — cumulative per-key parameter
    changes and one-shot events, auto-fade after ~5s.
@@ -219,10 +219,17 @@ Three distinct on-screen surfaces:
 3. **Bottom-right gamepad tag** — always-visible when help is
    closed and a gamepad is connected; shows active section + "Back:
    help" reminder. Discoverability for gamepad-only users.
+4. **Control UI** — YAML-configured panel opened with `H`. The shared
+   `UiPanel` module owns rendering, mouse/key focus, exact numeric entry,
+   pinned controls, section tabs, and the layer visualizer. Host files only
+   bind app state to `UiControl` callbacks; macOS copies the same `ui.yaml`
+   into app resources so platform-specific swaps stay data-driven.
 
 Integration points:
 - `S.ov.logEvent("message")` — one-shot toast.
 - `S.ov.logParam(key, label, delta, value)` — accumulating toast.
+- `S.ui.setControls(build_ui_controls())` — binds host parameters/layers.
+- `S.ui.loadLayout(ui_layout_path())` — loads the YAML-like control layout.
 - `S.ov.toggleHelp()`, `S.ov.helpVisible()`, `S.ov.inSectionView()`.
 - `S.ov.setHelpSections(names)` — one-time at startup, ordered list.
 - `S.ov.setHelpProvider(fn)` / `setLegendProvider(fn)` — callbacks

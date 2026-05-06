@@ -35,12 +35,13 @@ DIST_NAME    := feedback-macos-arm64
 DIST_DIR     := $(DIST_NAME)
 DIST_ZIP     := $(DIST_NAME).zip
 
-CPP_SRCS := main.cpp $(ROOT)/input.cpp $(ROOT)/recorder.cpp $(ROOT)/overlay.cpp
+CPP_SRCS := main.cpp $(ROOT)/input.cpp $(ROOT)/recorder.cpp $(ROOT)/overlay.cpp $(ROOT)/ui_panel.cpp
 MM_SRCS  := camera_avfoundation.mm midi_coremidi.mm
 OBJS     := $(BUILD_DIR)/main.o \
             $(BUILD_DIR)/input.o \
             $(BUILD_DIR)/recorder.o \
             $(BUILD_DIR)/overlay.o \
+            $(BUILD_DIR)/ui_panel.o \
             $(BUILD_DIR)/camera_avfoundation.o \
             $(BUILD_DIR)/midi_coremidi.o
 
@@ -67,6 +68,9 @@ $(BUILD_DIR)/recorder.o: $(ROOT)/recorder.cpp | $(BUILD_DIR)
 $(BUILD_DIR)/overlay.o: $(ROOT)/overlay.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+$(BUILD_DIR)/ui_panel.o: $(ROOT)/ui_panel.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 $(BUILD_DIR)/camera_avfoundation.o: camera_avfoundation.mm | $(BUILD_DIR)
 	$(CXX) $(OBJCXXFLAGS) -c -o $@ $<
 
@@ -80,6 +84,7 @@ $(APP_NAME): $(BIN) Info.plist
 	cp Info.plist $(APP_DIR)/Contents/Info.plist
 	cp -R $(ROOT)/shaders $(APP_RES_DIR)/
 	cp -R $(ROOT)/presets $(APP_RES_DIR)/
+	cp $(ROOT)/ui.yaml $(APP_RES_DIR)/
 	cp $(GLFW_DYLIB) $(APP_FW_DIR)/
 	cp $(GLEW_DYLIB) $(APP_FW_DIR)/
 	install_name_tool -change $(GLFW_DYLIB) @executable_path/../Frameworks/libglfw.3.dylib $(APP_BIN_DIR)/feedback
