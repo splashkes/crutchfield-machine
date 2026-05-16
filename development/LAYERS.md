@@ -23,7 +23,7 @@ analog stages    ┌── gamma_in       (linearise for linear-light math)
                   ├── contrast       (nonlinear response curve)
                   └── gamma_out      (re-encode before mixing)
                              │
-feedback write   ┌── decay          (per-frame attenuation of the loop signal)
+feedback write   ┌── decay          (per-frame attenuation + soft border energy sink)
                   ├── couple         (blend in partner field — Kaneko CML)
                   ├── external       (blend in live camera)
                   ├── inject         (pattern perturbation — triggered)
@@ -58,7 +58,7 @@ on the warped coordinate system, which feels right for "air between the
 rig" — but thermal-before-warp is also defensible and would produce
 shimmer that appears in untransformed image space.
 
-### Sample — `optics` or `pixelate`
+### Sample — `optics`, `pixelate`, or sphere volume
 
 Optics is the normal read from `uPrev`. It fuses anisotropic blur and
 chromatic aberration into one sampling operation because both are
@@ -78,6 +78,20 @@ behaviour we want. An earlier post-sample placement (which overwrote
 the processed colour with a raw `texture()` read) broke this — the
 pipeline's work downstream of pixelate was ignored by the cell
 samples and the effect failed to propagate.
+
+Sphere mode (`Alt+S`) is now a separate true 3D feedback path. The host
+allocates ping-pong `GL_TEXTURE_3D` volume fields and renders every
+z-slice for each feedback step. `layers/sphere.glsl` maps each slice
+pixel to a point inside a unit ball, samples neighbouring 3D positions
+for reverb/wave propagation, and applies a soft spherical boundary
+condition before the normal colour/dynamics stages continue.
+
+This is deliberately not an octahedral atlas, cubemap, or flat texture
+wrapped over a sphere. There is no equator/stitch in the simulation
+state. `blit.frag` raymarches the 3D volume for display, and left mouse
+drag rotates only that display view; it does not rotate or distort the
+underlying feedback field. Flat mode is kept on the original 2D FBO path
+and returns before any sphere-volume logic runs.
 
 ### Camera-side — `invert`, `physics`
 
@@ -118,7 +132,10 @@ aesthetically load-bearing part of the pipeline. Current order:
    camera (`external`) enter at full amplitude against a faded
    background — matching the analog rig where the camera sees live
    content at the brightness of the scene, not the attenuated
-   brightness of the CRT it also happens to be pointing at.
+   brightness of the CRT it also happens to be pointing at. The decay
+   layer also owns the soft border frame: pixels near/behind the frame
+   threshold receive an extra decay multiplier, so the border acts as
+   an energy sink instead of a hard crop.
 2. **`couple` then `external`.** Both are `mix()` calls; order
    between them is aesthetic. Couple first means camera input rides
    on top of the coupled result, not vice versa.
@@ -133,6 +150,15 @@ aesthetically load-bearing part of the pipeline. Current order:
    all so archetype × intensity work as two independent axes.
 Pixelate lives at the sampling stage (see *Sample* section above),
 not in the feedback-write tail. Cycled via `Delete`.
+
+Held shape injections also participate in the UV-space stage. Their
+visible colour stamp still enters low in the stack before physics/tone
+processing, but their boundary is evaluated before the previous-frame
+sample and partially reflects source-UV motion. This makes triangles,
+circles, stars, and squares behave more like soft obstacles in the
+feedback flow rather than pure overlays. The same mask is then used to
+hot-saturate the signal around the shape boundary before the colour
+stamp is mixed in.
 
 ### Post — `vfx_slot[0]`, `vfx_slot[1]`, `output_fade`
 

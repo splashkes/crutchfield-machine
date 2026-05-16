@@ -91,6 +91,17 @@ implement individual layers; `shaders/common.glsl` provides helpers;
 5. After all sim iterations (`--iters N`, default 1), `blit.frag` copies
    the field-0 FBO to the default framebuffer for display.
 
+Sphere volume mode (`Alt+S`) is a separate branch of the same shader
+contract. The host binds ping-pong `GL_TEXTURE_3D` fields as
+`uPrevVol`/`uOtherVol`, renders every z-slice into the destination
+volume, and lets `blit.frag` raymarch the result. The normal mode branch
+returns through the original 2D FBO pipeline before any volume sampling
+runs, so flat feedback remains independent of the sphere path.
+
+Preset files include a `[sphere]` section for the volume toggle, reverb,
+and display-only view rotation. Older presets without that section load
+with sphere mode off, which keeps legacy flat presets deterministic.
+
 **Layer dispatch order is significant.** Warp and thermal happen on
 the *sample* UV (before the texture read); optics performs the read;
 everything else operates on the returned color. Full per-layer
@@ -106,6 +117,8 @@ keeps running and the error is printed. Live-editable.
 **The `State S` singleton** holds everything the app tracks:
 - Window size, sim size, fullscreen flag.
 - Array of up to 4 `FBO` structs (each a ping-pong pair).
+- Array of up to 4 `VolumeFBO` structs for the true 3D sphere mode
+  (also ping-pong pairs), plus display-only mouse rotation state.
 - `Params p` — every per-layer parameter as a named field, including
   V-4 effect slot state (`vfxSlot[2]`, `vfxParam[2]`, `vfxBSource[2]`),
   output fade, and BPM fields (`bpm`, `beatOrigin`, `divIdx`,
@@ -189,11 +202,11 @@ readers block; PBOs back up; capture drops.
 **Known issue:** exit-time encoder drain blocks the main thread for
 up to ~30s with no UI feedback. See TODO.md.
 
-### Overlay / HUD
+### Overlay / HUD / Control UI
 
-**Files:** `overlay.cpp`, `overlay.h`.
+**Files:** `overlay.cpp`, `overlay.h`, `ui_panel.cpp`, `ui_panel.h`, `ui.yaml`.
 
-Three distinct on-screen surfaces:
+Four distinct on-screen surfaces:
 
 1. **HUD toasts (bottom-left)** — cumulative per-key parameter
    changes and one-shot events, auto-fade after ~5s.
@@ -206,10 +219,17 @@ Three distinct on-screen surfaces:
 3. **Bottom-right gamepad tag** — always-visible when help is
    closed and a gamepad is connected; shows active section + "Back:
    help" reminder. Discoverability for gamepad-only users.
+4. **Control UI** — YAML-configured panel opened with `H`. The shared
+   `UiPanel` module owns rendering, mouse/key focus, exact numeric entry,
+   pinned controls, section tabs, and the layer visualizer. Host files only
+   bind app state to `UiControl` callbacks; macOS copies the same `ui.yaml`
+   into app resources so platform-specific swaps stay data-driven.
 
 Integration points:
 - `S.ov.logEvent("message")` — one-shot toast.
 - `S.ov.logParam(key, label, delta, value)` — accumulating toast.
+- `S.ui.setControls(build_ui_controls())` — binds host parameters/layers.
+- `S.ui.loadLayout(ui_layout_path())` — loads the YAML-like control layout.
 - `S.ov.toggleHelp()`, `S.ov.helpVisible()`, `S.ov.inSectionView()`.
 - `S.ov.setHelpSections(names)` — one-time at startup, ordered list.
 - `S.ov.setHelpProvider(fn)` / `setLegendProvider(fn)` — callbacks

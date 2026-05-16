@@ -264,7 +264,9 @@ is playing, each drum fires a distinctly flavoured glitch.
 ```
 
 In-app: `Ctrl+S` saves the current state as `presets/auto_<timestamp>.ini`,
-`Ctrl+N`/`Ctrl+P` cycle through loaded presets.
+`Ctrl+N`/`Ctrl+P` cycle through loaded presets. Presets include the
+normal/sphere mode switch, sphere reverb, and display rotation; older
+presets without a `[sphere]` section load in normal flat mode.
 
 ### Auto-demo / unattended mode
 
@@ -304,25 +306,28 @@ user docs — best bootup settings, every keybind explained, music
 authoring walkthrough, troubleshooting — at
 [REFERENCE.md](REFERENCE.md).
 
-Press `H` at any time to open the in-window help panel (top-left, drill-down
-by section). It lists every action with the current key binding and the live
-parameter value — the panel stays visible while you play, so you can keep it
-open while turning knobs.
+Press `H` at any time to open the in-window control UI. It is driven by
+`ui.yaml`, with section navigation, sliders, toggle buttons, pinned controls,
+exact numeric entry (`Enter` on a selected value), and a live layer visualizer.
+The small top dock stays visible when the full panel is closed.
 
 Essentials for quick reference:
 
 | Key | Action |
 |---|---|
-| `H` | Toggle help panel (drill-down, live values) |
+| `Tab` / `H` | Toggle control UI (YAML layout, sliders, pins, layer viz) |
 | `F1..F10` / `Ins` / `PgDn` | Toggle layers |
 | `Space` (hold) | Inject current pattern |
 | `1..5` | Pattern select — H-bars / V-bars / dot / checker / gradient |
 | `6..0` | Pattern select — noise / rings / spiral / polka / starburst |
 | `Alt+B` | Trigger bouncer (10-second animated pong ball) |
+| `Alt+1..4` (hold) | Shape obstacles — triangle / star / circle / square |
 | `Home` | Cycle noise archetype (white / pink / heavy static / VCR / dropout) |
 | `Delete` | Cycle pixelate style (off / dots / hard squares / rounded × s/m/l) |
 | `Ctrl+Delete` | Cycle pixelate CRT bleed (off / soft / CRT / melt / fried / burned) |
 | `Alt+Delete` | Reroll the "burned" dead-pixel pattern |
+| `Alt+S` | Toggle true 3D sphere volume mode |
+| Left mouse drag | Rotate the sphere volume view (display only) |
 | `Alt+Up` / `Alt+Down` | Display-only brightness ± |
 | `Ctrl+Up` / `Ctrl+Down` | Output fade — toward white / toward black (feeds back) |
 | `Ctrl+Alt+H` | Toggle beat-driven hue jump |
@@ -341,7 +346,9 @@ Essentials for quick reference:
 | `Esc` | Quit (first press arms confirm: `Y` / second `Esc` = quit, `N` = cancel) |
 
 Everything else — all parameter nudges, V-4 slots, output fade, BPM
-modulations, gamepad maps — is in the help panel and in `bindings.ini`.
+modulations, gamepad maps — is in `bindings.ini` and the project reference.
+UI section/pin order is in `ui.yaml`; platform bundles copy the same file
+next to their runtime assets.
 
 Top-level sections: Status · Layers · Warp · Optics · Color · Dynamics ·
 Physics · Thermal · Inject · VFX-1 · VFX-2 · Output · BPM · Music ·

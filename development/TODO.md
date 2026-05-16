@@ -386,6 +386,35 @@ an aesthetic calibration pass.
   new post-ADR-0015 / ADR-0017 character.
 **Effort:** small (one session of dial-in).
 
+### [P2] Tune border and shape-obstacle variants
+
+**Why:** The first border/shape-interaction pass established the basic
+mechanics: a soft decay frame and shape boundaries that reflect/hot-
+saturate the feedback flow. The feel is promising, but the border
+needs more performance options before it is a polished control surface.
+**Where:** `shaders/layers/decay.glsl`, `shaders/layers/inject.glsl`,
+`Params`/uniform wiring in `main.cpp` and `macOS/main.cpp`.
+**Done when:**
+- Border has at least 2-3 selectable characters, e.g. decay sink,
+  saturated hot frame, mirror/reflect frame.
+- Border strength/width defaults feel useful on first launch without
+  eating the whole attractor.
+- Shape reflection strength and saturation can be tuned without editing
+  shader constants.
+- README/REFERENCE/help panel describe the final controls.
+**Effort:** small-medium.
+
+### [done 2026-05-05] Replace sphere atlas prototype with true volume mode
+
+**Result:** `Alt+S` now switches to a separate ping-pong `GL_TEXTURE_3D`
+feedback field. The shader updates the volume slice-by-slice inside a
+soft spherical boundary, and the display pass raymarches that volume.
+Flat mode remains isolated on the original 2D FBO path.
+**Follow-up candidates:** expose volume resolution/reverb as user
+controls, decide whether screenshots/recordings should capture the
+raymarched sphere or a diagnostic volume slice, and document performance
+limits on older GPUs.
+
 ---
 
 ## Recently completed

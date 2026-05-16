@@ -167,6 +167,10 @@ off, F5 to activate*").
 | `0` | Starburst / radial rays |
 | `Alt+B` | **Bouncer** — low-res pong box, runs 10 seconds |
 | `Space` (hold) | Inject current pattern while held |
+| `Alt+1` (hold) | Triangle shape obstacle |
+| `Alt+2` (hold) | Star shape obstacle |
+| `Alt+3` (hold) | Circle shape obstacle |
+| `Alt+4` (hold) | Square shape obstacle |
 
 The bouncer is the only animated pattern and uses a host-side hold
 timer that bypasses the normal inject fade. All other patterns fire
@@ -180,9 +184,16 @@ once and fade over ~20 frames.
 | `F12` | CA sampler: 3-sample → 5-ramp → 8-wavelength |
 | `Home` | Noise type: **white → pink 1/f → heavy static → VCR → dropout** |
 | `End` | Coupled fields: 1 → 2 → 3 → 4 |
+| `Alt+S` | Sphere volume mode: off ↔ true 3D feedback field |
+| Left mouse drag | Rotate the sphere volume view in pitch/yaw (display only) |
 | `Delete` | Pixelate style: **off → dots s/m/l → squares s/m/l → rounded s/m/l** (10 states) |
 | `Ctrl+Delete` | Pixelate CRT bleed: **off → soft → CRT → melt → fried → burned** |
 | `Alt+Delete` | Reroll "burned" dead-pixel pattern (only audible when bleed = burned) |
+
+Preset save/load records the sphere mode, sphere reverb, and display
+rotation under `[sphere]`. Presets saved before this section existed load
+as normal flat mode, which avoids accidentally staying in sphere mode when
+recalling an older 2D preset.
 
 **Dropout noise + music** — the most fun pairing in the whole app.
 Set noise to `dropout` (cycle `Home` four times), start music, each

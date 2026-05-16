@@ -45,7 +45,7 @@ LDLIBS    = -Wl,-Bstatic -lglfw3 -lglew32 -lz -lwinpthread \
             -lwinmm \
             -Wl,-Bstatic
 
-SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp music.cpp audio.cpp
+SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp ui_panel.cpp input.cpp music.cpp audio.cpp
 OBJS = $(SRCS:.cpp=.o)
 
 # Vendored QuickJS — compiled as C99, separate rule below.
@@ -84,6 +84,7 @@ dist: $(BIN)
 	cp $(BIN) $(DIST_DIR)/
 	cp -r shaders $(DIST_DIR)/
 	cp -r presets $(DIST_DIR)/
+	cp ui.yaml $(DIST_DIR)/
 	cp -r js $(DIST_DIR)/
 	cp -r music $(DIST_DIR)/
 	@if [ -d samples ]; then cp -r samples $(DIST_DIR)/; fi

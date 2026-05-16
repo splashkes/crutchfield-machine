@@ -1,3 +1,58 @@
+# Worklog — 2026-05-05 true sphere volume
+
+- Replaced the octahedral sphere-atlas prototype with a true volumetric
+  feedback path. `Alt+S` now switches the simulation from the normal 2D
+  ping-pong FBOs to ping-pong `GL_TEXTURE_3D` fields, rendered one
+  z-slice at a time.
+- `shaders/layers/sphere.glsl` treats each fragment as a 3D point inside
+  a unit ball, samples neighbouring 3D positions for reverb/wave
+  propagation, and applies a soft spherical boundary. This removes the
+  equator/fold artifacts from atlas storage.
+- `shaders/blit.frag` raymarches the 3D volume for display. Left mouse
+  drag rotates the displayed volume in pitch/yaw without rotating the
+  simulation state itself.
+- Restored normal mode by giving `main.frag` an explicit early 2D branch
+  matching the flat feedback pipeline and by binding 3D sampler uniforms
+  away from the 2D texture units.
+- The shared root `main.cpp` contains the core volume path; the macOS
+  entry point mirrors the host plumbing needed for the app bundle.
+
+---
+
+# Worklog — 2026-05-05 sphere topology prototype
+
+- Added first-pass sphere mode on `Alt+S`. The simulation texture is
+  interpreted as an octahedral sphere atlas rather than a flat plane:
+  feedback sampling decodes the current pixel to a sphere direction,
+  applies spherical motion/tangent drift, samples geodesic neighbours
+  for a reverb-like blur, then re-encodes back to the atlas.
+- `blit.frag` renders the octahedral atlas as a lit front-facing sphere
+  in the window, so the mode is not just a square texture viewed flat.
+- This is intentionally an early version-3 prototype. It keeps the
+  current 2D FBO storage for now, but the feedback topology is spherical
+  rather than planar wrapping.
+
+---
+
+# Worklog — 2026-05-05 border + shape interaction prototype
+
+- Added a soft border decay field to the decay layer. The normal global
+  decay remains intact; pixels near/behind the frame threshold receive
+  an additional multiplier so the border pulls energy out without hard
+  cropping to black. Preset keys: `borderSize`, `borderSoftness`,
+  `borderDecay` under `[dynamics]`.
+- Changed held shape injections from pure colour stamps into soft
+  obstacles. Shape boundaries now perturb the source UV before sampling
+  the previous frame, reflecting part of the feedback flow at the edge;
+  the same boundary mask adds a hot saturation/brightness push before
+  the shape colour mixes in.
+- Added keyboard holds for injected shapes: `Alt+1` triangle, `Alt+2`
+  star, `Alt+3` circle, `Alt+4` square. Inject help now lists them
+  alongside the DDJ pad path.
+- Documented both mechanics in `development/LAYERS.md`.
+
+---
+
 # Worklog — 2026-04-21 polish + release prep
 
 Follow-up after 2026-04-20 extended session. Small corrections and a

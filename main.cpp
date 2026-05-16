@@ -13,6 +13,11 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#ifdef __APPLE__
+  #include <mach-o/dyld.h>
+  #include <unistd.h>
+  #include <limits.h>
+#endif
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
   #ifndef NOMINMAX
@@ -39,6 +44,7 @@
 #include "camera.h"
 #include "recorder.h"
 #include "overlay.h"
+#include "ui_panel.h"
 #include "input.h"
 #include "music.h"
 #include "audio.h"
@@ -224,6 +230,9 @@ struct Params {
     float contrast = 1.020f;
     // decay
     float decay = 0.995f;
+    float borderSize = 0.075f;
+    float borderSoftness = 0.065f;
+    float borderDecay = 0.72f;
     // noise
     float noise = 0.002f;
     // couple
@@ -235,6 +244,8 @@ struct Params {
     // source/transform dry/wet mix before color/dynamics. 1.0 = full transform.
     float sourceWet = 1.0f;
     int   fxWetMode = 0; // 0=full effect path, 1=source/transform path
+    int   sphereMode = 0;
+    float sphereReverb = 0.35f;
     // inject
     float inject = 0.0f;
     int   pattern = 0;
@@ -395,6 +406,15 @@ static constexpr int N_PIXELATE_BLEED_PRESETS =
 
 // ── framebuffer-object helper ─────────────────────────────────────────────
 struct FBO { GLuint fbo = 0, tex = 0; int w = 0, h = 0; };
+struct VolumeFBO { GLuint fbo = 0, tex = 0; int size = 0; };
+
+static void feedback_texture_format(GLenum& internalFmt, GLenum& type) {
+    switch (g_cfg.precision) {
+        case 8:  internalFmt = GL_RGBA8;    type = GL_UNSIGNED_BYTE; break;
+        case 32: internalFmt = GL_RGBA32F;  type = GL_FLOAT;         break;
+        default: internalFmt = GL_RGBA16F;  type = GL_HALF_FLOAT;    break;
+    }
+}
 
 static void resize_fbo(FBO& f, int w, int h) {
     if (!f.fbo) glGenFramebuffers(1, &f.fbo);
@@ -402,11 +422,7 @@ static void resize_fbo(FBO& f, int w, int h) {
     f.w = w; f.h = h;
     glBindTexture(GL_TEXTURE_2D, f.tex);
     GLenum internalFmt, type;
-    switch (g_cfg.precision) {
-        case 8:  internalFmt = GL_RGBA8;    type = GL_UNSIGNED_BYTE; break;
-        case 32: internalFmt = GL_RGBA32F;  type = GL_FLOAT;         break;
-        default: internalFmt = GL_RGBA16F;  type = GL_HALF_FLOAT;    break;
-    }
+    feedback_texture_format(internalFmt, type);
     glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, w, h, 0, GL_RGBA, type, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -421,6 +437,35 @@ static void resize_fbo(FBO& f, int w, int h) {
 static void clear_fbo(FBO& f) {
     glBindFramebuffer(GL_FRAMEBUFFER, f.fbo);
     glClearColor(0,0,0,1); glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static void resize_volume_fbo(VolumeFBO& f, int size) {
+    if (!f.fbo) glGenFramebuffers(1, &f.fbo);
+    if (!f.tex) glGenTextures(1, &f.tex);
+    f.size = size;
+    GLenum internalFmt, type;
+    feedback_texture_format(internalFmt, type);
+    glBindTexture(GL_TEXTURE_3D, f.tex);
+    glTexImage3D(GL_TEXTURE_3D, 0, internalFmt, size, size, size, 0,
+                 GL_RGBA, type, nullptr);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_3D, 0);
+}
+
+static void clear_volume_fbo(VolumeFBO& f) {
+    glBindFramebuffer(GL_FRAMEBUFFER, f.fbo);
+    glViewport(0, 0, f.size, f.size);
+    glClearColor(0,0,0,1);
+    for (int z = 0; z < f.size; z++) {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  f.tex, 0, z);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -532,6 +577,18 @@ static GLuint build_blit_program() {
     return p;
 }
 
+static GLuint build_blit_hires_program() {
+    std::string vs_src = read_file("shaders/main.vert");
+    std::string fs_src = read_file("shaders/blit_hires.frag");
+    if (fs_src.empty()) return 0;
+    GLuint vs = compile_shader(GL_VERTEX_SHADER,   vs_src, "main.vert");
+    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fs_src, "blit_hires.frag");
+    if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return 0; }
+    GLuint p = link_program(vs, fs, "blit_hires");
+    glDeleteShader(vs); glDeleteShader(fs);
+    return p;
+}
+
 // ── global state ──────────────────────────────────────────────────────────
 struct State {
     int  winW = 1280, winH = 720;      // current window / display size
@@ -540,7 +597,12 @@ struct State {
     // Up to 4 feedback fields. Each is a ping-pong pair.
     // Fields beyond `activeFields` are unused (not created).
     FBO field[4][2];                   // field[i][0] and field[i][1]
+    VolumeFBO volumeField[4][2];        // true 3D sphere-mode ping-pong fields
+    int volumeSize = 96;
     bool writeA = true;                // toggles which slot we're writing to
+    bool mouseDrag = false;
+    double mouseLastX = 0.0, mouseLastY = 0.0;
+    float viewRotX = 0.0f, viewRotY = 0.0f;
 
     // Default = all layers on. Per-layer "off-equivalent" parameter
     // defaults (physics knobs at 1.0/0.0, thermal amp at 0.015, etc.)
@@ -583,6 +645,7 @@ struct State {
 
     Recorder rec;
     Overlay  ov;
+    UiPanel  ui;
     // List of recording directories created this session (filled when each
     // recording stops). Used by the post-exit ffmpeg-encode prompt.
     std::vector<std::string> recordingsThisSession;
@@ -601,6 +664,7 @@ struct State {
 
     // Screenshot request — set by key handler, consumed in render loop.
     bool screenshotPending = false;
+    bool hiresPending = false;
 
     // Exit-confirm modal. First Esc sets this, second Esc / Y confirms,
     // N / any other key cancels. Prevents accidental quits mid-performance.
@@ -614,6 +678,12 @@ struct State {
     double demoLastInject = 0.0;
 };
 static State S;
+
+struct UiWindow {
+    GLFWwindow* win = nullptr;
+    UiPanel ui;
+};
+static std::vector<UiWindow*> g_uiWindows;
 
 static void sync_ddj_layer_leds() {
     struct PadLayer { int note; int bit; };
@@ -629,7 +699,7 @@ static void sync_ddj_layer_leds() {
             S.noiseQ == 3 ? 0x7F : 0x00,
             (S.enable & L_NOISE) ? 0x7F : 0x00,
             (S.enable & L_INJECT) ? 0x7F : 0x00,
-            0x00, 0x00,
+            0x7F, 0x7F,
         };
         for (int note = 0; note < 8; note++) {
             g_input.sendMidiNote(/*deck 2 pad channel*/ 10, note, bank[note]);
@@ -688,6 +758,387 @@ static void select_ddj_vfx_pad(int idx) {
     sync_ddj_filter_leds();
 }
 
+static std::string fmt_float(float v) {
+    char b[48];
+    snprintf(b, sizeof b, "%.3f", v);
+    return b;
+}
+
+static std::string fmt_pct(float v) {
+    char b[48];
+    snprintf(b, sizeof b, "%.0f%%", v * 100.0f);
+    return b;
+}
+
+static std::string fmt_toggle(float v) {
+    return v >= 0.5f ? "ON" : "off";
+}
+
+static void ui_add_slider(std::vector<UiControl>& out, const char* id,
+                          const char* label, float lo, float hi, float step,
+                          std::function<float()> get,
+                          std::function<void(float)> set,
+                          std::function<std::string(float)> format = nullptr) {
+    UiControl c;
+    c.id = id;
+    c.label = label;
+    c.kind = UiControlKind::Slider;
+    c.minValue = lo;
+    c.maxValue = hi;
+    c.step = step;
+    c.get = std::move(get);
+    c.set = std::move(set);
+    c.format = std::move(format);
+    out.push_back(std::move(c));
+}
+
+static void ui_add_integer(std::vector<UiControl>& out, const char* id,
+                           const char* label, float lo, float hi, float step,
+                           std::function<float()> get,
+                           std::function<void(float)> set,
+                           std::function<std::string(float)> format = nullptr) {
+    UiControl c;
+    c.id = id;
+    c.label = label;
+    c.kind = UiControlKind::Integer;
+    c.minValue = lo;
+    c.maxValue = hi;
+    c.step = step;
+    c.get = std::move(get);
+    c.set = std::move(set);
+    c.format = std::move(format);
+    out.push_back(std::move(c));
+}
+
+static void ui_add_toggle(std::vector<UiControl>& out, const char* id,
+                          const char* label,
+                          std::function<float()> get,
+                          std::function<void(float)> set) {
+    UiControl c;
+    c.id = id;
+    c.label = label;
+    c.kind = UiControlKind::Toggle;
+    c.minValue = 0.0f;
+    c.maxValue = 1.0f;
+    c.step = 1.0f;
+    c.get = std::move(get);
+    c.set = std::move(set);
+    c.format = fmt_toggle;
+    out.push_back(std::move(c));
+}
+
+static std::vector<UiControl> build_ui_controls() {
+    std::vector<UiControl> controls;
+
+    auto layer = [&](const char* id, const char* label, int bit) {
+        ui_add_toggle(controls, id, label,
+            [bit]() { return (S.enable & bit) ? 1.0f : 0.0f; },
+            [bit](float v) {
+                if (v >= 0.5f) S.enable |= bit;
+                else S.enable &= ~bit;
+                sync_ddj_layer_leds();
+            });
+    };
+
+    layer("layer.warp", "Warp", L_WARP);
+    layer("layer.optics", "Optics", L_OPTICS);
+    layer("layer.gamma", "Gamma", L_GAMMA);
+    layer("layer.color", "Color", L_COLOR);
+    layer("layer.contrast", "Contrast", L_CONTRAST);
+    layer("layer.decay", "Decay", L_DECAY);
+    layer("layer.noise", "Noise", L_NOISE);
+    layer("layer.couple", "Couple", L_COUPLE);
+    layer("layer.external", "External", L_EXTERNAL);
+    layer("layer.inject", "Inject", L_INJECT);
+    layer("layer.physics", "Physics", L_PHYSICS);
+    layer("layer.thermal", "Thermal", L_THERMAL);
+
+    ui_add_slider(controls, "decay", "Decay", 0.90f, 1.0f, 0.0005f,
+        []() { return S.p.decay; }, [](float v) { S.p.decay = fmaxf(0.90f, fminf(1.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "contrast", "Contrast", 0.0f, 4.0f, 0.01f,
+        []() { return S.p.contrast; }, [](float v) { S.p.contrast = fmaxf(0.0f, fminf(4.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "gamma", "Gamma", 0.10f, 3.0f, 0.01f,
+        []() { return S.p.gamma; }, [](float v) { S.p.gamma = fmaxf(0.10f, fminf(3.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "satGain", "Saturation", 0.0f, 3.0f, 0.01f,
+        []() { return S.p.satGain; }, [](float v) { S.p.satGain = fmaxf(0.0f, fminf(3.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "hueRate", "Hue Rate", -0.05f, 0.05f, 0.0005f,
+        []() { return S.p.hueRate; }, [](float v) { S.p.hueRate = fmaxf(-0.05f, fminf(0.05f, v)); }, fmt_float);
+    ui_add_slider(controls, "outFade", "Output Fade", -1.0f, 1.0f, 0.01f,
+        []() { return S.p.outFade; }, [](float v) { S.p.outFade = fmaxf(-1.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "brightness", "Brightness", 0.0f, 4.0f, 0.02f,
+        []() { return S.p.brightness; }, [](float v) { S.p.brightness = fmaxf(0.0f, fminf(4.0f, v)); }, fmt_float);
+
+    ui_add_slider(controls, "zoom", "Zoom", 0.92f, 1.08f, 0.0005f,
+        []() { return S.p.zoom; }, [](float v) { S.p.zoom = fmaxf(0.92f, fminf(1.08f, v)); }, fmt_float);
+    ui_add_slider(controls, "theta", "Rotation", -0.08f, 0.08f, 0.0005f,
+        []() { return S.p.theta; }, [](float v) { S.p.theta = fmaxf(-0.08f, fminf(0.08f, v)); }, fmt_float);
+    ui_add_slider(controls, "external", "External", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.external; }, [](float v) { S.p.external = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "sourceWet", "Source Wet", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.sourceWet; }, [](float v) { S.p.sourceWet = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "fxWet", "FX Wet", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.fxWet; }, [](float v) { S.p.fxWet = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "borderSize", "Border Size", 0.0f, 0.5f, 0.005f,
+        []() { return S.p.borderSize; }, [](float v) { S.p.borderSize = fmaxf(0.0f, fminf(0.5f, v)); }, fmt_float);
+    ui_add_slider(controls, "borderSoftness", "Border Soft", 0.0f, 0.35f, 0.005f,
+        []() { return S.p.borderSoftness; }, [](float v) { S.p.borderSoftness = fmaxf(0.0f, fminf(0.35f, v)); }, fmt_float);
+    ui_add_slider(controls, "borderDecay", "Border Decay", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.borderDecay; }, [](float v) { S.p.borderDecay = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "couple", "Couple", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.couple; }, [](float v) { S.p.couple = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "noise", "Noise", 0.0f, 0.05f, 0.0005f,
+        []() { return S.p.noise; }, [](float v) { S.p.noise = fmaxf(0.0f, fminf(0.05f, v)); }, fmt_float);
+
+    ui_add_slider(controls, "transX", "Translate X", -0.5f, 0.5f, 0.002f,
+        []() { return S.p.transX; }, [](float v) { S.p.transX = fmaxf(-0.5f, fminf(0.5f, v)); }, fmt_float);
+    ui_add_slider(controls, "transY", "Translate Y", -0.5f, 0.5f, 0.002f,
+        []() { return S.p.transY; }, [](float v) { S.p.transY = fmaxf(-0.5f, fminf(0.5f, v)); }, fmt_float);
+    ui_add_slider(controls, "pivotX", "Pivot X", 0.0f, 1.0f, 0.005f,
+        []() { return S.p.pivotX; }, [](float v) { S.p.pivotX = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "pivotY", "Pivot Y", 0.0f, 1.0f, 0.005f,
+        []() { return S.p.pivotY; }, [](float v) { S.p.pivotY = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_float);
+
+    ui_add_slider(controls, "chroma", "Chroma", 0.0f, 0.02f, 0.0002f,
+        []() { return S.p.chroma; }, [](float v) { S.p.chroma = fmaxf(0.0f, fminf(0.02f, v)); }, fmt_float);
+    ui_add_slider(controls, "blurX", "Blur X", 0.0f, 12.0f, 0.05f,
+        []() { return S.p.blurX; }, [](float v) { S.p.blurX = fmaxf(0.0f, fminf(12.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "blurY", "Blur Y", 0.0f, 12.0f, 0.05f,
+        []() { return S.p.blurY; }, [](float v) { S.p.blurY = fmaxf(0.0f, fminf(12.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "blurAngle", "Blur Angle", -3.14159f, 3.14159f, 0.02f,
+        []() { return S.p.blurAngle; }, [](float v) { S.p.blurAngle = v; }, fmt_float);
+
+    ui_add_toggle(controls, "invert", "Invert",
+        []() { return S.p.invert ? 1.0f : 0.0f; },
+        [](float v) { S.p.invert = v >= 0.5f ? 1 : 0; });
+    ui_add_slider(controls, "sensorGamma", "Sensor Gamma", 0.1f, 2.0f, 0.01f,
+        []() { return S.p.sensorGamma; }, [](float v) { S.p.sensorGamma = fmaxf(0.1f, fminf(2.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "satKnee", "Saturation Knee", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.satKnee; }, [](float v) { S.p.satKnee = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "colorCross", "Color Cross", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.colorCross; }, [](float v) { S.p.colorCross = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+
+    ui_add_slider(controls, "thermAmp", "Thermal Amp", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.thermAmp; }, [](float v) { S.p.thermAmp = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "thermScale", "Thermal Scale", 0.2f, 40.0f, 0.2f,
+        []() { return S.p.thermScale; }, [](float v) { S.p.thermScale = fmaxf(0.2f, fminf(40.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "thermSpeed", "Thermal Speed", 0.0f, 30.0f, 0.1f,
+        []() { return S.p.thermSpeed; }, [](float v) { S.p.thermSpeed = fmaxf(0.0f, fminf(30.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "thermRise", "Thermal Rise", -1.0f, 2.0f, 0.02f,
+        []() { return S.p.thermRise; }, [](float v) { S.p.thermRise = fmaxf(-1.0f, fminf(2.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "thermSwirl", "Thermal Swirl", 0.0f, 2.0f, 0.02f,
+        []() { return S.p.thermSwirl; }, [](float v) { S.p.thermSwirl = fmaxf(0.0f, fminf(2.0f, v)); }, fmt_float);
+
+    ui_add_integer(controls, "blurQ", "Blur Kernel", 0.0f, 2.0f, 1.0f,
+        []() { return (float)S.blurQ; }, [](float v) { S.blurQ = (int)fmaxf(0.0f, fminf(2.0f, roundf(v))); },
+        [](float v) { static const char* n[] = {"5-tap", "9-gauss", "25-gauss"}; return n[(int)fmaxf(0.0f, fminf(2.0f, roundf(v)))]; });
+    ui_add_integer(controls, "caQ", "CA Sampler", 0.0f, 2.0f, 1.0f,
+        []() { return (float)S.caQ; }, [](float v) { S.caQ = (int)fmaxf(0.0f, fminf(2.0f, roundf(v))); },
+        [](float v) { static const char* n[] = {"3-sample", "5-ramp", "8-wave"}; return n[(int)fmaxf(0.0f, fminf(2.0f, roundf(v)))]; });
+    ui_add_integer(controls, "noiseQ", "Noise Type", 0.0f, (float)(N_NOISE_TYPES - 1), 1.0f,
+        []() { return (float)S.noiseQ; }, [](float v) { S.noiseQ = (int)fmaxf(0.0f, fminf((float)(N_NOISE_TYPES - 1), roundf(v))); },
+        [](float v) { return NOISE_NAMES[(int)fmaxf(0.0f, fminf((float)(N_NOISE_TYPES - 1), roundf(v)))]; });
+    ui_add_integer(controls, "activeFields", "Fields", 1.0f, 4.0f, 1.0f,
+        []() { return (float)S.activeFields; },
+        [](float v) { S.activeFields = (int)fmaxf(1.0f, fminf(4.0f, roundf(v))); S.needClear = true; }, fmt_float);
+    ui_add_integer(controls, "pixelateStyle", "Pixelate", 0.0f, (float)(N_PIXELATE_STYLES - 1), 1.0f,
+        []() { return (float)S.pixelateStyle; }, [](float v) { S.pixelateStyle = (int)fmaxf(0.0f, fminf((float)(N_PIXELATE_STYLES - 1), roundf(v))); },
+        [](float v) { return PIXELATE_NAMES[(int)fmaxf(0.0f, fminf((float)(N_PIXELATE_STYLES - 1), roundf(v)))]; });
+    ui_add_integer(controls, "pixelateBleed", "Pixel Bleed", 0.0f, (float)(N_PIXELATE_BLEED_PRESETS - 1), 1.0f,
+        []() { return (float)S.pixelateBleedIdx; }, [](float v) { S.pixelateBleedIdx = (int)fmaxf(0.0f, fminf((float)(N_PIXELATE_BLEED_PRESETS - 1), roundf(v))); },
+        [](float v) { return PIXELATE_BLEED_NAMES[(int)fmaxf(0.0f, fminf((float)(N_PIXELATE_BLEED_PRESETS - 1), roundf(v)))]; });
+
+    ui_add_toggle(controls, "sphereMode", "Sphere Mode",
+        []() { return S.p.sphereMode ? 1.0f : 0.0f; },
+        [](float v) {
+            int next = v >= 0.5f ? 1 : 0;
+            if (S.p.sphereMode != next) {
+                S.p.sphereMode = next;
+                S.needClear = true;
+            }
+        });
+    ui_add_slider(controls, "sphereReverb", "Sphere Reverb", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.sphereReverb; }, [](float v) { S.p.sphereReverb = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "viewRotX", "View Pitch", -1.45f, 1.45f, 0.02f,
+        []() { return S.viewRotX; }, [](float v) { S.viewRotX = fmaxf(-1.45f, fminf(1.45f, v)); }, fmt_float);
+    ui_add_slider(controls, "viewRotY", "View Yaw", -6.28f, 6.28f, 0.02f,
+        []() { return S.viewRotY; }, [](float v) { S.viewRotY = v; }, fmt_float);
+
+    ui_add_integer(controls, "pattern", "Pattern", 0.0f, (float)(N_PATTERNS - 1), 1.0f,
+        []() { return (float)S.p.pattern; },
+        [](float v) { S.p.pattern = (int)fmaxf(0.0f, fminf((float)(N_PATTERNS - 1), roundf(v))); sync_ddj_filter_leds(); },
+        [](float v) { return PATTERN_NAMES[(int)fmaxf(0.0f, fminf((float)(N_PATTERNS - 1), roundf(v)))]; });
+    ui_add_integer(controls, "shapeKind", "Shape", 0.0f, 3.0f, 1.0f,
+        []() { return (float)S.p.shapeKind; },
+        [](float v) { S.p.shapeKind = (int)fmaxf(0.0f, fminf(3.0f, roundf(v))); },
+        [](float v) {
+            static const char* names[] = {"triangle", "star", "circle", "square"};
+            return names[(int)fmaxf(0.0f, fminf(3.0f, roundf(v)))];
+        });
+    ui_add_integer(controls, "shapeCount", "Shape Count", 1.0f, 16.0f, 1.0f,
+        []() { return (float)S.p.shapeCount; },
+        [](float v) { S.p.shapeCount = (int)fmaxf(1.0f, fminf(16.0f, roundf(v))); }, fmt_float);
+    ui_add_slider(controls, "shapeSize", "Shape Size", 0.1f, 4.0f, 0.05f,
+        []() { return S.p.shapeSize; }, [](float v) { S.p.shapeSize = fmaxf(0.1f, fminf(4.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "shapeAngle", "Shape Angle", -3.14159f, 3.14159f, 0.02f,
+        []() { return S.p.shapeAngle; }, [](float v) { S.p.shapeAngle = v; }, fmt_float);
+
+    ui_add_integer(controls, "vfx1Slot", "VFX 1 Effect", 0.0f, (float)(VFX_COUNT - 1), 1.0f,
+        []() { return (float)S.p.vfxSlot[0]; }, [](float v) { S.p.vfxSlot[0] = (int)fmaxf(0.0f, fminf((float)(VFX_COUNT - 1), roundf(v))); sync_ddj_filter_leds(); },
+        [](float v) { return VFX_NAMES[(int)fmaxf(0.0f, fminf((float)(VFX_COUNT - 1), roundf(v)))]; });
+    ui_add_slider(controls, "vfx1Param", "VFX 1 Control", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.vfxParam[0]; }, [](float v) { S.p.vfxParam[0] = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_toggle(controls, "vfx1BSource", "VFX 1 B Source",
+        []() { return (float)S.p.vfxBSource[0]; }, [](float v) { S.p.vfxBSource[0] = v >= 0.5f ? 1 : 0; });
+    ui_add_integer(controls, "vfx2Slot", "VFX 2 Effect", 0.0f, (float)(VFX_COUNT - 1), 1.0f,
+        []() { return (float)S.p.vfxSlot[1]; }, [](float v) { S.p.vfxSlot[1] = (int)fmaxf(0.0f, fminf((float)(VFX_COUNT - 1), roundf(v))); },
+        [](float v) { return VFX_NAMES[(int)fmaxf(0.0f, fminf((float)(VFX_COUNT - 1), roundf(v)))]; });
+    ui_add_slider(controls, "vfx2Param", "VFX 2 Control", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.vfxParam[1]; }, [](float v) { S.p.vfxParam[1] = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_toggle(controls, "vfx2BSource", "VFX 2 B Source",
+        []() { return (float)S.p.vfxBSource[1]; }, [](float v) { S.p.vfxBSource[1] = v >= 0.5f ? 1 : 0; });
+
+    auto depends = [&](std::vector<const char*> ids, int bit) {
+        for (auto& c : controls) {
+            for (const char* id : ids) {
+                if (c.id == id) {
+                    c.enabled = [bit]() { return (S.enable & bit) != 0; };
+                    break;
+                }
+            }
+        }
+    };
+    depends({"zoom", "theta", "transX", "transY", "pivotX", "pivotY"}, L_WARP);
+    depends({"chroma", "blurX", "blurY", "blurAngle", "blurQ", "caQ"}, L_OPTICS);
+    depends({"gamma"}, L_GAMMA);
+    depends({"hueRate", "satGain"}, L_COLOR);
+    depends({"contrast"}, L_CONTRAST);
+    depends({"decay", "borderSize", "borderSoftness", "borderDecay"}, L_DECAY);
+    depends({"noise", "noiseQ"}, L_NOISE);
+    depends({"couple"}, L_COUPLE);
+    depends({"external"}, L_EXTERNAL);
+    depends({"pattern", "shapeKind", "shapeCount", "shapeSize", "shapeAngle"}, L_INJECT);
+    depends({"invert", "sensorGamma", "satKnee", "colorCross"}, L_PHYSICS);
+    depends({"thermAmp", "thermScale", "thermSpeed", "thermRise", "thermSwirl"}, L_THERMAL);
+
+    return controls;
+}
+
+static std::string ui_layout_path() {
+    return g_shader_base.empty() ? std::string("ui.yaml") : (g_shader_base + "ui.yaml");
+}
+
+static void ui_window_key_cb(GLFWwindow* win, int key, int scancode, int action, int mods) {
+    (void)scancode;
+    UiWindow* uw = (UiWindow*)glfwGetWindowUserPointer(win);
+    if (!uw) return;
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+        glfwSetWindowShouldClose(win, 1);
+        return;
+    }
+    if (uw->ui.key(key, action, mods)) return;
+    g_input.onKey(key, scancode, action, mods);
+}
+
+static void ui_window_char_cb(GLFWwindow* win, unsigned int codepoint) {
+    UiWindow* uw = (UiWindow*)glfwGetWindowUserPointer(win);
+    if (uw) uw->ui.textInput(codepoint);
+}
+
+static void ui_window_mouse_button_cb(GLFWwindow* win, int button, int action, int) {
+    UiWindow* uw = (UiWindow*)glfwGetWindowUserPointer(win);
+    if (!uw) return;
+    double x = 0.0, y = 0.0;
+    glfwGetCursorPos(win, &x, &y);
+    uw->ui.mouseButton(button, action, x, y);
+}
+
+static void ui_window_cursor_cb(GLFWwindow* win, double x, double y) {
+    UiWindow* uw = (UiWindow*)glfwGetWindowUserPointer(win);
+    if (uw) uw->ui.cursor(x, y);
+}
+
+static void create_ui_window();
+
+static void create_ui_window() {
+    GLFWwindow* prev = glfwGetCurrentContext();
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE);
+#endif
+    GLFWwindow* w = glfwCreateWindow(760, 860, "Crutchfield Controls", nullptr, S.win);
+    if (!w) {
+        S.ov.logEvent("UI window failed");
+        if (prev) glfwMakeContextCurrent(prev);
+        return;
+    }
+    UiWindow* uw = new UiWindow();
+    uw->win = w;
+    glfwSetWindowUserPointer(w, uw);
+    glfwMakeContextCurrent(w);
+    glfwSwapInterval(1);
+    uw->ui.init();
+    uw->ui.loadLayout(ui_layout_path());
+    uw->ui.setControls(build_ui_controls());
+    uw->ui.setVisible(true);
+    uw->ui.setWindowedHandler(create_ui_window);
+    int ww = 760, wh = 860;
+    glfwGetWindowSize(w, &ww, &wh);
+    uw->ui.resize(ww, wh);
+    glfwSetKeyCallback(w, ui_window_key_cb);
+    glfwSetCharCallback(w, ui_window_char_cb);
+    glfwSetMouseButtonCallback(w, ui_window_mouse_button_cb);
+    glfwSetCursorPosCallback(w, ui_window_cursor_cb);
+    g_uiWindows.push_back(uw);
+    if (prev) glfwMakeContextCurrent(prev);
+    S.ov.logEvent("UI window opened");
+}
+
+static void draw_ui_windows() {
+    GLFWwindow* prev = glfwGetCurrentContext();
+    for (auto it = g_uiWindows.begin(); it != g_uiWindows.end();) {
+        UiWindow* uw = *it;
+        if (!uw || !uw->win || glfwWindowShouldClose(uw->win)) {
+            if (uw) {
+                if (uw->win) {
+                    glfwMakeContextCurrent(uw->win);
+                    uw->ui.shutdown();
+                    glfwDestroyWindow(uw->win);
+                }
+                delete uw;
+            }
+            it = g_uiWindows.erase(it);
+            continue;
+        }
+        glfwMakeContextCurrent(uw->win);
+        int fbw = 1, fbh = 1, ww = 1, wh = 1;
+        glfwGetFramebufferSize(uw->win, &fbw, &fbh);
+        glfwGetWindowSize(uw->win, &ww, &wh);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, fbw, fbh);
+        glClearColor(0.015f, 0.018f, 0.020f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        uw->ui.resize(ww, wh);
+        uw->ui.draw();
+        glfwSwapBuffers(uw->win);
+        ++it;
+    }
+    if (prev) glfwMakeContextCurrent(prev);
+}
+
+static void close_ui_windows() {
+    GLFWwindow* prev = glfwGetCurrentContext();
+    for (UiWindow* uw : g_uiWindows) {
+        if (!uw) continue;
+        if (uw->win) {
+            glfwMakeContextCurrent(uw->win);
+            uw->ui.shutdown();
+            glfwDestroyWindow(uw->win);
+        }
+        delete uw;
+    }
+    g_uiWindows.clear();
+    if (prev) glfwMakeContextCurrent(prev);
+}
+
 // ── help text ─────────────────────────────────────────────────────────────
 static void print_help() {
     printf(
@@ -704,7 +1155,7 @@ static void print_help() {
       " Delete   cycle pixelate (off / dots / squares / rounded, s·m·l)\n"
       " Ctrl+Del cycle pixelate bleed (off / soft / CRT / melt / fried / burned)\n"
       " Alt+Del  reroll burn pattern (only audible when bleed = burned)\n"
-      " H        toggle help overlay (in-window; full key list lives there)\n"
+      " H        toggle control UI (YAML layout; sliders, pins, layer viz)\n"
       " `        start/stop EXR recording (./recordings/feedback_<ts>/)\n"
       " PrtSc    screenshot (PNG, sim resolution, no HUD)\n"
       " \\        reload shaders from disk\n"
@@ -797,11 +1248,93 @@ static void toggle_fullscreen() {
 
 namespace fs = std::filesystem;
 
+#ifdef __APPLE__
+static std::string g_user_base = "";
+
+static std::string ensure_trailing_slash(std::string s) {
+    if (!s.empty() && s.back() != '/') s.push_back('/');
+    return s;
+}
+
+static std::string mac_executable_path() {
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string buf(size + 1, '\0');
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) return "";
+    char resolved[PATH_MAX];
+    if (!realpath(buf.c_str(), resolved)) return "";
+    return resolved;
+}
+
+static std::string mac_executable_dir() {
+    std::string exe = mac_executable_path();
+    size_t slash = exe.find_last_of('/');
+    return slash == std::string::npos ? std::string() : ensure_trailing_slash(exe.substr(0, slash));
+}
+
+static std::string mac_asset_base() {
+    std::string exeDir = mac_executable_dir();
+    const std::string marker = ".app/Contents/MacOS/";
+    size_t pos = exeDir.find(marker);
+    if (pos != std::string::npos)
+        return exeDir.substr(0, pos + 5) + "/Contents/Resources/";
+    return exeDir;
+}
+
+static std::string mac_user_base() {
+    const char* home = std::getenv("HOME");
+    if (home && home[0])
+        return ensure_trailing_slash(std::string(home) + "/Library/Application Support/Crutchfield Machine");
+    return mac_executable_dir();
+}
+
+static void seed_user_tree(const std::string& assetBase, const char* name) {
+    fs::path src = fs::path(assetBase) / name;
+    fs::path dst = fs::path(name);
+    std::error_code ec;
+    if (!fs::exists(src)) return;
+    fs::create_directories(dst, ec);
+    if (ec) return;
+    for (const auto& e : fs::recursive_directory_iterator(src)) {
+        if (!e.is_regular_file()) continue;
+        fs::path rel = fs::relative(e.path(), src, ec);
+        if (ec) continue;
+        fs::path out = dst / rel;
+        fs::create_directories(out.parent_path(), ec);
+        if (ec) continue;
+        if (!fs::exists(out)) fs::copy_file(e.path(), out, fs::copy_options::skip_existing, ec);
+    }
+}
+
+static void bootstrap_macos_runtime() {
+    g_shader_base = mac_asset_base();
+    g_user_base   = mac_user_base();
+    std::error_code ec;
+    fs::create_directories(g_user_base, ec);
+    if (!ec && chdir(g_user_base.c_str()) == 0) {
+        seed_user_tree(g_shader_base, "presets");
+        seed_user_tree(g_shader_base, "js");
+        seed_user_tree(g_shader_base, "music");
+        seed_user_tree(g_shader_base, "samples");
+    } else {
+        std::fprintf(stderr, "[paths] warning: couldn't use %s as runtime dir\n",
+                     g_user_base.c_str());
+    }
+}
+#endif
+
 static std::vector<std::string> g_presetFiles;
 static int g_currentPreset = -1;
 
 static std::string preset_dir() {
+#ifdef __APPLE__
+    // bootstrap_macos_runtime() chdir's into the user's app-support dir
+    // and seeds presets/ there; using a cwd-relative path means saves go
+    // to that writable location rather than inside the .app bundle.
+    return "presets";
+#else
     return g_shader_base.empty() ? "presets" : (g_shader_base + "presets");
+#endif
 }
 
 // Trim whitespace from both ends.
@@ -891,6 +1424,9 @@ static bool preset_write(const std::string& path) {
 "\n"
 "[dynamics]\n"
 "decay    = %.6f\n"
+"borderSize = %.6f\n"
+"borderSoftness = %.6f\n"
+"borderDecay = %.6f\n"
 "noise    = %.6f\n"
 "couple   = %.6f\n"
 "external = %.6f\n"
@@ -945,6 +1481,13 @@ static bool preset_write(const std::string& path) {
 "param2   = %.6f\n"
 "bsource2 = %d\n"
 "\n"
+"[sphere]\n"
+"# mode: 0=normal 2D FBO, 1=true 3D volume. viewRot is display-only.\n"
+"mode     = %d\n"
+"reverb   = %.6f\n"
+"viewRotX = %.6f\n"
+"viewRotY = %.6f\n"
+"\n"
 "[output]\n"
 "# Output fade: bipolar, -1=black, 0=through, +1=white.\n"
 "# Brightness: display-only multiplier (not in feedback loop). 1=identity.\n"
@@ -973,12 +1516,14 @@ static bool preset_write(const std::string& path) {
         p.zoom, p.theta, p.pivotX, p.pivotY, p.transX, p.transY,
         p.chroma, p.blurX, p.blurY, p.blurAngle,
         p.gamma, p.hueRate, p.satGain, p.contrast,
-        p.decay, p.noise, p.couple, p.external, p.fxWet, p.sourceWet, p.fxWetMode,
+        p.decay, p.borderSize, p.borderSoftness, p.borderDecay,
+        p.noise, p.couple, p.external, p.fxWet, p.sourceWet, p.fxWetMode,
         p.pattern, p.patternInject, p.shapeKind, p.shapeCount, p.shapeSize, p.shapeAngle,
         p.invert, p.invertPeriod, p.sensorGamma, p.satKnee, p.colorCross,
         p.thermAmp, p.thermScale, p.thermSpeed, p.thermRise, p.thermSwirl,
         p.vfxSlot[0], p.vfxParam[0], p.vfxBSource[0],
         p.vfxSlot[1], p.vfxParam[1], p.vfxBSource[1],
+        p.sphereMode, p.sphereReverb, S.viewRotX, S.viewRotY,
         p.outFade, p.brightness,
         p.bpm, p.divIdx,
         p.bpmSyncOn   ? "on" : "off",
@@ -995,6 +1540,25 @@ static bool preset_write(const std::string& path) {
     return true;
 }
 
+static void ensure_active_field_fbos() {
+    S.activeFields = std::max(1, std::min(4, S.activeFields));
+    for (int fi = 0; fi < S.activeFields; fi++) {
+        if (S.field[fi][0].fbo == 0) {
+            resize_fbo(S.field[fi][0], S.simW, S.simH);
+            resize_fbo(S.field[fi][1], S.simW, S.simH);
+            clear_fbo(S.field[fi][0]);
+            clear_fbo(S.field[fi][1]);
+        }
+        if (S.volumeField[fi][0].fbo == 0) {
+            int size = S.volumeSize > 0 ? S.volumeSize : 96;
+            resize_volume_fbo(S.volumeField[fi][0], size);
+            resize_volume_fbo(S.volumeField[fi][1], size);
+            clear_volume_fbo(S.volumeField[fi][0]);
+            clear_volume_fbo(S.volumeField[fi][1]);
+        }
+    }
+}
+
 // Load file at path, mutating S. Returns true on success.
 // Tolerates unknown sections/keys (so old presets keep working when we add new
 // keys; new presets just leave default values for keys they don't know about).
@@ -1004,6 +1568,10 @@ static bool preset_load(const std::string& path) {
     char line[1024];
     std::string section;
     auto& p = S.p;
+    p.sphereMode = 0;
+    p.sphereReverb = 0.35f;
+    S.viewRotX = 0.0f;
+    S.viewRotY = 0.0f;
 
     // Helper: convert layer name to bit
     auto layer_bit = [](const std::string& n) -> int {
@@ -1088,6 +1656,9 @@ static bool preset_load(const std::string& path) {
         } else if (section == "dynamics") {
             float fv = (float)atof(v.c_str());
             if      (k == "decay")    p.decay    = fv;
+            else if (k == "borderSize") p.borderSize = fmaxf(0.0f, fminf(0.35f, fv));
+            else if (k == "borderSoftness") p.borderSoftness = fmaxf(0.001f, fminf(0.35f, fv));
+            else if (k == "borderDecay") p.borderDecay = fmaxf(0.0f, fminf(1.0f, fv));
             else if (k == "noise")    p.noise    = fv;
             else if (k == "couple")   p.couple   = fv;
             else if (k == "external") p.external = fv;
@@ -1128,6 +1699,12 @@ static bool preset_load(const std::string& path) {
             else if (k == "param2")   p.vfxParam[1]   = fmaxf(0.f, fminf(1.f, fv));
             else if (k == "bsource1") p.vfxBSource[0] = (n & 1);
             else if (k == "bsource2") p.vfxBSource[1] = (n & 1);
+        } else if (section == "sphere") {
+            float fv = (float)atof(v.c_str());
+            if      (k == "mode")     p.sphereMode = atoi(v.c_str()) ? 1 : 0;
+            else if (k == "reverb")   p.sphereReverb = fmaxf(0.0f, fminf(1.0f, fv));
+            else if (k == "viewRotX") S.viewRotX = fmaxf(-1.45f, fminf(1.45f, fv));
+            else if (k == "viewRotY") S.viewRotY = fv;
         } else if (section == "output") {
             float fv = (float)atof(v.c_str());
             if      (k == "fade")       p.outFade    = fmaxf(-1.f, fminf(1.f, fv));
@@ -1148,6 +1725,8 @@ static bool preset_load(const std::string& path) {
         }
     }
     fclose(f);
+    ensure_active_field_fbos();
+    S.needClear = true;
     return true;
 }
 
@@ -1230,7 +1809,91 @@ static std::string preset_save_now() {
 // field FBO directly (not the display), so screenshots are always at full
 // sim quality regardless of window size, and never include the HUD overlay.
 static std::string screenshot_dir() {
+#ifdef __APPLE__
+    // Write outside the .app bundle so rebuilds don't wipe captures.
+    const char* home = getenv("HOME");
+    if (home && *home) return std::string(home) + "/Pictures/crutchfield";
+#endif
     return g_shader_base.empty() ? "screenshots" : (g_shader_base + "screenshots");
+}
+
+static bool save_screenshot_hires(GLuint srcTex, GLuint hiresProg, int srcW,
+                                  int srcH, int K, float brightness) {
+    if (K < 2) K = 2;
+    if (!hiresProg) {
+        fprintf(stderr, "[shot-hires] shader not built; falling back\n");
+        return false;
+    }
+    const int dstW = srcW * K;
+    const int dstH = srcH * K;
+
+    GLuint tex = 0, fb = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, dstW, dstH, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "[shot-hires] FBO incomplete (target %dx%d)\n", dstW, dstH);
+        glDeleteFramebuffers(1, &fb);
+        glDeleteTextures(1, &tex);
+        return false;
+    }
+
+    glViewport(0, 0, dstW, dstH);
+    glDisable(GL_BLEND);
+    glUseProgram(hiresProg);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, srcTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glUniform1i(glGetUniformLocation(hiresProg, "uSrc"), 0);
+    glUniform1f(glGetUniformLocation(hiresProg, "uBrightness"), brightness);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    std::vector<uint8_t> buf((size_t)dstW * dstH * 3);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, dstW, dstH, GL_RGB, GL_UNSIGNED_BYTE, buf.data());
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &tex);
+
+    const size_t row = (size_t)dstW * 3;
+    std::vector<uint8_t> flipped(buf.size());
+    for (int y = 0; y < dstH; y++)
+        std::memcpy(flipped.data() + (size_t)y * row,
+                    buf.data()     + (size_t)(dstH - 1 - y) * row, row);
+
+    fs::path dir = screenshot_dir();
+    if (!fs::exists(dir)) fs::create_directory(dir);
+    char ts[64];
+    time_t t = time(nullptr);
+    struct tm lt;
+#ifdef _WIN32
+    localtime_s(&lt, &t);
+#else
+    localtime_r(&t, &lt);
+#endif
+    strftime(ts, sizeof ts, "shot_hires_%Y%m%d_%H%M%S.png", &lt);
+    fs::path full = dir / ts;
+    int ok = stbi_write_png(full.string().c_str(), dstW, dstH, 3,
+                            flipped.data(), (int)row);
+    if (ok) printf("[shot-hires] %s  (%dx%d, %dx supersample)\n",
+                   full.string().c_str(), dstW, dstH, K);
+    else    fprintf(stderr, "[shot-hires] failed to write %s\n",
+                    full.string().c_str());
+    return ok != 0;
 }
 
 static bool save_screenshot(GLuint fbo, int w, int h) {
@@ -1723,7 +2386,7 @@ static std::string section_thermal() {
 static std::string section_inject() {
     const auto& p = S.p;
     auto cur = [&](int i) { return i == p.pattern ? "\x10" : " "; };
-    char b[1024];
+    char b[1400];
     snprintf(b, sizeof b,
         "%s  1  %s\n"
         "%s  2  %s\n"
@@ -1736,6 +2399,9 @@ static std::string section_inject() {
         "%s  9  %s\n"
         "%s  0  %s\n"
         "%s Alt+B %s   (hold %.1f s)\n"
+        "\n"
+        "%-7s triangle hold   %-7s star hold\n"
+        "%-7s circle hold     %-7s square hold\n"
         "\n"
         "DP-L/R cursor   A tap-inject   LT/RT hold\n"
         "%-5s  inject (hold)     F10  toggle inject layer",
@@ -1750,6 +2416,10 @@ static std::string section_inject() {
         cur(8), PATTERN_NAMES[8],
         cur(9), PATTERN_NAMES[9],
         cur(10), PATTERN_NAMES[10], p.injectHoldTimer,
+        keys_for(ACT_SHAPE_TRIANGLE_HOLD).c_str(),
+        keys_for(ACT_SHAPE_STAR_HOLD).c_str(),
+        keys_for(ACT_SHAPE_CIRCLE_HOLD).c_str(),
+        keys_for(ACT_SHAPE_SQUARE_HOLD).c_str(),
         keys_for(ACT_INJECT_HOLD).c_str());
     return b;
 }
@@ -1766,6 +2436,7 @@ static std::string section_quality() {
         "%s  %-8s  fields      : %d\n"
         "%s  %-8s  pixelate    : %s\n"
         "%s  %-8s  bleed       : %s\n"
+        "%s  %-8s  sphere      : %s\n"
         "\n"
         "DP-L/R move cursor   A cycle armed",
         cur(0), keys_for(ACT_BLURQ_CYCLE).c_str(),  blur[S.blurQ],
@@ -1775,7 +2446,9 @@ static std::string section_quality() {
         cur(4), keys_for(ACT_PIXELATE_STYLE_CYCLE).c_str(),
                 PIXELATE_NAMES[S.pixelateStyle],
         cur(5), keys_for(ACT_PIXELATE_BLEED_CYCLE).c_str(),
-                PIXELATE_BLEED_NAMES[S.pixelateBleedIdx]);
+                PIXELATE_BLEED_NAMES[S.pixelateBleedIdx],
+        cur(6), keys_for(ACT_SPHERE_TOGGLE).c_str(),
+                S.p.sphereMode ? "3D volume" : "off");
     return b;
 }
 
@@ -2074,7 +2747,8 @@ static std::string help_section_body(int i) {
 
 
 // ── keyboard ──────────────────────────────────────────────────────────────
-static GLuint progFeedback = 0, progBlit = 0;
+static GLuint progFeedback = 0, progBlit = 0, progBlitHires = 0;
+static int g_captureScale = 2;
 
 static void reload_shaders() {
     GLuint np = build_feedback_program();
@@ -2512,16 +3186,17 @@ static void apply_action(ActionId id, float mag) {
             return;
         }
 
-        // Quality cursor — 6 entries: blur, ca, noise, fields, pixelate, bleed.
+        // Quality cursor — 7 entries: blur, ca, noise, fields, pixelate,
+        // bleed, sphere topology.
         case ACT_QUALITY_CURSOR_UP:
-            S.armedQuality = (S.armedQuality - 1 + 6) % 6;
-            { static const char* N[] = {"blur","CA","noise","fields","pixelate","bleed"};
+            S.armedQuality = (S.armedQuality - 1 + 7) % 7;
+            { static const char* N[] = {"blur","CA","noise","fields","pixelate","bleed","sphere"};
               char b[64]; snprintf(b, sizeof b, "quality armed: %s", N[S.armedQuality]);
               S.ov.logEvent(b); }
             return;
         case ACT_QUALITY_CURSOR_DN:
-            S.armedQuality = (S.armedQuality + 1) % 6;
-            { static const char* N[] = {"blur","CA","noise","fields","pixelate","bleed"};
+            S.armedQuality = (S.armedQuality + 1) % 7;
+            { static const char* N[] = {"blur","CA","noise","fields","pixelate","bleed","sphere"};
               char b[64]; snprintf(b, sizeof b, "quality armed: %s", N[S.armedQuality]);
               S.ov.logEvent(b); }
             return;
@@ -2533,6 +3208,7 @@ static void apply_action(ActionId id, float mag) {
                 case 3: apply_action(ACT_FIELDS_CYCLE, 1.0f); break;
                 case 4: apply_action(ACT_PIXELATE_STYLE_CYCLE, 1.0f); break;
                 case 5: apply_action(ACT_PIXELATE_BLEED_CYCLE, 1.0f); break;
+                case 6: apply_action(ACT_SPHERE_TOGGLE, 1.0f); break;
             }
             return;
 
@@ -2770,8 +3446,10 @@ static void apply_action(ActionId id, float mag) {
             S.ov.logEvent(S.paused ? "paused" : "running");
             return;
         }
-        case ACT_HELP: S.ov.toggleHelp();
-            printf("[help] %s\n", S.ov.helpVisible() ? "shown" : "hidden"); return;
+        case ACT_HELP:
+            S.ui.toggle();
+            printf("[ui] %s\n", S.ui.visible() ? "shown" : "hidden");
+            return;
         case ACT_RELOAD_SHADERS: reload_shaders();
             S.ov.logEvent("shaders reloaded"); return;
         case ACT_FULLSCREEN: {
@@ -2799,6 +3477,10 @@ static void apply_action(ActionId id, float mag) {
         case ACT_SCREENSHOT:
             S.screenshotPending = true;
             S.ov.logEvent("screenshot queued");
+            return;
+        case ACT_SCREENSHOT_HIRES:
+            S.hiresPending = true;
+            S.ov.logEvent("hi-res screenshot queued");
             return;
         case ACT_PRESET_SAVE: {
             std::string fn = preset_save_now();
@@ -2881,6 +3563,12 @@ static void apply_action(ActionId id, float mag) {
             printf("[burn-seed] %d\n", S.pixelateBurnSeed);
             char b[64]; snprintf(b, sizeof b, "burn seed: %d", S.pixelateBurnSeed);
             S.ov.logEvent(b); return;
+        }
+        case ACT_SPHERE_TOGGLE: {
+            p.sphereMode = p.sphereMode ? 0 : 1;
+            S.needClear = true;
+            S.ov.logEvent(p.sphereMode ? "sphere volume: ON" : "sphere volume: off");
+            return;
         }
         case ACT_FIELDS_CYCLE: {
             S.activeFields = (S.activeFields % 4) + 1;
@@ -3239,6 +3927,25 @@ static void apply_action(ActionId id, float mag) {
 }
 
 static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_TAB &&
+        !(mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER))) {
+        if (action == GLFW_PRESS) {
+            S.ui.toggle();
+            S.quitConfirmPending = false;
+            printf("[ui] %s\n", S.ui.visible() ? "shown" : "hidden");
+        }
+        return;
+    }
+    if (S.ui.visible() && S.ui.key(key, action, mods)) {
+        S.quitConfirmPending = false;
+        return;
+    }
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && S.ov.helpVisible()) {
+        S.ov.helpBack();
+        S.quitConfirmPending = false;
+        return;
+    }
+
     // Exit-confirm modal intercept. When the first Esc puts us in
     // "really quit?" mode, capture Y / N here BEFORE the normal binding
     // dispatch so we don't also fire the usual Y/N keybinds.
@@ -3264,12 +3971,45 @@ static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
     g_input.onKey(key, scancode, action, mods);
 }
 
+static void char_cb(GLFWwindow*, unsigned int codepoint) {
+    S.ui.textInput(codepoint);
+}
 
-static void size_cb(GLFWwindow*, int w, int h) {
+static void size_cb(GLFWwindow* win, int w, int h) {
     // EXR sequence recording is FBO-based (sim resolution) — window resize
     // is unrelated, so we don't need to stop recording.
     S.winW = w; S.winH = h;
     S.ov.resize(w, h);
+    int ww = w, wh = h;
+    glfwGetWindowSize(win, &ww, &wh);
+    S.ui.resize(ww, wh);
+}
+
+static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
+    double x = 0.0, y = 0.0;
+    glfwGetCursorPos(win, &x, &y);
+    if (S.ui.mouseButton(button, action, x, y)) return;
+    if (button != GLFW_MOUSE_BUTTON_LEFT) return;
+    if (action == GLFW_PRESS) {
+        S.mouseDrag = true;
+        glfwGetCursorPos(win, &S.mouseLastX, &S.mouseLastY);
+    } else if (action == GLFW_RELEASE) {
+        S.mouseDrag = false;
+    }
+}
+
+static void cursor_pos_cb(GLFWwindow*, double x, double y) {
+    if (S.ui.cursor(x, y)) return;
+    if (!S.mouseDrag) return;
+    double dx = x - S.mouseLastX;
+    double dy = y - S.mouseLastY;
+    S.mouseLastX = x;
+    S.mouseLastY = y;
+    S.viewRotY += (float)dx * 0.0065f;
+    S.viewRotX += (float)dy * 0.0065f;
+    const float limit = 1.45f;
+    if (S.viewRotX < -limit) S.viewRotX = -limit;
+    if (S.viewRotX >  limit) S.viewRotX =  limit;
 }
 
 // ── one feedback step for a single field ──────────────────────────────────
@@ -3284,6 +4024,10 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     glBindTexture(GL_TEXTURE_2D, otherSrc.tex);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : src.tex);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][0].tex);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][1].tex);
 
     #define U1f(n, v)  glUniform1f (glGetUniformLocation(progFeedback, n), (v))
     #define U1i(n, v)  glUniform1i (glGetUniformLocation(progFeedback, n), (v))
@@ -3291,11 +4035,14 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     #define U2f(n, x, y) glUniform2f(glGetUniformLocation(progFeedback, n), (x), (y))
 
     U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
+    U1i("uPrevVol", 3); U1i("uOtherVol", 4);
     U2f("uRes", (float)dst.w, (float)dst.h);
     U1f("uTime", (float)glfwGetTime());
     U1ui("uFrame", S.frame);
     U1i("uEnable", S.enable);
     U1i("uFieldId", fieldId);
+    U1f("uVolumeSlice", 0.0f);
+    U1f("uVolumeSize", (float)S.volumeSize);
 
     auto& p = S.p;
     U1f("uZoom", p.zoom); U1f("uTheta", p.theta);
@@ -3317,6 +4064,9 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     float effOutFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + p.flashDecay));
     float effDecay   = (p.decayDipTimer > 0.0f) ? 0.90f : p.decay;
     U1f("uDecay", effDecay);
+    U1f("uBorderSize", p.borderSize);
+    U1f("uBorderSoftness", p.borderSoftness);
+    U1f("uBorderDecay", p.borderDecay);
     U1f("uNoise", p.noise);
     U1i("uNoiseQuality", S.noiseQ);
     // Music → visual envelopes for dropout flavouring.
@@ -3342,6 +4092,8 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1f("uExternal", p.external);
     U1f("uFxWet", p.fxWet);
     U1f("uSourceWet", p.sourceWet);
+    U1i("uSphereMode", p.sphereMode);
+    U1f("uSphereReverb", p.sphereReverb);
     U1f("uInject", p.inject);
     U1i("uPattern", p.pattern);
     U1f("uPatternInject", p.patternInject);
@@ -3368,6 +4120,105 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+static void render_volume_field(int fieldId, VolumeFBO& src, VolumeFBO& dst,
+                                VolumeFBO& otherSrc, FBO& flatFallback) {
+    glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
+    glViewport(0, 0, dst.size, dst.size);
+    glUseProgram(progFeedback);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : flatFallback.tex);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_3D, src.tex);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_3D, otherSrc.tex);
+
+    U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
+    U1i("uPrevVol", 3); U1i("uOtherVol", 4);
+    U2f("uRes", (float)dst.size, (float)dst.size);
+    U1f("uTime", (float)glfwGetTime());
+    U1ui("uFrame", S.frame);
+    U1i("uEnable", S.enable);
+    U1i("uFieldId", fieldId);
+    U1f("uVolumeSize", (float)dst.size);
+
+    auto& p = S.p;
+    U1f("uZoom", p.zoom); U1f("uTheta", p.theta);
+    U1f("uPivotX", p.pivotX); U1f("uPivotY", p.pivotY);
+    U1f("uTransX", p.transX); U1f("uTransY", p.transY);
+    U1f("uChroma", p.chroma);
+    U1f("uBlurX", p.blurX); U1f("uBlurY", p.blurY); U1f("uBlurAngle", p.blurAngle);
+    U1i("uBlurQuality", S.blurQ);
+    U1i("uCAQuality",   S.caQ);
+    U1f("uGamma", p.gamma);
+    U1f("uHueRate", p.hueRate + p.hueBeatKick); U1f("uSatGain", p.satGain);
+    U1f("uContrast", p.contrast);
+    float effOutFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + p.flashDecay));
+    float effDecay   = (p.decayDipTimer > 0.0f) ? 0.90f : p.decay;
+    U1f("uDecay", effDecay);
+    U1f("uBorderSize", p.borderSize);
+    U1f("uBorderSoftness", p.borderSoftness);
+    U1f("uBorderDecay", p.borderDecay);
+    U1f("uNoise", p.noise);
+    U1i("uNoiseQuality", S.noiseQ);
+    U1f("uMusKick",  S.musKick);
+    U1f("uMusSnare", S.musSnare);
+    U1f("uMusHat",   S.musHat);
+    U1f("uMusBass",  S.musBass);
+    U1f("uMusOther", S.musOther);
+    U1i("uPixelateStyle", S.pixelateStyle);
+    U1i("uPixelateBleedIdx", S.pixelateBleedIdx);
+    U1i("uPixelateBurnSeed", S.pixelateBurnSeed);
+    U1i("uInvert",      p.invert);
+    U1i("uInvertPeriod",p.invertPeriod);
+    U1f("uSensorGamma", p.sensorGamma);
+    U1f("uSatKnee",     p.satKnee);
+    U1f("uColorCross",  p.colorCross);
+    U1f("uThermAmp",    p.thermAmp);
+    U1f("uThermScale",  p.thermScale);
+    U1f("uThermSpeed",  p.thermSpeed);
+    U1f("uThermRise",   p.thermRise);
+    U1f("uThermSwirl",  p.thermSwirl);
+    U1f("uCouple", p.couple);
+    U1f("uExternal", p.external);
+    U1f("uFxWet", p.fxWet);
+    U1f("uSourceWet", p.sourceWet);
+    U1i("uSphereMode", p.sphereMode);
+    U1f("uSphereReverb", p.sphereReverb);
+    U1f("uInject", p.inject);
+    U1i("uPattern", p.pattern);
+    U1f("uPatternInject", p.patternInject);
+    U1f("uShapeInject", p.shapeInject);
+    U1i("uShapeKind", p.shapeKind);
+    U1i("uShapeCount", p.shapeCount);
+    U1f("uShapeSize", p.shapeSize);
+    U1f("uShapeAngle", p.shapeAngle);
+
+    {
+        GLint lEff = glGetUniformLocation(progFeedback, "uVfxEffect");
+        GLint lPar = glGetUniformLocation(progFeedback, "uVfxParam");
+        GLint lSrc = glGetUniformLocation(progFeedback, "uVfxBSource");
+        if (lEff >= 0) glUniform1iv(lEff, 2, p.vfxSlot);
+        if (lPar >= 0) glUniform1fv(lPar, 2, p.vfxParam);
+        if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
+    }
+    U1f("uOutFade", effOutFade);
+    U1f("uBpmPhase", p.beatPhase);
+    U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
+
+    for (int z = 0; z < dst.size; z++) {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  dst.tex, 0, z);
+        U1f("uVolumeSlice", (float)z);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 // ── post-session encode prompt ──────────────────────────────────────────
@@ -3508,10 +4359,15 @@ enum class Encoder { NVENC_HEVC, NVENC_H264, X265, X264 };
 // we run a ~0.1s real encode against a synthetic source. Cached per-encoder.
 static bool ffmpeg_encoder_works(const char* enc) {
     char cmd[256];
+#ifdef _WIN32
+    const char* nullDev = "NUL >nul 2>&1";
+#else
+    const char* nullDev = "/dev/null >/dev/null 2>&1";
+#endif
     std::snprintf(cmd, sizeof cmd,
         "ffmpeg -hide_banner -loglevel quiet "
-        "-f lavfi -i nullsrc=s=256x256:d=0.1 -c:v %s -f null NUL >nul 2>&1",
-        enc);
+        "-f lavfi -i nullsrc=s=256x256:d=0.1 -c:v %s -f null %s",
+        enc, nullDev);
     return std::system(cmd) == 0;
 }
 
@@ -3738,6 +4594,12 @@ int main(int argc, char** argv) {
     set_program_name((argc > 0) ? argv[0] : nullptr);
     g_cfg = parse_cli(argc, argv);
 
+#ifdef __APPLE__
+    bootstrap_macos_runtime();
+    if (!g_shader_base.empty()) printf("[paths] assets=%s\n", g_shader_base.c_str());
+    if (!g_user_base.empty())   printf("[paths] user=%s\n",   g_user_base.c_str());
+#endif
+
 #ifdef _WIN32
     char exePath[1024] = {0};
     GetModuleFileNameA(nullptr, exePath, sizeof exePath);
@@ -3872,9 +4734,13 @@ int main(int argc, char** argv) {
         S.ov.setActiveSection(2);    // default: Warp until the user drills in
     }
     {
+#ifdef __APPLE__
+        std::string bindingsPath = "bindings.ini";  // resolves under user dir
+#else
         std::string bindingsPath = g_shader_base.empty()
             ? std::string("bindings.ini")
             : (g_shader_base + "bindings.ini");
+#endif
         if (!g_input.loadIni(bindingsPath)) {
             if (g_input.saveIni(bindingsPath))
                 printf("[bindings] wrote default %s\n", bindingsPath.c_str());
@@ -3890,10 +4756,14 @@ int main(int argc, char** argv) {
     }
 
     glfwSetKeyCallback(win, key_cb);
+    glfwSetCharCallback(win, char_cb);
     glfwSetFramebufferSizeCallback(win, size_cb);
+    glfwSetMouseButtonCallback(win, mouse_button_cb);
+    glfwSetCursorPosCallback(win, cursor_pos_cb);
 
     progFeedback = build_feedback_program();
     progBlit     = build_blit_program();
+    progBlitHires = build_blit_hires_program();
     if (!progFeedback || !progBlit) {
         fprintf(stderr, "[shaders] initial build failed — aborting\n");
         return 1;
@@ -3904,17 +4774,28 @@ int main(int argc, char** argv) {
     if (!S.ov.init()) {
         fprintf(stderr, "[overlay] init failed (continuing without overlay)\n");
     }
+    if (!S.ui.init()) {
+        fprintf(stderr, "[ui] init failed (continuing without control panel)\n");
+    }
+    S.ui.loadLayout(ui_layout_path());
+    S.ui.setControls(build_ui_controls());
+    S.ui.setWindowedHandler(create_ui_window);
     glBindVertexArray(mainVAO);
 
     // Create simulation FBOs at the simulation resolution, ONCE.
+    S.volumeSize = (S.simW < 900 || S.simH < 600) ? 64 : 96;
     for (int f = 0; f < S.activeFields; f++) {
         resize_fbo(S.field[f][0], S.simW, S.simH);
         resize_fbo(S.field[f][1], S.simW, S.simH);
+        resize_volume_fbo(S.volumeField[f][0], S.volumeSize);
+        resize_volume_fbo(S.volumeField[f][1], S.volumeSize);
     }
 
     int fbw, fbh; glfwGetFramebufferSize(win, &fbw, &fbh);
+    int winw, winh; glfwGetWindowSize(win, &winw, &winh);
     S.winW = fbw; S.winH = fbh;
     S.ov.resize(fbw, fbh);
+    S.ui.resize(winw, winh);
 
     // Camera setup (optional).
     if (S.cam.open(640, 480)) {
@@ -4079,6 +4960,8 @@ int main(int argc, char** argv) {
             for (int f = 0; f < S.activeFields; f++) {
                 clear_fbo(S.field[f][0]);
                 clear_fbo(S.field[f][1]);
+                clear_volume_fbo(S.volumeField[f][0]);
+                clear_volume_fbo(S.volumeField[f][1]);
             }
             S.needClear = false;
         }
@@ -4105,10 +4988,18 @@ int main(int argc, char** argv) {
                 const int N = S.activeFields;
                 for (int f = 0; f < N; f++) {
                     int otherIdx = (f + 1) % N;
-                    render_field(f,
-                                 S.field[f][srcSlot],
-                                 S.field[f][dstSlot],
-                                 S.field[otherIdx][srcSlot]);
+                    if (S.p.sphereMode) {
+                        render_volume_field(f,
+                                            S.volumeField[f][srcSlot],
+                                            S.volumeField[f][dstSlot],
+                                            S.volumeField[otherIdx][srcSlot],
+                                            S.field[f][srcSlot]);
+                    } else {
+                        render_field(f,
+                                     S.field[f][srcSlot],
+                                     S.field[f][dstSlot],
+                                     S.field[otherIdx][srcSlot]);
+                    }
                 }
                 S.writeA = !S.writeA;
                 S.frame++;
@@ -4123,8 +5014,15 @@ int main(int argc, char** argv) {
         glUseProgram(progBlit);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, latest.tex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_3D, S.volumeField[0][srcSlot].tex);
         glUniform1i(glGetUniformLocation(progBlit, "uSrc"), 0);
+        glUniform1i(glGetUniformLocation(progBlit, "uSrcVol"), 1);
+        glUniform2f(glGetUniformLocation(progBlit, "uRes"), (float)S.winW, (float)S.winH);
+        glUniform1f(glGetUniformLocation(progBlit, "uTime"), (float)glfwGetTime());
         glUniform1f(glGetUniformLocation(progBlit, "uBrightness"), S.p.brightness);
+        glUniform1i(glGetUniformLocation(progBlit, "uSphereMode"), S.p.sphereMode);
+        glUniform2f(glGetUniformLocation(progBlit, "uViewRot"), S.viewRotX, S.viewRotY);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         // Record from the sim-resolution texture (not the display framebuffer)
@@ -4136,12 +5034,20 @@ int main(int argc, char** argv) {
             S.screenshotPending = false;
             save_screenshot(latest.fbo, S.simW, S.simH);
         }
+        if (S.hiresPending) {
+            S.hiresPending = false;
+            save_screenshot_hires(latest.tex, progBlitHires, S.simW, S.simH,
+                                  g_captureScale, S.p.brightness);
+            glViewport(0, 0, S.winW, S.winH);
+        }
 
         // Help provider is pulled per-frame from inside Overlay::draw, so
         // values shown in a section stay live. Nothing to push here.
         S.ov.draw();
+        S.ui.draw();
 
         glfwSwapBuffers(win);
+        draw_ui_windows();
 
         if (S.p.injectHoldTimer > 0.0f) {
             // Animated-pattern hold — keep inject at full while the timer
@@ -4177,6 +5083,8 @@ int main(int argc, char** argv) {
             S.recordingsThisSession.push_back(S.rec.lastDir());
     }
     S.ov.shutdown();
+    S.ui.shutdown();
+    close_ui_windows();
 
     // Release GL resources before tearing down the context. Fields are
     // created lazily, so zero-check each slot before deleting.
@@ -4184,12 +5092,15 @@ int main(int argc, char** argv) {
         for (int s = 0; s < 2; s++) {
             if (S.field[f][s].fbo) glDeleteFramebuffers(1, &S.field[f][s].fbo);
             if (S.field[f][s].tex) glDeleteTextures(1, &S.field[f][s].tex);
+            if (S.volumeField[f][s].fbo) glDeleteFramebuffers(1, &S.volumeField[f][s].fbo);
+            if (S.volumeField[f][s].tex) glDeleteTextures(1, &S.volumeField[f][s].tex);
         }
     }
     if (S.camTex)      glDeleteTextures(1, &S.camTex);
     if (mainVAO)       glDeleteVertexArrays(1, &mainVAO);
     if (progFeedback)  glDeleteProgram(progFeedback);
     if (progBlit)      glDeleteProgram(progBlit);
+    if (progBlitHires) glDeleteProgram(progBlitHires);
 
     glfwDestroyWindow(win);
     glfwTerminate();

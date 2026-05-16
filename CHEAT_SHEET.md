@@ -21,11 +21,18 @@ Numpad: `4/1` amp · `5/2` scale · `6/3` speed · `8/7` rise · `0/9` swirl
 `1` H-bars · `2` V-bars · `3` dot · `4` checker · `5` gradient
 `6` noise · `7` rings · `8` spiral · `9` polka · `0` starburst
 `Alt+B` bouncer (10-sec animated box)
+Hold `Alt+1` triangle · `Alt+2` star · `Alt+3` circle · `Alt+4` square
 
 ## Quality cycles
 
 `PgUp` blur kernel · `F12` CA sampler · `Home` noise archetype · `End` fields
 `Delete` pixelate style · `Ctrl+Del` CRT bleed · `Alt+Del` reroll burn
+`Alt+S` true 3D sphere volume · left-drag rotate sphere view
+
+## Control UI
+
+`Tab`/`H` open/close sticky YAML UI · `[`/`]` section · `↑/↓` select · `←/→` nudge
+`Enter` exact value entry / toggle · `P` pin selected control · `Esc` close UI
 
 ## Output
 
@@ -45,7 +52,7 @@ Modulations — `Ctrl+Alt+` `I` inject · `S` strobe · `V` vfx-cycle · `F` fla
 
 ## App
 
-`H` help panel · `C` clear fields · `P` pause (couples to music)
+`H` control UI · `C` clear fields · `P` pause (couples to music)
 `\` reload shaders · `F11` fullscreen · `?` / `/` print help to stdout
 `` ` `` record EXR · `PrtSc` screenshot · `Ctrl+S` save preset · `Ctrl+N/P` cycle presets
 `Esc` quit — arms confirm (`Y` / 2nd `Esc` = quit, `N` = cancel)
