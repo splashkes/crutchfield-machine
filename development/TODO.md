@@ -393,7 +393,7 @@ mechanics: a soft decay frame and shape boundaries that reflect/hot-
 saturate the feedback flow. The feel is promising, but the border
 needs more performance options before it is a polished control surface.
 **Where:** `shaders/layers/decay.glsl`, `shaders/layers/inject.glsl`,
-`Params`/uniform wiring in `main.cpp` and `macOS/main.cpp`.
+`Params`/uniform wiring in `main.cpp` (shared by all platforms — macOS no longer forks).
 **Done when:**
 - Border has at least 2-3 selectable characters, e.g. decay sink,
   saturated hot frame, mirror/reflect frame.

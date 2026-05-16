@@ -243,6 +243,32 @@ is playing, each drum fires a distinctly flavoured glitch.
 ./feedback.exe --fullscreen --fps 120 --rec-fps 30
 ```
 
+### Print-quality stills
+
+```
+# Hold the regime you want (P pauses both sim + music), then capture.
+# Cmd+\\ on macOS / PrtSc on Windows — full sim-resolution PNG, no HUD.
+# Cmd+Opt+\\ on macOS / Shift+PrtSc on Windows — 2x supersampled.
+#
+# For a jacket-size print on macOS, run the sim higher than display:
+./feedback.app/Contents/MacOS/feedback --sim-res 7680x4320 --precision 16 \
+                                        --fields 2 --blur-q 1 --ca-q 1
+# Then Cmd+Opt+\\ writes a 15360x8640 (132 MP) PNG via 16-tap supersampling.
+# macOS writes to ~/Pictures/crutchfield/ (outside .app so rebuilds don't wipe it).
+```
+
+### Usage logging
+
+```
+# Stream every action fire (key / MIDI note / MIDI CC / gamepad) to a
+# session CSV. On exit, top-40 actions print to stdout. Use to spot
+# which controller surfaces actually see use and prune the rest.
+./feedback.exe --log-usage
+# CSV lands in ~/Library/Application Support/Crutchfield Machine/ on macOS,
+# or next to the exe on Windows. Columns:
+#   t_sec,source,code,channel,mods,action,magnitude
+```
+
 ### Framerate control
 
 ```
@@ -335,7 +361,8 @@ Essentials for quick reference:
 | `Ctrl+Alt+V` | Toggle beat-driven invert flip |
 | `Ctrl+Alt+,` / `Ctrl+Alt+.` | Invert-flip divisor ± (flip every N beats) |
 | `` ` `` | Start / stop EXR recording (writes `./recordings/feedback_<ts>/`) |
-| `PrtSc` | Screenshot — PNG at sim resolution, no HUD (writes `./screenshots/`) |
+| `PrtSc` | Screenshot — PNG at sim resolution, no HUD (writes `./screenshots/`; macOS writes `~/Pictures/crutchfield/`) |
+| `Shift+PrtSc` | Hi-res screenshot — 16-tap rotated-grid supersampled PNG at 2× sim resolution |
 | `Ctrl+S` | Save current state as preset |
 | `Ctrl+N` / `Ctrl+P` | Cycle next / previous preset |
 | `\` | Reload shaders from disk (live edit) |

@@ -1,8 +1,34 @@
 # ADR-0014 — Platform ports live as build-time transforms, not forks
 
-**Status:** Accepted
+**Status:** Superseded for macOS (2026-05-16) — see "Update" below.
+   Linux retains a one-transform script; see `linux/CLEANUP.md` for
+   the path to align it with the macOS approach.
 **Date:** 2026-04-20
 **Retroactive:** no
+
+## Update — 2026-05-16
+
+The prep-script approach was abandoned for the macOS port. Root
+`main.cpp` had grown enough inline `#ifdef __APPLE__` / `#ifdef _WIN32`
+guards that the script's transforms became mostly obsolete, and
+`macOS/main.cpp` had silently drifted into a 4291-line hand-edited
+fork (missing music + audio entirely). PR #13 deleted the fork and
+the macOS prep scripts; `macOS/Makefile` now compiles root sources
+directly, with `bootstrap_macos_runtime()` and the small set of mac
+adaptations sitting behind `#ifdef __APPLE__` in shared source.
+
+The linux port retains its prep script but it has been trimmed to a
+single transform (GL context-minor 4.6 → 4.5). The path to full
+unification is documented in `linux/CLEANUP.md`.
+
+The original decision below is preserved for context — it correctly
+diagnosed the drift problem; in practice inline `#ifdef` guards
+turned out to be cheaper than maintaining the transform list,
+because the script's "fail loudly on drift" property cuts both ways:
+it also failed loudly every time root added a feature that didn't
+need a platform transform at all.
+
+---
 
 ## Context
 

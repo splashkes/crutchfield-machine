@@ -1,3 +1,36 @@
+# Worklog — 2026-05-16 macOS unification, hi-res capture, usage logger
+
+Three PRs landed (#13, #14, #15) cleaning up the macOS port and adding
+two new instrument features:
+
+- **macOS unification (#13):** deleted `macOS/main.cpp` (4291-line
+  fork) plus the `macOS/scripts/` prep scripts. The macOS Makefile
+  now compiles root `main.cpp` directly. All platform diffs live
+  behind `#ifdef __APPLE__` in shared source — `bootstrap_macos_runtime()`,
+  paths, GL hints, screenshot dir. Side effect: macOS gained audio
+  output + music engine for the first time (was missing in the fork).
+  ADR-0014 marked superseded for macOS; linux still uses its prep
+  script, trimmed to one transform (#14).
+- **Hi-res screenshot:** new `shaders/blit_hires.frag` does a 16-tap
+  rotated-grid supersampled blit at K=2 from the sim FBO. Bound to
+  `Shift+PrtSc` (Cmd+Opt+\ on macOS) and Master Cue + deck-2 pad 7
+  on the DDJ. With sim at 8K and K=2, output is 15360×8640 (132 MP).
+- **DDJ LED feedback:** deck-2 layer pads, shifted bank, and
+  VFX bank now mirror app state. Synced on connect rising edge,
+  shift state, layer toggle, VFX cycle, preset load.
+- **Screenshots moved to `~/Pictures/crutchfield/`** on macOS so
+  rebuilds don't wipe captures.
+- **YAML control panel** split into per-pipeline-stage sections
+  (Warp / Optics / Physics / Thermal / Quality / VFX / Output) plus
+  a pinned row.
+- **Usage logger (#15):** `--log-usage` opens a session
+  `usage_YYYYMMDD_HHMMSS.csv` and streams every action fire with
+  source (kb/note/cc/gpbtn/gpaxis), code, channel, mods, action name,
+  magnitude. On exit, top-40 histogram prints to stdout. For tuning
+  which DDJ pads / CCs / keys see real use.
+
+---
+
 # Worklog — 2026-05-05 true sphere volume
 
 - Replaced the octahedral sphere-atlas prototype with a true volumetric
