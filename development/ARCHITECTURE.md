@@ -64,7 +64,8 @@ feedback-GBPS/
 ├── presets/*.ini        Curated (01..05) + user-saved (auto_*).
 ├── research/            Source papers, V-4 inventory, A/B-bus holdback doc.
 ├── gallery/             README screenshots.
-├── linux/, macOS/       Platform ports — transform scripts + native camera backend. See ADR-0014.
+├── linux/                Linux port — Makefile + V4L2 camera backend + small Python prep script for the GL context-version hint. See ADR-0014 and `linux/CLEANUP.md`.
+├── macOS/                macOS port — Makefile, AVFoundation camera, CoreMIDI bridge, Info.plist. Builds the root `main.cpp` directly; all platform diffs live behind `#ifdef __APPLE__` in shared source.
 ├── Makefile.macos       Native Apple Silicon build + dist zip. See ADR-0019.
 ├── Makefile             MSYS2/MinGW build + `make dist` target.
 ├── build_msvc.bat       MSVC/vcpkg alternate (less maintained).

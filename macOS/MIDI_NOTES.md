@@ -84,8 +84,8 @@ Buttons:
 - Deck 2 Cue: clear.
 - Channel cue buttons: external and thermal layer toggles.
 - Beat Sync on either deck: BPM tap.
-- Smart Fader: BPM sync toggle.
-- Master Cue: help overlay.
+- Smart Fader: FX wet mode toggle.
+- Master Cue (held): alternate pad bank — see "Master Cue bank" below.
 
 Pads and LEDs:
 
@@ -100,6 +100,16 @@ Pads and LEDs:
 - Deck 2 pads 1-8: toggle the performance layers and receive LED state:
   warp, optics, color, decay, noise, couple, external, inject.
 - Shift + deck 2 pads: physics, thermal, quality cycles, BPM flash/decay toggles.
+
+Master Cue bank (hold Master Cue + tap a deck-2 pad):
+
+- Pads 1-4: noise archetype select (white / pink / heavy-static / VCR).
+  Currently-selected archetype is lit.
+- Pad 5: noise layer toggle (lit when on).
+- Pad 6: inject layer toggle (lit when on).
+- Pad 7: hi-res screenshot — 16-tap rotated-grid supersample at 2× sim
+  resolution (writes `~/Pictures/crutchfield/shot_hires_*.png`). Always lit.
+- Pad 8: native-resolution screenshot (writes `shot_*.png`). Always lit.
 
 The LED feedback is simple on/off Note-On feedback. Deck-2 layer LEDs use
 channel 10. Shift-revealed deck-1 VFX LEDs use channels 8 and 9 so both the

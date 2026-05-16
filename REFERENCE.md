@@ -251,6 +251,7 @@ Hue-jump-step values you'll actually want:
 | `F11` | Fullscreen toggle |
 | `` ` `` (backtick) | Start / stop EXR recording |
 | `PrtSc` | PNG screenshot at sim res (no HUD) |
+| `Shift+PrtSc` | Hi-res PNG — 16-tap supersample, 2× sim res |
 | `Ctrl+S` | Save current state as preset (`presets/auto_<ts>.ini`) |
 | `Ctrl+N` / `Ctrl+P` | Next / previous preset |
 | `?` (`/`) | Print help to stdout |
@@ -300,7 +301,12 @@ NVENC if available else libx265. Preset 6 = "encode every preset for
 side-by-side". Preset 7 = keep EXR only, no encode.
 
 For screenshots: **`PrtSc`** saves a PNG at sim resolution into
-`screenshots/`, no HUD. Good for thumbnails.
+`screenshots/` (macOS: `~/Pictures/crutchfield/`), no HUD. Good for
+thumbnails. **`Shift+PrtSc`** (`Cmd+Opt+\` on macOS, or master-shift +
+deck-2 pad 7 on the DDJ) does the same capture through a 16-tap
+rotated-grid supersampling shader, writing at 2× sim resolution —
+this is the right tool for print-quality stills. At sim 8K + K=2 the
+output is 15360×8640 (132 MP), file size ~10–80 MB.
 
 ---
 
@@ -457,9 +463,31 @@ presets/                 # .ini files (01-05 curated, auto_* user-saved)
 music/                   # .strudel files (edit live, hot-reloaded)
 samples/                 # optional WAV overrides for drum names
 recordings/              # EXR sequences + generated MP4s
-screenshots/             # PNG stills from PrtSc
+screenshots/             # PNG stills from PrtSc / Shift+PrtSc
 bindings.ini             # key/pad/MIDI mapping overrides
+usage_*.csv              # (only with --log-usage) per-session action-fire log
 ```
 
 You can move the exe anywhere — it looks for `shaders/`, `presets/`
 etc. either in the CWD or next to the exe.
+
+On **macOS**, the app bundle (`feedback.app`) is self-contained.
+Read-only assets (shaders, starter presets, JS engine, music) live
+inside `Contents/Resources/`; writable state lives outside it:
+
+```
+~/Library/Application Support/Crutchfield Machine/
+  bindings.ini           # editable bindings — survives upgrades
+  presets/               # auto_* user-saved presets
+  js/, music/            # seeded from the bundle on first run; edits stick
+  recordings/            # EXR sequences from `
+  usage_YYYYMMDD_HHMMSS.csv  # only with --log-usage
+
+~/Pictures/crutchfield/
+  shot_YYYYMMDD_HHMMSS.png       # native sim-res
+  shot_hires_YYYYMMDD_HHMMSS.png # 2× supersample
+```
+
+This split keeps a clean separation between what the app ships and
+what the user produces — rebuilding/replacing the `.app` never wipes
+captures or saved presets.

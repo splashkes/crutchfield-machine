@@ -54,8 +54,11 @@ Modulations — `Ctrl+Alt+` `I` inject · `S` strobe · `V` vfx-cycle · `F` fla
 
 `H` control UI · `C` clear fields · `P` pause (couples to music)
 `\` reload shaders · `F11` fullscreen · `?` / `/` print help to stdout
-`` ` `` record EXR · `PrtSc` screenshot · `Ctrl+S` save preset · `Ctrl+N/P` cycle presets
+`` ` `` record EXR · `PrtSc` screenshot · `Shift+PrtSc` hi-res supersample (2× sim)
+`Ctrl+S` save preset · `Ctrl+N/P` cycle presets
 `Esc` quit — arms confirm (`Y` / 2nd `Esc` = quit, `N` = cancel)
+
+macOS keyboard aliases: `Cmd+\` screenshot · `Cmd+Opt+\` hi-res supersample
 
 ## Bootup
 
@@ -70,6 +73,8 @@ Modulations — `Ctrl+Alt+` `I` inject · `S` strobe · `V` vfx-cycle · `F` fla
 ./feedback.exe --fullscreen --demo
 # interactive picker — option 8 is "high color"
 ./feedback.exe
+# record every action fire to a session CSV (for tweaking controller maps)
+./feedback.exe --log-usage
 ```
 
 ## Gamepad (Xbox) — closed-help defaults

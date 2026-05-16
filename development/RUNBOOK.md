@@ -71,8 +71,28 @@ to match the new snippet shape; the Windows source is canonical.
 
 ## Build (macOS — Apple Silicon)
 
-Same transform pattern as Linux, plus `.app` bundling and ad-hoc
-codesigning.
+macOS compiles the root `main.cpp` directly — no source forking, no
+prep step. Platform diffs live behind `#ifdef __APPLE__` in shared
+source (paths, GL hints, `bootstrap_macos_runtime()`). The Makefile
+adds `.app` bundling, Homebrew dylib relocation into
+`Contents/Frameworks/`, and ad-hoc codesigning.
+
+```bash
+brew install glfw glew pkg-config
+cd macOS
+make                # produces feedback.app
+make dist           # feedback-macos-arm64.zip
+open feedback.app   # or: ./feedback.app/Contents/MacOS/feedback
+```
+
+The `.app` bundle is self-contained for runtime. Writable state
+(presets, bindings.ini, music edits, recordings, usage logs) lives
+under `~/Library/Application Support/Crutchfield Machine/`;
+captures land in `~/Pictures/crutchfield/`. Rebuilding the bundle
+never wipes user state.
+
+Audio + music engine + QuickJS are part of the macOS build, same as
+Windows / Linux. CoreMIDI provides DDJ input + LED output.
 
 ```bash
 brew install glfw glew

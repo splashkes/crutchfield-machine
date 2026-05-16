@@ -6,11 +6,20 @@ them through the general docs.
 
 ## Current status
 
-- The root app builds natively on Apple Silicon via `Makefile.macos`.
+- The root app builds natively on Apple Silicon via either
+  `Makefile.macos` (in-tree) or `macOS/Makefile` (packages an
+  `.app` bundle).
 - Rendering uses GLFW + GLEW on Apple's OpenGL 4.1 core profile.
 - The camera path is native AVFoundation (`camera_avfoundation.mm`).
-- The latest upstream `main` build includes the action-registry / gamepad /
-  V-4 work and still builds on macOS.
+- MIDI in/out via CoreMIDI (`macOS/midi_coremidi.mm`); DDJ-FLX2 has
+  a built-in default map with LED feedback for performance layers
+  and VFX bank.
+- Audio output + music engine (miniaudio + QuickJS pattern engine)
+  compile and run on macOS — same feature set as the Windows
+  reference build.
+- The macOS port compiles the root `main.cpp` directly; there is no
+  forked source. All platform diffs are inline `#ifdef __APPLE__`
+  guards in shared files. See ADR-0014's 2026-05-16 update.
 
 ## Build prerequisites
 
@@ -97,11 +106,14 @@ aliases after the file is loaded.
 
 ## Known rough edges
 
-- The app is still a bare executable, not a packaged `.app`.
-- No codesigning / notarization / bundle metadata yet.
-- Camera permission UX is therefore more brittle than a normal macOS app.
-- Homebrew `glfw` / `glew` are runtime dependencies; this is not yet a
-  standalone redistribution story on macOS.
+- `Makefile.macos` (root) produces a bare executable for in-tree
+  testing. `macOS/Makefile` builds a proper `feedback.app` bundle
+  with Homebrew dylibs relocated into `Contents/Frameworks/` and
+  ad-hoc codesigned — that's the distribution path.
+- No notarization yet; Gatekeeper will require manual approval on
+  fresh Macs without right-click → Open.
+- Camera permission UX is per-app-bundle, so `feedback.app` gets a
+  clean prompt; the bare `Makefile.macos` binary is more brittle.
 
 ## When to update this file
 
