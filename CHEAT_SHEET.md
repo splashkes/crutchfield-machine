@@ -31,7 +31,7 @@ Hold `Alt+1` triangle · `Alt+2` star · `Alt+3` circle · `Alt+4` square
 
 ## Control UI
 
-`H` open/close YAML-driven UI · `Tab` section · `↑/↓` select · `←/→` nudge
+`Tab`/`H` open/close sticky YAML UI · `[`/`]` section · `↑/↓` select · `←/→` nudge
 `Enter` exact value entry / toggle · `P` pin selected control · `Esc` close UI
 
 ## Output

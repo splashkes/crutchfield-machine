@@ -2,6 +2,10 @@ title: Crutchfield Control
 pinned: [decay, external, sphereMode, sphereReverb, outFade]
 
 sections:
+  - id: pinned
+    label: Pinned
+    controls: []
+
   - id: layers
     label: Layers
     visualizer: layers
@@ -11,9 +15,29 @@ sections:
     label: Tone
     controls: [decay, contrast, gamma, satGain, hueRate, outFade, brightness]
 
+  - id: warp
+    label: Warp
+    controls: [zoom, theta, transX, transY, pivotX, pivotY]
+
+  - id: optics
+    label: Optics
+    controls: [chroma, blurX, blurY, blurAngle]
+
   - id: feedback
     label: Feedback
-    controls: [zoom, theta, external, sourceWet, fxWet, borderSize, borderSoftness, borderDecay, couple, noise]
+    controls: [external, sourceWet, fxWet, borderSize, borderSoftness, borderDecay, couple, noise]
+
+  - id: physics
+    label: Physics
+    controls: [invert, sensorGamma, satKnee, colorCross]
+
+  - id: thermal
+    label: Thermal
+    controls: [thermAmp, thermScale, thermSpeed, thermRise, thermSwirl]
+
+  - id: quality
+    label: Quality
+    controls: [blurQ, caQ, noiseQ, activeFields, pixelateStyle, pixelateBleed]
 
   - id: sphere
     label: Sphere
@@ -22,3 +46,11 @@ sections:
   - id: inject
     label: Inject
     controls: [pattern, shapeKind, shapeCount, shapeSize, shapeAngle]
+
+  - id: vfx
+    label: VFX
+    controls: [vfx1Slot, vfx1Param, vfx1BSource, vfx2Slot, vfx2Param, vfx2BSource]
+
+  - id: output
+    label: Output
+    controls: [outFade, brightness, sourceWet, fxWet]

@@ -572,6 +572,18 @@ static GLuint build_blit_program() {
     return p;
 }
 
+static GLuint build_blit_hires_program() {
+    std::string vs_src = read_file("shaders/main.vert");
+    std::string fs_src = read_file("shaders/blit_hires.frag");
+    if (fs_src.empty()) return 0;
+    GLuint vs = compile_shader(GL_VERTEX_SHADER,   vs_src, "main.vert");
+    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fs_src, "blit_hires.frag");
+    if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return 0; }
+    GLuint p = link_program(vs, fs, "blit_hires");
+    glDeleteShader(vs); glDeleteShader(fs);
+    return p;
+}
+
 // ── global state ──────────────────────────────────────────────────────────
 struct State {
     int  winW = 1280, winH = 720;      // current window / display size
@@ -647,6 +659,7 @@ struct State {
 
     // Screenshot request — set by key handler, consumed in render loop.
     bool screenshotPending = false;
+    bool hiresPending = false;
 
     // Exit-confirm modal. First Esc sets this, second Esc / Y confirms,
     // N / any other key cancels. Prevents accidental quits mid-performance.
@@ -660,6 +673,12 @@ struct State {
     double demoLastInject = 0.0;
 };
 static State S;
+
+struct UiWindow {
+    GLFWwindow* win = nullptr;
+    UiPanel ui;
+};
+static std::vector<UiWindow*> g_uiWindows;
 
 static void sync_ddj_layer_leds() {
     struct PadLayer { int note; int bit; };
@@ -675,7 +694,7 @@ static void sync_ddj_layer_leds() {
             S.noiseQ == 3 ? 0x7F : 0x00,
             (S.enable & L_NOISE) ? 0x7F : 0x00,
             (S.enable & L_INJECT) ? 0x7F : 0x00,
-            0x00, 0x00,
+            0x7F, 0x7F,
         };
         for (int note = 0; note < 8; note++) {
             g_input.sendMidiNote(/*deck 2 pad channel*/ 10, note, bank[note]);
@@ -865,6 +884,64 @@ static std::vector<UiControl> build_ui_controls() {
     ui_add_slider(controls, "noise", "Noise", 0.0f, 0.05f, 0.0005f,
         []() { return S.p.noise; }, [](float v) { S.p.noise = fmaxf(0.0f, fminf(0.05f, v)); }, fmt_float);
 
+    ui_add_slider(controls, "transX", "Translate X", -0.5f, 0.5f, 0.002f,
+        []() { return S.p.transX; }, [](float v) { S.p.transX = fmaxf(-0.5f, fminf(0.5f, v)); }, fmt_float);
+    ui_add_slider(controls, "transY", "Translate Y", -0.5f, 0.5f, 0.002f,
+        []() { return S.p.transY; }, [](float v) { S.p.transY = fmaxf(-0.5f, fminf(0.5f, v)); }, fmt_float);
+    ui_add_slider(controls, "pivotX", "Pivot X", 0.0f, 1.0f, 0.005f,
+        []() { return S.p.pivotX; }, [](float v) { S.p.pivotX = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "pivotY", "Pivot Y", 0.0f, 1.0f, 0.005f,
+        []() { return S.p.pivotY; }, [](float v) { S.p.pivotY = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_float);
+
+    ui_add_slider(controls, "chroma", "Chroma", 0.0f, 0.02f, 0.0002f,
+        []() { return S.p.chroma; }, [](float v) { S.p.chroma = fmaxf(0.0f, fminf(0.02f, v)); }, fmt_float);
+    ui_add_slider(controls, "blurX", "Blur X", 0.0f, 12.0f, 0.05f,
+        []() { return S.p.blurX; }, [](float v) { S.p.blurX = fmaxf(0.0f, fminf(12.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "blurY", "Blur Y", 0.0f, 12.0f, 0.05f,
+        []() { return S.p.blurY; }, [](float v) { S.p.blurY = fmaxf(0.0f, fminf(12.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "blurAngle", "Blur Angle", -3.14159f, 3.14159f, 0.02f,
+        []() { return S.p.blurAngle; }, [](float v) { S.p.blurAngle = v; }, fmt_float);
+
+    ui_add_toggle(controls, "invert", "Invert",
+        []() { return S.p.invert ? 1.0f : 0.0f; },
+        [](float v) { S.p.invert = v >= 0.5f ? 1 : 0; });
+    ui_add_slider(controls, "sensorGamma", "Sensor Gamma", 0.1f, 2.0f, 0.01f,
+        []() { return S.p.sensorGamma; }, [](float v) { S.p.sensorGamma = fmaxf(0.1f, fminf(2.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "satKnee", "Saturation Knee", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.satKnee; }, [](float v) { S.p.satKnee = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "colorCross", "Color Cross", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.colorCross; }, [](float v) { S.p.colorCross = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+
+    ui_add_slider(controls, "thermAmp", "Thermal Amp", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.thermAmp; }, [](float v) { S.p.thermAmp = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_slider(controls, "thermScale", "Thermal Scale", 0.2f, 40.0f, 0.2f,
+        []() { return S.p.thermScale; }, [](float v) { S.p.thermScale = fmaxf(0.2f, fminf(40.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "thermSpeed", "Thermal Speed", 0.0f, 30.0f, 0.1f,
+        []() { return S.p.thermSpeed; }, [](float v) { S.p.thermSpeed = fmaxf(0.0f, fminf(30.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "thermRise", "Thermal Rise", -1.0f, 2.0f, 0.02f,
+        []() { return S.p.thermRise; }, [](float v) { S.p.thermRise = fmaxf(-1.0f, fminf(2.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "thermSwirl", "Thermal Swirl", 0.0f, 2.0f, 0.02f,
+        []() { return S.p.thermSwirl; }, [](float v) { S.p.thermSwirl = fmaxf(0.0f, fminf(2.0f, v)); }, fmt_float);
+
+    ui_add_integer(controls, "blurQ", "Blur Kernel", 0.0f, 2.0f, 1.0f,
+        []() { return (float)S.blurQ; }, [](float v) { S.blurQ = (int)fmaxf(0.0f, fminf(2.0f, roundf(v))); },
+        [](float v) { static const char* n[] = {"5-tap", "9-gauss", "25-gauss"}; return n[(int)fmaxf(0.0f, fminf(2.0f, roundf(v)))]; });
+    ui_add_integer(controls, "caQ", "CA Sampler", 0.0f, 2.0f, 1.0f,
+        []() { return (float)S.caQ; }, [](float v) { S.caQ = (int)fmaxf(0.0f, fminf(2.0f, roundf(v))); },
+        [](float v) { static const char* n[] = {"3-sample", "5-ramp", "8-wave"}; return n[(int)fmaxf(0.0f, fminf(2.0f, roundf(v)))]; });
+    ui_add_integer(controls, "noiseQ", "Noise Type", 0.0f, (float)(N_NOISE_TYPES - 1), 1.0f,
+        []() { return (float)S.noiseQ; }, [](float v) { S.noiseQ = (int)fmaxf(0.0f, fminf((float)(N_NOISE_TYPES - 1), roundf(v))); },
+        [](float v) { return NOISE_NAMES[(int)fmaxf(0.0f, fminf((float)(N_NOISE_TYPES - 1), roundf(v)))]; });
+    ui_add_integer(controls, "activeFields", "Fields", 1.0f, 4.0f, 1.0f,
+        []() { return (float)S.activeFields; },
+        [](float v) { S.activeFields = (int)fmaxf(1.0f, fminf(4.0f, roundf(v))); S.needClear = true; }, fmt_float);
+    ui_add_integer(controls, "pixelateStyle", "Pixelate", 0.0f, (float)(N_PIXELATE_STYLES - 1), 1.0f,
+        []() { return (float)S.pixelateStyle; }, [](float v) { S.pixelateStyle = (int)fmaxf(0.0f, fminf((float)(N_PIXELATE_STYLES - 1), roundf(v))); },
+        [](float v) { return PIXELATE_NAMES[(int)fmaxf(0.0f, fminf((float)(N_PIXELATE_STYLES - 1), roundf(v)))]; });
+    ui_add_integer(controls, "pixelateBleed", "Pixel Bleed", 0.0f, (float)(N_PIXELATE_BLEED_PRESETS - 1), 1.0f,
+        []() { return (float)S.pixelateBleedIdx; }, [](float v) { S.pixelateBleedIdx = (int)fmaxf(0.0f, fminf((float)(N_PIXELATE_BLEED_PRESETS - 1), roundf(v))); },
+        [](float v) { return PIXELATE_BLEED_NAMES[(int)fmaxf(0.0f, fminf((float)(N_PIXELATE_BLEED_PRESETS - 1), roundf(v)))]; });
+
     ui_add_toggle(controls, "sphereMode", "Sphere Mode",
         []() { return S.p.sphereMode ? 1.0f : 0.0f; },
         [](float v) {
@@ -900,11 +977,161 @@ static std::vector<UiControl> build_ui_controls() {
     ui_add_slider(controls, "shapeAngle", "Shape Angle", -3.14159f, 3.14159f, 0.02f,
         []() { return S.p.shapeAngle; }, [](float v) { S.p.shapeAngle = v; }, fmt_float);
 
+    ui_add_integer(controls, "vfx1Slot", "VFX 1 Effect", 0.0f, (float)(VFX_COUNT - 1), 1.0f,
+        []() { return (float)S.p.vfxSlot[0]; }, [](float v) { S.p.vfxSlot[0] = (int)fmaxf(0.0f, fminf((float)(VFX_COUNT - 1), roundf(v))); sync_ddj_filter_leds(); },
+        [](float v) { return VFX_NAMES[(int)fmaxf(0.0f, fminf((float)(VFX_COUNT - 1), roundf(v)))]; });
+    ui_add_slider(controls, "vfx1Param", "VFX 1 Control", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.vfxParam[0]; }, [](float v) { S.p.vfxParam[0] = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_toggle(controls, "vfx1BSource", "VFX 1 B Source",
+        []() { return (float)S.p.vfxBSource[0]; }, [](float v) { S.p.vfxBSource[0] = v >= 0.5f ? 1 : 0; });
+    ui_add_integer(controls, "vfx2Slot", "VFX 2 Effect", 0.0f, (float)(VFX_COUNT - 1), 1.0f,
+        []() { return (float)S.p.vfxSlot[1]; }, [](float v) { S.p.vfxSlot[1] = (int)fmaxf(0.0f, fminf((float)(VFX_COUNT - 1), roundf(v))); },
+        [](float v) { return VFX_NAMES[(int)fmaxf(0.0f, fminf((float)(VFX_COUNT - 1), roundf(v)))]; });
+    ui_add_slider(controls, "vfx2Param", "VFX 2 Control", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.vfxParam[1]; }, [](float v) { S.p.vfxParam[1] = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
+    ui_add_toggle(controls, "vfx2BSource", "VFX 2 B Source",
+        []() { return (float)S.p.vfxBSource[1]; }, [](float v) { S.p.vfxBSource[1] = v >= 0.5f ? 1 : 0; });
+
+    auto depends = [&](std::vector<const char*> ids, int bit) {
+        for (auto& c : controls) {
+            for (const char* id : ids) {
+                if (c.id == id) {
+                    c.enabled = [bit]() { return (S.enable & bit) != 0; };
+                    break;
+                }
+            }
+        }
+    };
+    depends({"zoom", "theta", "transX", "transY", "pivotX", "pivotY"}, L_WARP);
+    depends({"chroma", "blurX", "blurY", "blurAngle", "blurQ", "caQ"}, L_OPTICS);
+    depends({"gamma"}, L_GAMMA);
+    depends({"hueRate", "satGain"}, L_COLOR);
+    depends({"contrast"}, L_CONTRAST);
+    depends({"decay", "borderSize", "borderSoftness", "borderDecay"}, L_DECAY);
+    depends({"noise", "noiseQ"}, L_NOISE);
+    depends({"couple"}, L_COUPLE);
+    depends({"external"}, L_EXTERNAL);
+    depends({"pattern", "shapeKind", "shapeCount", "shapeSize", "shapeAngle"}, L_INJECT);
+    depends({"invert", "sensorGamma", "satKnee", "colorCross"}, L_PHYSICS);
+    depends({"thermAmp", "thermScale", "thermSpeed", "thermRise", "thermSwirl"}, L_THERMAL);
+
     return controls;
 }
 
 static std::string ui_layout_path() {
     return g_shader_base.empty() ? std::string("ui.yaml") : (g_shader_base + "ui.yaml");
+}
+
+static void ui_window_key_cb(GLFWwindow* win, int key, int scancode, int action, int mods) {
+    (void)scancode;
+    UiWindow* uw = (UiWindow*)glfwGetWindowUserPointer(win);
+    if (!uw) return;
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+        glfwSetWindowShouldClose(win, 1);
+        return;
+    }
+    if (uw->ui.key(key, action, mods)) return;
+    g_input.onKey(key, scancode, action, mods);
+}
+
+static void ui_window_char_cb(GLFWwindow* win, unsigned int codepoint) {
+    UiWindow* uw = (UiWindow*)glfwGetWindowUserPointer(win);
+    if (uw) uw->ui.textInput(codepoint);
+}
+
+static void ui_window_mouse_button_cb(GLFWwindow* win, int button, int action, int) {
+    UiWindow* uw = (UiWindow*)glfwGetWindowUserPointer(win);
+    if (!uw) return;
+    double x = 0.0, y = 0.0;
+    glfwGetCursorPos(win, &x, &y);
+    uw->ui.mouseButton(button, action, x, y);
+}
+
+static void ui_window_cursor_cb(GLFWwindow* win, double x, double y) {
+    UiWindow* uw = (UiWindow*)glfwGetWindowUserPointer(win);
+    if (uw) uw->ui.cursor(x, y);
+}
+
+static void create_ui_window();
+
+static void create_ui_window() {
+    GLFWwindow* prev = glfwGetCurrentContext();
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE);
+#endif
+    GLFWwindow* w = glfwCreateWindow(760, 860, "Crutchfield Controls", nullptr, S.win);
+    if (!w) {
+        S.ov.logEvent("UI window failed");
+        if (prev) glfwMakeContextCurrent(prev);
+        return;
+    }
+    UiWindow* uw = new UiWindow();
+    uw->win = w;
+    glfwSetWindowUserPointer(w, uw);
+    glfwMakeContextCurrent(w);
+    glfwSwapInterval(1);
+    uw->ui.init();
+    uw->ui.loadLayout(ui_layout_path());
+    uw->ui.setControls(build_ui_controls());
+    uw->ui.setVisible(true);
+    uw->ui.setWindowedHandler(create_ui_window);
+    int ww = 760, wh = 860;
+    glfwGetWindowSize(w, &ww, &wh);
+    uw->ui.resize(ww, wh);
+    glfwSetKeyCallback(w, ui_window_key_cb);
+    glfwSetCharCallback(w, ui_window_char_cb);
+    glfwSetMouseButtonCallback(w, ui_window_mouse_button_cb);
+    glfwSetCursorPosCallback(w, ui_window_cursor_cb);
+    g_uiWindows.push_back(uw);
+    if (prev) glfwMakeContextCurrent(prev);
+    S.ov.logEvent("UI window opened");
+}
+
+static void draw_ui_windows() {
+    GLFWwindow* prev = glfwGetCurrentContext();
+    for (auto it = g_uiWindows.begin(); it != g_uiWindows.end();) {
+        UiWindow* uw = *it;
+        if (!uw || !uw->win || glfwWindowShouldClose(uw->win)) {
+            if (uw) {
+                if (uw->win) {
+                    glfwMakeContextCurrent(uw->win);
+                    uw->ui.shutdown();
+                    glfwDestroyWindow(uw->win);
+                }
+                delete uw;
+            }
+            it = g_uiWindows.erase(it);
+            continue;
+        }
+        glfwMakeContextCurrent(uw->win);
+        int fbw = 1, fbh = 1, ww = 1, wh = 1;
+        glfwGetFramebufferSize(uw->win, &fbw, &fbh);
+        glfwGetWindowSize(uw->win, &ww, &wh);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, fbw, fbh);
+        glClearColor(0.015f, 0.018f, 0.020f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        uw->ui.resize(ww, wh);
+        uw->ui.draw();
+        glfwSwapBuffers(uw->win);
+        ++it;
+    }
+    if (prev) glfwMakeContextCurrent(prev);
+}
+
+static void close_ui_windows() {
+    GLFWwindow* prev = glfwGetCurrentContext();
+    for (UiWindow* uw : g_uiWindows) {
+        if (!uw) continue;
+        if (uw->win) {
+            glfwMakeContextCurrent(uw->win);
+            uw->ui.shutdown();
+            glfwDestroyWindow(uw->win);
+        }
+        delete uw;
+    }
+    g_uiWindows.clear();
+    if (prev) glfwMakeContextCurrent(prev);
 }
 
 // ── help text ─────────────────────────────────────────────────────────────
@@ -1496,6 +1723,85 @@ static std::string preset_save_now() {
 // sim quality regardless of window size, and never include the HUD overlay.
 static std::string screenshot_dir() {
     return g_shader_base.empty() ? "screenshots" : (g_shader_base + "screenshots");
+}
+
+static bool save_screenshot_hires(GLuint srcTex, GLuint hiresProg, int srcW,
+                                  int srcH, int K, float brightness) {
+    if (K < 2) K = 2;
+    if (!hiresProg) {
+        fprintf(stderr, "[shot-hires] shader not built; falling back\n");
+        return false;
+    }
+    const int dstW = srcW * K;
+    const int dstH = srcH * K;
+
+    GLuint tex = 0, fb = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, dstW, dstH, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "[shot-hires] FBO incomplete (target %dx%d)\n", dstW, dstH);
+        glDeleteFramebuffers(1, &fb);
+        glDeleteTextures(1, &tex);
+        return false;
+    }
+
+    glViewport(0, 0, dstW, dstH);
+    glDisable(GL_BLEND);
+    glUseProgram(hiresProg);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, srcTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glUniform1i(glGetUniformLocation(hiresProg, "uSrc"), 0);
+    glUniform1f(glGetUniformLocation(hiresProg, "uBrightness"), brightness);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    std::vector<uint8_t> buf((size_t)dstW * dstH * 3);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, dstW, dstH, GL_RGB, GL_UNSIGNED_BYTE, buf.data());
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fb);
+    glDeleteTextures(1, &tex);
+
+    const size_t row = (size_t)dstW * 3;
+    std::vector<uint8_t> flipped(buf.size());
+    for (int y = 0; y < dstH; y++)
+        std::memcpy(flipped.data() + (size_t)y * row,
+                    buf.data()     + (size_t)(dstH - 1 - y) * row, row);
+
+    fs::path dir = screenshot_dir();
+    if (!fs::exists(dir)) fs::create_directory(dir);
+    char ts[64];
+    time_t t = time(nullptr);
+    struct tm lt;
+#ifdef _WIN32
+    localtime_s(&lt, &t);
+#else
+    localtime_r(&t, &lt);
+#endif
+    strftime(ts, sizeof ts, "shot_hires_%Y%m%d_%H%M%S.png", &lt);
+    fs::path full = dir / ts;
+    int ok = stbi_write_png(full.string().c_str(), dstW, dstH, 3,
+                            flipped.data(), (int)row);
+    if (ok) printf("[shot-hires] %s  (%dx%d, %dx supersample)\n",
+                   full.string().c_str(), dstW, dstH, K);
+    else    fprintf(stderr, "[shot-hires] failed to write %s\n",
+                    full.string().c_str());
+    return ok != 0;
 }
 
 static bool save_screenshot(GLuint fbo, int w, int h) {
@@ -2349,7 +2655,8 @@ static std::string help_section_body(int i) {
 
 
 // ── keyboard ──────────────────────────────────────────────────────────────
-static GLuint progFeedback = 0, progBlit = 0;
+static GLuint progFeedback = 0, progBlit = 0, progBlitHires = 0;
+static int g_captureScale = 2;
 
 static void reload_shaders() {
     GLuint np = build_feedback_program();
@@ -3079,6 +3386,10 @@ static void apply_action(ActionId id, float mag) {
             S.screenshotPending = true;
             S.ov.logEvent("screenshot queued");
             return;
+        case ACT_SCREENSHOT_HIRES:
+            S.hiresPending = true;
+            S.ov.logEvent("hi-res screenshot queued");
+            return;
         case ACT_PRESET_SAVE: {
             std::string fn = preset_save_now();
             if (!fn.empty()) {
@@ -3524,6 +3835,15 @@ static void apply_action(ActionId id, float mag) {
 }
 
 static void key_cb(GLFWwindow*, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_TAB &&
+        !(mods & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER))) {
+        if (action == GLFW_PRESS) {
+            S.ui.toggle();
+            S.quitConfirmPending = false;
+            printf("[ui] %s\n", S.ui.visible() ? "shown" : "hidden");
+        }
+        return;
+    }
     if (S.ui.visible() && S.ui.key(key, action, mods)) {
         S.quitConfirmPending = false;
         return;
@@ -3563,12 +3883,14 @@ static void char_cb(GLFWwindow*, unsigned int codepoint) {
     S.ui.textInput(codepoint);
 }
 
-static void size_cb(GLFWwindow*, int w, int h) {
+static void size_cb(GLFWwindow* win, int w, int h) {
     // EXR sequence recording is FBO-based (sim resolution) — window resize
     // is unrelated, so we don't need to stop recording.
     S.winW = w; S.winH = h;
     S.ov.resize(w, h);
-    S.ui.resize(w, h);
+    int ww = w, wh = h;
+    glfwGetWindowSize(win, &ww, &wh);
+    S.ui.resize(ww, wh);
 }
 
 static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
@@ -4334,6 +4656,7 @@ int main(int argc, char** argv) {
 
     progFeedback = build_feedback_program();
     progBlit     = build_blit_program();
+    progBlitHires = build_blit_hires_program();
     if (!progFeedback || !progBlit) {
         fprintf(stderr, "[shaders] initial build failed — aborting\n");
         return 1;
@@ -4349,6 +4672,7 @@ int main(int argc, char** argv) {
     }
     S.ui.loadLayout(ui_layout_path());
     S.ui.setControls(build_ui_controls());
+    S.ui.setWindowedHandler(create_ui_window);
     glBindVertexArray(mainVAO);
 
     // Create simulation FBOs at the simulation resolution, ONCE.
@@ -4361,9 +4685,10 @@ int main(int argc, char** argv) {
     }
 
     int fbw, fbh; glfwGetFramebufferSize(win, &fbw, &fbh);
+    int winw, winh; glfwGetWindowSize(win, &winw, &winh);
     S.winW = fbw; S.winH = fbh;
     S.ov.resize(fbw, fbh);
-    S.ui.resize(fbw, fbh);
+    S.ui.resize(winw, winh);
 
     // Camera setup (optional).
     if (S.cam.open(640, 480)) {
@@ -4602,6 +4927,12 @@ int main(int argc, char** argv) {
             S.screenshotPending = false;
             save_screenshot(latest.fbo, S.simW, S.simH);
         }
+        if (S.hiresPending) {
+            S.hiresPending = false;
+            save_screenshot_hires(latest.tex, progBlitHires, S.simW, S.simH,
+                                  g_captureScale, S.p.brightness);
+            glViewport(0, 0, S.winW, S.winH);
+        }
 
         // Help provider is pulled per-frame from inside Overlay::draw, so
         // values shown in a section stay live. Nothing to push here.
@@ -4609,6 +4940,7 @@ int main(int argc, char** argv) {
         S.ui.draw();
 
         glfwSwapBuffers(win);
+        draw_ui_windows();
 
         if (S.p.injectHoldTimer > 0.0f) {
             // Animated-pattern hold — keep inject at full while the timer
@@ -4645,6 +4977,7 @@ int main(int argc, char** argv) {
     }
     S.ov.shutdown();
     S.ui.shutdown();
+    close_ui_windows();
 
     // Release GL resources before tearing down the context. Fields are
     // created lazily, so zero-check each slot before deleting.
@@ -4660,6 +4993,7 @@ int main(int argc, char** argv) {
     if (mainVAO)       glDeleteVertexArrays(1, &mainVAO);
     if (progFeedback)  glDeleteProgram(progFeedback);
     if (progBlit)      glDeleteProgram(progBlit);
+    if (progBlitHires) glDeleteProgram(progBlitHires);
 
     glfwDestroyWindow(win);
     glfwTerminate();

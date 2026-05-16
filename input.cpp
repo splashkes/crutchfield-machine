@@ -148,6 +148,7 @@ static const ActionInfo ACTIONS[] = {
     { ACT_FULLSCREEN,       "app.fullscreen",     AK_DISCRETE, "App", "fullscreen toggle" },
     { ACT_REC_TOGGLE,       "rec.toggle",         AK_DISCRETE, "App", "recording start/stop" },
     { ACT_SCREENSHOT,       "app.screenshot",     AK_DISCRETE, "App", "screenshot (PNG, sim resolution, no HUD)" },
+    { ACT_SCREENSHOT_HIRES, "app.screenshot.hires", AK_DISCRETE, "App", "screenshot (PNG, supersampled K x sim, no HUD)" },
     { ACT_PRESET_SAVE,      "preset.save",        AK_DISCRETE, "App", "preset save" },
     { ACT_PRESET_NEXT,      "preset.next",        AK_DISCRETE, "App", "preset next" },
     { ACT_PRESET_PREV,      "preset.prev",        AK_DISCRETE, "App", "preset prev" },
@@ -339,6 +340,7 @@ static int install_mac_keyboard_aliases(Input& in, bool onlyIfMissing) {
     // Apple keyboards. They do not replace the existing cross-platform map.
     added += add_mac_alias(in, ACT_FULLSCREEN,    GLFW_KEY_ENTER,     GLFW_MOD_SUPER, onlyIfMissing);
     added += add_mac_alias(in, ACT_SCREENSHOT,    GLFW_KEY_BACKSLASH, GLFW_MOD_SUPER, onlyIfMissing);
+    added += add_mac_alias(in, ACT_SCREENSHOT_HIRES, GLFW_KEY_BACKSLASH, GLFW_MOD_SUPER | GLFW_MOD_ALT, onlyIfMissing);
     added += add_mac_alias(in, ACT_PRESET_SAVE,   GLFW_KEY_S,         GLFW_MOD_SUPER, onlyIfMissing);
     added += add_mac_alias(in, ACT_PRESET_NEXT,   GLFW_KEY_N,         GLFW_MOD_SUPER, onlyIfMissing);
     added += add_mac_alias(in, ACT_PRESET_PREV,   GLFW_KEY_P,         GLFW_MOD_SUPER, onlyIfMissing);
@@ -471,6 +473,7 @@ void Input::installDefaults() {
     K(in, ACT_FULLSCREEN,        GLFW_KEY_F11);
     K(in, ACT_REC_TOGGLE,        GLFW_KEY_GRAVE_ACCENT);
     K(in, ACT_SCREENSHOT,        GLFW_KEY_PRINT_SCREEN);
+    K(in, ACT_SCREENSHOT_HIRES,  GLFW_KEY_PRINT_SCREEN, GLFW_MOD_SHIFT);
     K(in, ACT_PRESET_SAVE,       GLFW_KEY_S, GLFW_MOD_CONTROL);
     K(in, ACT_PRESET_NEXT,       GLFW_KEY_N, GLFW_MOD_CONTROL);
     K(in, ACT_PRESET_PREV,       GLFW_KEY_P, GLFW_MOD_CONTROL);
@@ -1470,6 +1473,8 @@ void Input::pollMidi(float /*dt*/) {
                 if (note < 4) handler_(noiseBank[note], 1.0f);
                 else if (note == 4) handler_(ACT_LAYER_NOISE, 1.0f);
                 else if (note == 5) handler_(ACT_LAYER_INJECT, 1.0f);
+                else if (note == 6) handler_(ACT_SCREENSHOT_HIRES, 1.0f);
+                else if (note == 7) handler_(ACT_SCREENSHOT, 1.0f);
             }
             return;
         }

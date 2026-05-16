@@ -22,6 +22,7 @@ struct UiControl {
     std::function<float()> get;
     std::function<void(float)> set;
     std::function<std::string(float)> format;
+    std::function<bool()> enabled;
 };
 
 class UiPanel {
@@ -37,6 +38,8 @@ public:
     void toggle();
     void close();
     bool visible() const { return visible_; }
+    void setVisible(bool visible) { visible_ = visible; }
+    void setWindowedHandler(std::function<void()> handler) { windowedHandler_ = std::move(handler); }
 
     bool key(int key, int action, int mods);
     bool textInput(unsigned int codepoint);
@@ -54,7 +57,11 @@ private:
     enum class HitKind {
         Section,
         Control,
+        Slider,
+        ToggleButton,
         Pin,
+        Reorder,
+        Windowed,
     };
 
     struct Hit {
@@ -67,13 +74,16 @@ private:
     int winW_ = 0, winH_ = 0;
     bool visible_ = false;
     bool dragging_ = false;
+    bool reorderDragging_ = false;
     int activeSection_ = 0;
     int selectedControl_ = -1;
     int dragControl_ = -1;
+    int reorderControl_ = -1;
     bool editing_ = false;
     std::string editBuffer_;
 
     std::string title_ = "Crutchfield Control";
+    std::function<void()> windowedHandler_;
     std::vector<Section> sections_;
     std::vector<std::string> pinned_;
     std::vector<UiControl> controls_;
@@ -89,8 +99,11 @@ private:
     std::string valueText(int idx) const;
     void setControlValue(int idx, float value);
     void stepControl(int idx, float dir);
+    bool controlEnabled(int idx) const;
     void togglePinned(int idx);
     bool isPinned(const std::string& id) const;
+    bool activeSectionIsPinned() const;
+    void movePinnedControl(int idx, int newPos);
     void beginEdit(int idx);
     void commitEdit();
     void cancelEdit();
@@ -100,6 +113,7 @@ private:
     void drawDock();
     void drawLayerVisualizer(float x, float y, float w, float h);
     void drawPreview(float x, float y, float w, float h);
+    void drawContextPanel(float x, float y, float w, float h);
     void drawSliderRow(int idx, float x, float y, float w, bool pinnedRow);
     void drawToggleRow(int idx, float x, float y, float w, bool pinnedRow);
     void drawText(float x, float y, const std::string& text,

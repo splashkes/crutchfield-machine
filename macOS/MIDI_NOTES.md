@@ -113,6 +113,10 @@ only queues compact MIDI messages; `Input::pollMidi` drains that queue
 on the render thread and dispatches through the same action callback as
 keyboard and gamepad input.
 
-LED feedback back to the controller is deliberately deferred. The first
-usable pass is input-only so the control mapping can settle before the
-abstraction grows an output path.
+LED feedback is wired: the CoreMIDI backend opens an output port to the
+same DDJ destination, and `Input::sendMidiNote` pushes Note-On updates.
+`sync_ddj_layer_leds()` and `sync_ddj_filter_leds()` in `main.cpp` are
+called on layer toggle, VFX slot change, preset load, and on the
+rising edge of MIDI connect and each shift state. Velocities are
+simple on/off (`0x7F` / `0x00`). The deck-2 layer LEDs use channel 10;
+shift-revealed deck-1 VFX LEDs are mirrored on channels 8 and 9.

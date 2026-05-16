@@ -315,7 +315,7 @@ Essentials for quick reference:
 
 | Key | Action |
 |---|---|
-| `H` | Toggle control UI (YAML layout, sliders, pins, layer viz) |
+| `Tab` / `H` | Toggle control UI (YAML layout, sliders, pins, layer viz) |
 | `F1..F10` / `Ins` / `PgDn` | Toggle layers |
 | `Space` (hold) | Inject current pattern |
 | `1..5` | Pattern select — H-bars / V-bars / dot / checker / gradient |
