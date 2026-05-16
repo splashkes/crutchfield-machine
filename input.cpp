@@ -948,6 +948,11 @@ void Input::onKey(int key, int /*scancode*/, int action, int mods) {
     const bool release = (action == GLFW_RELEASE);
     if (!handler_) return;
 
+    auto fire = [&](ActionId a, float m) {
+        handler_(a, m);
+        if (usageLogger_) usageLogger_({USAGE_KEY, key, 0, mods, a, m});
+    };
+
     // Shift is always used as the coarse-step multiplier, not as a binding
     // modifier. Match on Ctrl / Alt / Super so macOS can use Command-based
     // aliases without changing the other platforms.
@@ -968,21 +973,21 @@ void Input::onKey(int key, int /*scancode*/, int action, int mods) {
         case AK_STEP:
             if (press || repeat) {
                 const float mag = b.scale * sign * coarse;
-                handler_(b.action, mag);
+                fire(b.action, mag);
             }
             break;
         case AK_DISCRETE:
-            if (press) handler_(b.action, 1.0f);
+            if (press) fire(b.action, 1.0f);
             break;
         case AK_TRIGGER:
-            if (press)   handler_(b.action, 1.0f);
-            if (release) handler_(b.action, 0.0f);
+            if (press)   fire(b.action, 1.0f);
+            if (release) fire(b.action, 0.0f);
             break;
         case AK_RATE:
             // Keyboard presses on RATE actions count as nudges equivalent
             // to one "unit" per press. Kept for completeness; no current
             // defaults use this path.
-            if (press || repeat) handler_(b.action, b.scale * sign * coarse);
+            if (press || repeat) fire(b.action, b.scale * sign * coarse);
             break;
         }
         // Continue iterating — multiple bindings to the same (key,mods)
@@ -1389,18 +1394,22 @@ void Input::pollGamepad(int jid, float dt, BindContext currentCtx) {
             if (!ctxMatches(b)) continue;
             const ActionInfo* info = action_info(b.action);
             if (!info) continue;
+            auto fire = [&](ActionId a, float m) {
+                handler_(a, m);
+                if (usageLogger_) usageLogger_({USAGE_GAMEPAD_BTN, i, 0, 0, a, m});
+            };
             switch (info->kind) {
-            case AK_DISCRETE: if (pressed) handler_(b.action, 1.0f); break;
+            case AK_DISCRETE: if (pressed) fire(b.action, 1.0f); break;
             case AK_TRIGGER:
-                if (pressed)  handler_(b.action, 1.0f);
-                if (released) handler_(b.action, 0.0f);
+                if (pressed)  fire(b.action, 1.0f);
+                if (released) fire(b.action, 0.0f);
                 break;
             case AK_STEP:
-                if (pressed) handler_(b.action, b.invert ? -b.scale : b.scale);
+                if (pressed) fire(b.action, b.invert ? -b.scale : b.scale);
                 break;
             case AK_RATE:
                 // A button on a rate action = keyboard-like tick-per-press.
-                if (pressed) handler_(b.action, b.invert ? -b.scale : b.scale);
+                if (pressed) fire(b.action, b.invert ? -b.scale : b.scale);
                 break;
             }
         }
@@ -1445,7 +1454,11 @@ void Input::pollGamepad(int jid, float dt, BindContext currentCtx) {
         if (info->kind == AK_RATE || info->kind == AK_STEP) {
             // absolute dispatches even when 0 so the parameter tracks the
             // stick all the way back to rest; integrating skips the zeros.
-            if (b.absolute || out != 0.0f) handler_(b.action, out);
+            if (b.absolute || out != 0.0f) {
+                handler_(b.action, out);
+                if (usageLogger_)
+                    usageLogger_({USAGE_GAMEPAD_AXIS, b.code, 0, 0, b.action, out});
+            }
         }
     }
 }
@@ -1491,17 +1504,21 @@ void Input::pollMidi(float /*dt*/) {
                         ch, note, vel, on ? "on" : "off");
         }
         if (!handler_) return;
+        auto fire = [&](ActionId a, float m) {
+            handler_(a, m);
+            if (usageLogger_) usageLogger_({USAGE_MIDI_NOTE, note, ch, 0, a, m});
+        };
         if (g_midiRt.masterShift && ch == 10 && note >= 0 && note <= 7) {
             if (on) {
                 static const ActionId noiseBank[4] = {
                     ACT_NOISEQ_WHITE, ACT_NOISEQ_PINK,
                     ACT_NOISEQ_GRAIN, ACT_NOISEQ_SCANLINE
                 };
-                if (note < 4) handler_(noiseBank[note], 1.0f);
-                else if (note == 4) handler_(ACT_LAYER_NOISE, 1.0f);
-                else if (note == 5) handler_(ACT_LAYER_INJECT, 1.0f);
-                else if (note == 6) handler_(ACT_SCREENSHOT_HIRES, 1.0f);
-                else if (note == 7) handler_(ACT_SCREENSHOT, 1.0f);
+                if (note < 4) fire(noiseBank[note], 1.0f);
+                else if (note == 4) fire(ACT_LAYER_NOISE, 1.0f);
+                else if (note == 5) fire(ACT_LAYER_INJECT, 1.0f);
+                else if (note == 6) fire(ACT_SCREENSHOT_HIRES, 1.0f);
+                else if (note == 7) fire(ACT_SCREENSHOT, 1.0f);
             }
             return;
         }
@@ -1515,14 +1532,14 @@ void Input::pollMidi(float /*dt*/) {
             float mg = (vel / 127.0f) * b.scale;
             if (b.invert) mg = -mg;
             switch (info->kind) {
-            case AK_DISCRETE: if (on) handler_(b.action, 1.0f); break;
+            case AK_DISCRETE: if (on) fire(b.action, 1.0f); break;
             case AK_TRIGGER:
-                if (on) handler_(b.action, 1.0f);
-                else    handler_(b.action, 0.0f);
+                if (on) fire(b.action, 1.0f);
+                else    fire(b.action, 0.0f);
                 break;
             case AK_STEP:
             case AK_RATE:
-                if (on) handler_(b.action, mg);
+                if (on) fire(b.action, mg);
                 break;
             }
         }
@@ -1551,19 +1568,22 @@ void Input::pollMidi(float /*dt*/) {
         if (b.invert) mg = -mg;
         mg *= b.scale;
 
+        auto fire = [&](ActionId a, float m) {
+            handler_(a, m);
+            if (usageLogger_) usageLogger_({USAGE_MIDI_CC, ccNum, ch, 0, a, m});
+        };
         switch (info->kind) {
         case AK_RATE:
         case AK_STEP:
-            if (mg != 0.0f || b.absolute) handler_(b.action, mg);
+            if (mg != 0.0f || b.absolute) fire(b.action, mg);
             break;
         case AK_DISCRETE:
-            if (ccVal > 63) handler_(b.action, 1.0f);
+            if (ccVal > 63) fire(b.action, 1.0f);
             break;
         case AK_TRIGGER:
-            handler_(b.action, ccVal > 63 ? 1.0f : 0.0f);
+            fire(b.action, ccVal > 63 ? 1.0f : 0.0f);
             break;
         }
-        (void)ccNum;
     };
 
     auto dispatch_cc = [&](int ch, int ccNum, int ccVal) {
@@ -1904,15 +1924,19 @@ void Input::pollMidi(float /*dt*/) {
                         ch, note, vel, on ? "on" : "off");
         }
         if (!handler_) return;
+        auto fire = [&](ActionId a, float m) {
+            handler_(a, m);
+            if (usageLogger_) usageLogger_({USAGE_MIDI_NOTE, note, ch, 0, a, m});
+        };
         if (g_midiRt.masterShift && ch == 10 && note >= 0 && note <= 7) {
             if (on) {
                 static const ActionId noiseBank[4] = {
                     ACT_NOISEQ_WHITE, ACT_NOISEQ_PINK,
                     ACT_NOISEQ_GRAIN, ACT_NOISEQ_SCANLINE
                 };
-                if (note < 4) handler_(noiseBank[note], 1.0f);
-                else if (note == 4) handler_(ACT_LAYER_NOISE, 1.0f);
-                else if (note == 5) handler_(ACT_LAYER_INJECT, 1.0f);
+                if (note < 4) fire(noiseBank[note], 1.0f);
+                else if (note == 4) fire(ACT_LAYER_NOISE, 1.0f);
+                else if (note == 5) fire(ACT_LAYER_INJECT, 1.0f);
             }
             return;
         }
@@ -1926,14 +1950,14 @@ void Input::pollMidi(float /*dt*/) {
             float mg = (vel / 127.0f) * b.scale;
             if (b.invert) mg = -mg;
             switch (info->kind) {
-            case AK_DISCRETE: if (on) handler_(b.action, 1.0f); break;
+            case AK_DISCRETE: if (on) fire(b.action, 1.0f); break;
             case AK_TRIGGER:
-                if (on) handler_(b.action, 1.0f);
-                else    handler_(b.action, 0.0f);
+                if (on) fire(b.action, 1.0f);
+                else    fire(b.action, 0.0f);
                 break;
             case AK_STEP:
             case AK_RATE:
-                if (on) handler_(b.action, mg);
+                if (on) fire(b.action, mg);
                 break;
             }
         }
@@ -1962,19 +1986,22 @@ void Input::pollMidi(float /*dt*/) {
         if (b.invert) mg = -mg;
         mg *= b.scale;
 
+        auto fire = [&](ActionId a, float m) {
+            handler_(a, m);
+            if (usageLogger_) usageLogger_({USAGE_MIDI_CC, ccNum, ch, 0, a, m});
+        };
         switch (info->kind) {
         case AK_RATE:
         case AK_STEP:
-            if (mg != 0.0f || b.absolute) handler_(b.action, mg);
+            if (mg != 0.0f || b.absolute) fire(b.action, mg);
             break;
         case AK_DISCRETE:
-            if (ccVal > 63) handler_(b.action, 1.0f);
+            if (ccVal > 63) fire(b.action, 1.0f);
             break;
         case AK_TRIGGER:
-            handler_(b.action, ccVal > 63 ? 1.0f : 0.0f);
+            fire(b.action, ccVal > 63 ? 1.0f : 0.0f);
             break;
         }
-        (void)ccNum;
     };
 
     auto dispatch_cc = [&](int ch, int ccNum, int ccVal) {
