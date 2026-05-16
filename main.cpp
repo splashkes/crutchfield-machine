@@ -76,6 +76,7 @@ struct Cfg {
     float demoPresetSec = 0.0f;     // >0 = cycle to next preset every N seconds
     float demoInjectSec = 0.0f;     // >0 = fire an injection every N seconds
     bool midiLearn = false;          // print incoming MIDI messages
+    bool logUsage  = false;          // stream every action fire to a session CSV
 };
 
 static std::string g_program_name = "feedback";
@@ -123,6 +124,7 @@ static void print_cli_help() {
       "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
       "  --high-color        windowed, max colour pipeline (float32 + blur-q 2 + ca-q 2 + fields 4)\n"
       "  --midi-learn        print incoming MIDI notes/CCs for controller mapping\n"
+      "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
       "On Windows only: launch with NO arguments to get an interactive mode\n"
       "picker for double-click / non-CLI use.\n\n"
@@ -159,6 +161,7 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--demo-inject"))  { c.demoInjectSec = (float)atof(next()); if (c.demoInjectSec < 0) c.demoInjectSec = 0; }
         else if (eq("--demo"))         { c.demoPresetSec = 30.0f; c.demoInjectSec = 8.0f; }
         else if (eq("--midi-learn"))   { c.midiLearn = true; }
+        else if (eq("--log-usage"))    { c.logUsage  = true; }
         // Convenience bundle — windowed, full-float feedback, max blur/CA,
         // 4-field coupling. For exploring the colour pipeline without
         // committing to fullscreen.
@@ -4722,6 +4725,86 @@ int main(int argc, char** argv) {
     g_input.setMidiLearn(g_cfg.midiLearn);
     g_input.setHandler(apply_action);
 
+    // ── usage logger ─────────────────────────────────────────────────
+    // When --log-usage is set: open a session-timestamped CSV and stream
+    // every action fire. An in-memory histogram is always kept (cheap)
+    // and dumped to stdout on shutdown. Useful for spotting which DDJ
+    // pads / CCs / keyboard keys see real use vs which are dead weight.
+    static FILE* s_usageCsv = nullptr;
+    static std::map<std::string, int> s_usageHist;  // "kb:KEY+MODS:action"
+    static auto src_label = [](int src) -> const char* {
+        switch (src) {
+            case USAGE_KEY:          return "kb";
+            case USAGE_MIDI_NOTE:    return "note";
+            case USAGE_MIDI_CC:      return "cc";
+            case USAGE_GAMEPAD_BTN:  return "gpbtn";
+            case USAGE_GAMEPAD_AXIS: return "gpaxis";
+            default:                 return "?";
+        }
+    };
+    if (g_cfg.logUsage) {
+        char ts[64];
+        time_t t = time(nullptr);
+        struct tm lt;
+#ifdef _WIN32
+        localtime_s(&lt, &t);
+#else
+        localtime_r(&t, &lt);
+#endif
+        strftime(ts, sizeof ts, "usage_%Y%m%d_%H%M%S.csv", &lt);
+#ifdef __APPLE__
+        // bootstrap_macos_runtime() sets g_user_base to the app-support dir.
+        std::string path = (g_user_base.empty() ? std::string() : g_user_base) + ts;
+#else
+        std::string dir = g_shader_base.empty() ? std::string() : g_shader_base;
+        std::string path = dir + ts;
+#endif
+        s_usageCsv = std::fopen(path.c_str(), "w");
+        if (s_usageCsv) {
+            // Line-buffer so individual events survive abrupt kills.
+            std::setvbuf(s_usageCsv, nullptr, _IOLBF, 0);
+            std::fprintf(s_usageCsv,
+                "t_sec,source,code,channel,mods,action,magnitude\n");
+            printf("[usage] streaming to %s\n", path.c_str());
+        } else {
+            fprintf(stderr, "[usage] couldn't open %s for write\n", path.c_str());
+        }
+    }
+    const double s_usageStart = glfwGetTime();
+    g_input.setUsageLogger([&](const UsageEvent& ev) {
+        const ActionInfo* info = action_info((ActionId)ev.action);
+        const char* aname = info ? info->name : "?";
+        char key[160];
+        std::snprintf(key, sizeof key, "%s:%d:%d:%s",
+                      src_label(ev.source), ev.code, ev.channel, aname);
+        s_usageHist[key]++;
+        if (s_usageCsv) {
+            std::fprintf(s_usageCsv, "%.3f,%s,%d,%d,0x%02x,%s,%.4f\n",
+                         glfwGetTime() - s_usageStart,
+                         src_label(ev.source),
+                         ev.code, ev.channel, ev.mods, aname, ev.magnitude);
+        }
+    });
+    auto usage_summary = [&]() {
+        if (s_usageHist.empty()) return;
+        std::vector<std::pair<std::string,int>> rows(
+            s_usageHist.begin(), s_usageHist.end());
+        std::sort(rows.begin(), rows.end(),
+            [](const auto& a, const auto& b){ return a.second > b.second; });
+        printf("\n[usage] top fires this session (source:code:ch:action  count):\n");
+        int n = (int)rows.size();
+        if (n > 40) n = 40;
+        for (int i = 0; i < n; i++) {
+            printf("  %5d  %s\n", rows[i].second, rows[i].first.c_str());
+        }
+        if ((int)rows.size() > n)
+            printf("  ... %d more\n", (int)rows.size() - n);
+        if (s_usageCsv) { std::fclose(s_usageCsv); s_usageCsv = nullptr; }
+    };
+    // Dump summary on shutdown — covers Esc-quit, window close, and crash-free exits.
+    static auto* s_usage_summary_ptr = new std::function<void()>(usage_summary);
+    std::atexit([](){ if (s_usage_summary_ptr) (*s_usage_summary_ptr)(); });
+
     // Help panel: ordered section list + provider. Each section's body is
     // rebuilt on every frame it's visible so live values stay fresh.
     {
@@ -5110,6 +5193,15 @@ int main(int argc, char** argv) {
 
     Music::shutdown();
     Audio::shutdown();
+
+    // Usage summary — call directly (atexit also registered as backup
+    // for unusual exit paths). Idempotent: the function closes the CSV
+    // and clears state on first call.
+    if (s_usage_summary_ptr) {
+        (*s_usage_summary_ptr)();
+        delete s_usage_summary_ptr;
+        s_usage_summary_ptr = nullptr;
+    }
 
     // Post-session encode prompt — offer to convert each EXR sequence
     // captured this session to MP4 via ffmpeg.

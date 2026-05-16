@@ -254,11 +254,33 @@ int action_info_count();
 // ─────────────────────────────────────────────────────────────────────────
 // Input — stateful: holds the current binding list and a dispatcher callback.
 // ─────────────────────────────────────────────────────────────────────────
+// Source type for usage logging — matches Binding::source values where
+// applicable, plus a SRC_KEY value for keyboard.
+enum UsageSource : int {
+    USAGE_KEY = 1,
+    USAGE_MIDI_NOTE,
+    USAGE_MIDI_CC,
+    USAGE_GAMEPAD_BTN,
+    USAGE_GAMEPAD_AXIS,
+};
+
+// Per-fire event for the optional usage logger. Channel is 0 for non-MIDI.
+struct UsageEvent {
+    int   source;     // UsageSource
+    int   code;       // key / note / cc number / button / axis
+    int   channel;    // MIDI channel (1..16) or 0
+    int   mods;       // GLFW key mods (KB only) or 0
+    int   action;     // ActionId
+    float magnitude;
+};
+
 class Input {
 public:
     using Handler = std::function<void(ActionId id, float magnitude)>;
+    using UsageLogger = std::function<void(const UsageEvent&)>;
 
     void setHandler(Handler h) { handler_ = std::move(h); }
+    void setUsageLogger(UsageLogger l) { usageLogger_ = std::move(l); }
 
     // Install the built-in default keyboard map (matches pre-refactor
     // behavior byte-for-byte).
@@ -338,6 +360,7 @@ public:
 private:
     std::vector<Binding> bindings_;
     Handler handler_;
+    UsageLogger usageLogger_;
     MidiState   midi_;
     std::string midiPortHint_;
     bool        midiLearn_ = false;
