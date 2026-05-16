@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+"""Linux-side source transforms over the Windows-first root tree.
+
+Most of the historical transforms here became obsolete as the root
+source learned to be cross-platform on its own (inline `#ifdef _WIN32`
+/ `#ifdef __APPLE__` guards, a cross-platform `camera.h`, shaders
+already at `#version 410`). The single remaining real-world need is
+the GL context-minor hint: root requests GL 4.6 on non-Apple builds,
+but linux drivers are more reliable at 4.5.
+
+See `linux/CLEANUP.md` for the path to delete this script entirely and
+have the linux Makefile compile root sources directly, mirroring the
+macOS architecture.
+"""
 from __future__ import annotations
 
 import argparse
@@ -14,102 +27,21 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 def transform_main(text: str) -> str:
     text = replace_once(
         text,
-        '      "Usage: feedback.exe [options]\\n"\n',
-        '      "Usage: feedback [options]\\n"\n',
-        "help usage",
-    )
-    text = replace_once(
-        text,
-        '      "Launch with NO arguments to get an interactive mode picker — handy for\\n"\n'
-        '      "non-CLI use and for double-clicking the exe from Explorer.\\n\\n"\n',
-        '      "On Windows only: launch with NO arguments to get an interactive mode\\n"\n'
-        '      "picker for double-click / non-CLI use.\\n\\n"\n',
-        "help picker note",
-    )
-    text = replace_once(
-        text,
-        '    if (argc == 1) run_mode_picker(g_cfg);\n',
-        '#ifdef _WIN32\n'
-        '    if (argc == 1) run_mode_picker(g_cfg);\n'
+        '    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);\n'
+        '#ifdef __APPLE__\n'
+        '    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);\n'
+        '    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);\n'
+        '#else\n'
+        '    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);\n'
         '#endif\n',
-        "windows picker only",
-    )
-    text = replace_once(
-        text,
-        '        "-f lavfi -i nullsrc=s=256x256:d=0.1 -c:v %s -f null NUL >nul 2>&1",\n',
-        '        "-f lavfi -i nullsrc=s=256x256:d=0.1 -c:v %s -f null /dev/null >/dev/null 2>&1",\n',
-        "ffmpeg probe null device",
-    )
-    text = replace_once(
-        text,
         '    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);\n'
-        '    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);\n',
-        '    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);\n'
-        '    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);\n',
-        "gl context minor version",
-    )
-    return text
-
-
-def transform_overlay(text: str) -> str:
-    text = replace_once(
-        text,
-        'static const char* VS = R"(#version 460 core\n',
-        'static const char* VS = R"(#version 450 core\n',
-        "overlay vertex version",
-    )
-    text = replace_once(
-        text,
-        'static const char* FS = R"(#version 460 core\n',
-        'static const char* FS = R"(#version 450 core\n',
-        "overlay fragment version",
-    )
-    return text
-
-
-def transform_camera(text: str) -> str:
-    text = replace_once(
-        text,
-        '// Minimal Media Foundation webcam → RGB buffer for use as a GL texture source.\n'
-        '// Same interface as the Linux V4L2 camera so main.cpp is portable.\n',
-        '// Platform webcam → RGB buffer for use as a GL texture source.\n'
-        '// The interface stays fixed so main.cpp is portable across backends.\n',
-        "camera comment",
-    )
-    text = replace_once(
-        text,
-        '    bool active() const { return reader_ != nullptr; }\n',
-        '    bool active() const {\n'
-        '#ifdef _WIN32\n'
-        '        return reader_ != nullptr;\n'
+        '#ifdef __APPLE__\n'
+        '    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);\n'
+        '    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);\n'
         '#else\n'
-        '        return impl_ != nullptr;\n'
-        '#endif\n'
-        '    }\n',
-        "camera active",
-    )
-    text = replace_once(
-        text,
-        'private:\n'
-        '    // Opaque pointers (avoid pulling Media Foundation headers into this file).\n'
-        '    void* reader_ = nullptr;   // IMFSourceReader*\n'
-        '    int   w_ = 0, h_ = 0;\n'
-        '    uint32_t pixfmt_ = 0;      // fourcc of the negotiated format\n'
-        '    bool     mf_started_ = false;\n'
-        '};\n',
-        'private:\n'
-        '    // Windows Media Foundation state. Other platforms use a native backend.\n'
-        '#ifdef _WIN32\n'
-        '    void* reader_ = nullptr;   // IMFSourceReader*\n'
-        '    int   w_ = 0, h_ = 0;\n'
-        '    uint32_t pixfmt_ = 0;      // fourcc of the negotiated format\n'
-        '    bool     mf_started_ = false;\n'
-        '#else\n'
-        '    void* impl_ = nullptr;     // platform-specific backend object\n'
-        '    int   w_ = 0, h_ = 0;\n'
-        '#endif\n'
-        '};\n',
-        "camera private block",
+        '    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);\n'
+        '#endif\n',
+        "gl context minor version (linux: 4.5 instead of 4.6)",
     )
     return text
 
@@ -125,12 +57,12 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     main_src = (repo_root / "main.cpp").read_text()
-    camera_src = (repo_root / "camera.h").read_text()
-    overlay_src = (repo_root / "overlay.cpp").read_text()
-
     (out_dir / "main.cpp").write_text(transform_main(main_src))
-    (out_dir / "camera.h").write_text(transform_camera(camera_src))
-    (out_dir / "overlay.cpp").write_text(transform_overlay(overlay_src))
+
+    # camera.h and overlay.cpp are now cross-platform in root; copy unchanged
+    # so the Makefile's GEN_DIR include path keeps resolving.
+    (out_dir / "camera.h").write_text((repo_root / "camera.h").read_text())
+    (out_dir / "overlay.cpp").write_text((repo_root / "overlay.cpp").read_text())
     return 0
 
 
