@@ -13,6 +13,11 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#ifdef __APPLE__
+  #include <mach-o/dyld.h>
+  #include <unistd.h>
+  #include <limits.h>
+#endif
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
   #ifndef NOMINMAX
@@ -1243,11 +1248,93 @@ static void toggle_fullscreen() {
 
 namespace fs = std::filesystem;
 
+#ifdef __APPLE__
+static std::string g_user_base = "";
+
+static std::string ensure_trailing_slash(std::string s) {
+    if (!s.empty() && s.back() != '/') s.push_back('/');
+    return s;
+}
+
+static std::string mac_executable_path() {
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string buf(size + 1, '\0');
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) return "";
+    char resolved[PATH_MAX];
+    if (!realpath(buf.c_str(), resolved)) return "";
+    return resolved;
+}
+
+static std::string mac_executable_dir() {
+    std::string exe = mac_executable_path();
+    size_t slash = exe.find_last_of('/');
+    return slash == std::string::npos ? std::string() : ensure_trailing_slash(exe.substr(0, slash));
+}
+
+static std::string mac_asset_base() {
+    std::string exeDir = mac_executable_dir();
+    const std::string marker = ".app/Contents/MacOS/";
+    size_t pos = exeDir.find(marker);
+    if (pos != std::string::npos)
+        return exeDir.substr(0, pos + 5) + "/Contents/Resources/";
+    return exeDir;
+}
+
+static std::string mac_user_base() {
+    const char* home = std::getenv("HOME");
+    if (home && home[0])
+        return ensure_trailing_slash(std::string(home) + "/Library/Application Support/Crutchfield Machine");
+    return mac_executable_dir();
+}
+
+static void seed_user_tree(const std::string& assetBase, const char* name) {
+    fs::path src = fs::path(assetBase) / name;
+    fs::path dst = fs::path(name);
+    std::error_code ec;
+    if (!fs::exists(src)) return;
+    fs::create_directories(dst, ec);
+    if (ec) return;
+    for (const auto& e : fs::recursive_directory_iterator(src)) {
+        if (!e.is_regular_file()) continue;
+        fs::path rel = fs::relative(e.path(), src, ec);
+        if (ec) continue;
+        fs::path out = dst / rel;
+        fs::create_directories(out.parent_path(), ec);
+        if (ec) continue;
+        if (!fs::exists(out)) fs::copy_file(e.path(), out, fs::copy_options::skip_existing, ec);
+    }
+}
+
+static void bootstrap_macos_runtime() {
+    g_shader_base = mac_asset_base();
+    g_user_base   = mac_user_base();
+    std::error_code ec;
+    fs::create_directories(g_user_base, ec);
+    if (!ec && chdir(g_user_base.c_str()) == 0) {
+        seed_user_tree(g_shader_base, "presets");
+        seed_user_tree(g_shader_base, "js");
+        seed_user_tree(g_shader_base, "music");
+        seed_user_tree(g_shader_base, "samples");
+    } else {
+        std::fprintf(stderr, "[paths] warning: couldn't use %s as runtime dir\n",
+                     g_user_base.c_str());
+    }
+}
+#endif
+
 static std::vector<std::string> g_presetFiles;
 static int g_currentPreset = -1;
 
 static std::string preset_dir() {
+#ifdef __APPLE__
+    // bootstrap_macos_runtime() chdir's into the user's app-support dir
+    // and seeds presets/ there; using a cwd-relative path means saves go
+    // to that writable location rather than inside the .app bundle.
+    return "presets";
+#else
     return g_shader_base.empty() ? "presets" : (g_shader_base + "presets");
+#endif
 }
 
 // Trim whitespace from both ends.
@@ -1722,6 +1809,11 @@ static std::string preset_save_now() {
 // field FBO directly (not the display), so screenshots are always at full
 // sim quality regardless of window size, and never include the HUD overlay.
 static std::string screenshot_dir() {
+#ifdef __APPLE__
+    // Write outside the .app bundle so rebuilds don't wipe captures.
+    const char* home = getenv("HOME");
+    if (home && *home) return std::string(home) + "/Pictures/crutchfield";
+#endif
     return g_shader_base.empty() ? "screenshots" : (g_shader_base + "screenshots");
 }
 
@@ -4267,10 +4359,15 @@ enum class Encoder { NVENC_HEVC, NVENC_H264, X265, X264 };
 // we run a ~0.1s real encode against a synthetic source. Cached per-encoder.
 static bool ffmpeg_encoder_works(const char* enc) {
     char cmd[256];
+#ifdef _WIN32
+    const char* nullDev = "NUL >nul 2>&1";
+#else
+    const char* nullDev = "/dev/null >/dev/null 2>&1";
+#endif
     std::snprintf(cmd, sizeof cmd,
         "ffmpeg -hide_banner -loglevel quiet "
-        "-f lavfi -i nullsrc=s=256x256:d=0.1 -c:v %s -f null NUL >nul 2>&1",
-        enc);
+        "-f lavfi -i nullsrc=s=256x256:d=0.1 -c:v %s -f null %s",
+        enc, nullDev);
     return std::system(cmd) == 0;
 }
 
@@ -4497,6 +4594,12 @@ int main(int argc, char** argv) {
     set_program_name((argc > 0) ? argv[0] : nullptr);
     g_cfg = parse_cli(argc, argv);
 
+#ifdef __APPLE__
+    bootstrap_macos_runtime();
+    if (!g_shader_base.empty()) printf("[paths] assets=%s\n", g_shader_base.c_str());
+    if (!g_user_base.empty())   printf("[paths] user=%s\n",   g_user_base.c_str());
+#endif
+
 #ifdef _WIN32
     char exePath[1024] = {0};
     GetModuleFileNameA(nullptr, exePath, sizeof exePath);
@@ -4631,9 +4734,13 @@ int main(int argc, char** argv) {
         S.ov.setActiveSection(2);    // default: Warp until the user drills in
     }
     {
+#ifdef __APPLE__
+        std::string bindingsPath = "bindings.ini";  // resolves under user dir
+#else
         std::string bindingsPath = g_shader_base.empty()
             ? std::string("bindings.ini")
             : (g_shader_base + "bindings.ini");
+#endif
         if (!g_input.loadIni(bindingsPath)) {
             if (g_input.saveIni(bindingsPath))
                 printf("[bindings] wrote default %s\n", bindingsPath.c_str());

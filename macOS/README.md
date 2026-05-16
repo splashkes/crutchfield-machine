@@ -38,16 +38,19 @@ open feedback.app
 
 The app bundle embeds:
 
-- `shaders/` and `presets/` in `Contents/Resources`
+- `shaders/`, `presets/`, `js/`, `music/` in `Contents/Resources`
 - `libglfw.3.dylib` and `libGLEW.2.3.dylib` in `Contents/Frameworks`
 
-At runtime the app copies the bundled starter presets into:
+At runtime the app copies the bundled starter presets, music patterns,
+and JS engine into:
 
-`~/Library/Application Support/Crutchfield Machine/presets`
+`~/Library/Application Support/Crutchfield Machine/`
 
-It also writes `bindings.ini`, screenshots, and recordings under the same
-Application Support folder, so Finder launches do not depend on the shell
-working directory.
+It writes `bindings.ini` and per-session presets under that same folder,
+so Finder launches do not depend on the shell working directory.
+
+Screenshots write to `~/Pictures/crutchfield/` (outside the app bundle,
+so rebuilds don't wipe captures).
 
 ## Camera
 
@@ -66,12 +69,15 @@ Use `--midi-learn` to print incoming notes and CCs while touching controls.
 ## Notes
 
 - This is still an experimental Apple Silicon path.
-- The sphere mode host code mirrors the shared root `main.cpp` volume
-  path so the app bundle can run the same true 3D feedback mode as the
-  portable build.
-- The control UI is shared core code (`ui_panel.*`) and the app bundle copies
-  the root `ui.yaml` into `Contents/Resources`; macOS-specific changes should
-  stay in resource/config swaps where possible.
+- The macOS build now compiles the root `main.cpp` directly (no source
+  forking, no Python prep step). All platform differences sit behind
+  `#ifdef __APPLE__` in shared source. The `macOS/` directory holds
+  only the platform backends (`camera_avfoundation.mm`, `midi_coremidi.mm`),
+  the Makefile, Info.plist, and docs.
+- The control UI is shared core code (`ui_panel.*`); the app bundle
+  copies the root `ui.yaml` into `Contents/Resources`.
+- Audio + music engine (miniaudio + QuickJS Strudel-compat engine) are
+  compiled into the macOS build alongside the visual pipeline.
 - A downloaded release zip will still need normal macOS signing/notarization
   work if you want Gatekeeper to trust double-click launches on other
   machines without manual override.
