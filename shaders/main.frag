@@ -10,6 +10,7 @@ out vec4 oCol;
 uniform sampler2D uPrev;    // this field's previous frame
 uniform sampler2D uOther;   // other field (for coupling)
 uniform sampler2D uCam;     // camera input
+uniform sampler2D uClip;    // video clip texture (slot 5)
 uniform vec2      uRes;
 uniform float     uTime;
 uniform uint      uFrame;
@@ -72,6 +73,9 @@ uniform int   uShapeKind;
 uniform int   uShapeCount;
 uniform float uShapeSize;
 uniform float uShapeAngle;
+// clip (pattern id 11)
+uniform int   uClipActive;     // 1 = a clip is loaded and playing
+uniform int   uClipBlendMode;  // 0=mix, 1=add, 2=screen, 3=luma-key
 // pixelate
 uniform int   uPixelateStyle;     // 0 = off; 1..9 = (shape × size)
 uniform int   uPixelateBleedIdx;  // 0 off; 1 soft; 2 CRT; 3 melt; 4 fried; 5 burned

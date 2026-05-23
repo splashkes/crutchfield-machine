@@ -89,6 +89,15 @@ vec4 pattern_gen(vec2 uv, int id) {
         return vec4(0.0);
     }
 
+    // 11: clip — sample the current video clip texture.
+    // Y-flipped to match GL's bottom-up convention (same as camera).
+    // Returns alpha 0 when no clip is loaded so the feedback is untouched.
+    if (id == 11) {
+        if (uClipActive == 0) return vec4(0.0);
+        vec3 c = texture(uClip, vec2(uv.x, 1.0 - uv.y)).rgb;
+        return vec4(c, 1.0);
+    }
+
     return vec4(0.0);
 }
 
@@ -223,15 +232,30 @@ vec4 shape_inject_apply(vec4 c, vec2 uv) {
     return vec4(rgb, c.a);
 }
 
+vec3 clip_blend(vec3 dst, vec3 src, float str) {
+    if (uClipBlendMode == 1) return dst + src * str;                              // add
+    if (uClipBlendMode == 2) return mix(dst, 1.0 - (1.0-dst)*(1.0-src), str);   // screen
+    if (uClipBlendMode == 3) {                                                    // luma-key
+        float luma = dot(src, vec3(0.2126, 0.7152, 0.0722));
+        return mix(dst, src, str * luma);
+    }
+    return mix(dst, src, str);  // default: normal mix
+}
+
 vec4 inject_apply(vec4 c, vec2 uv) {
     vec4 p = pattern_gen(uv, uPattern);
-    vec3 rgb = mix(c.rgb, p.rgb, uInject * p.a);
+    vec3 rgb = (uPattern == 11 && uClipActive == 1)
+        ? clip_blend(c.rgb, p.rgb, uInject * p.a)
+        : mix(c.rgb, p.rgb, uInject * p.a);
     return vec4(rgb, c.a);
 }
 
 vec4 pattern_layer_apply(vec4 c, vec2 uv) {
-    vec4 p = pattern_gen(uv, uPattern);
-    vec3 rgb = mix(c.rgb, p.rgb, clamp(uPatternInject, 0.0, 1.0) * p.a);
+    vec4 p   = pattern_gen(uv, uPattern);
+    float str = clamp(uPatternInject, 0.0, 1.0) * p.a;
+    vec3 rgb = (uPattern == 11 && uClipActive == 1)
+        ? clip_blend(c.rgb, p.rgb, str)
+        : mix(c.rgb, p.rgb, str);
     return vec4(rgb, c.a);
 }
 

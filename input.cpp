@@ -188,6 +188,9 @@ static const ActionInfo ACTIONS[] = {
     { ACT_SHAPE_CIRCLE_HOLD,   "shape.circle.hold",   AK_TRIGGER, "Inject", "shape: circle hold" },
     { ACT_SHAPE_SQUARE_HOLD,   "shape.square.hold",   AK_TRIGGER, "Inject", "shape: square hold" },
     { ACT_INJECT_HOLD,     "inject.hold",     AK_TRIGGER,  "Inject", "inject (hold)" },
+    { ACT_CLIP_NEXT,       "clip.next",       AK_DISCRETE, "Inject", "clip: next" },
+    { ACT_CLIP_PREV,       "clip.prev",       AK_DISCRETE, "Inject", "clip: prev" },
+    { ACT_CLIP_BLEND_CYCLE,"clip.blend.cycle",AK_DISCRETE, "Inject", "clip: cycle blend mode" },
 
     // app
     { ACT_CLEAR,            "app.clear",          AK_DISCRETE, "App", "clear fields" },
@@ -511,6 +514,12 @@ void Input::installDefaults() {
     K(in, ACT_PATTERN_POLKA,   GLFW_KEY_9);
     K(in, ACT_PATTERN_STARBURST,GLFW_KEY_0);
     K(in, ACT_PATTERN_ANIM_BOUNCER, GLFW_KEY_B, GLFW_MOD_ALT);
+
+    // clip navigation (Alt+N / Alt+P for next/prev clip;
+    // Ctrl+Alt+B to cycle blend mode — B like "blit/blend")
+    K(in, ACT_CLIP_NEXT,       GLFW_KEY_N, GLFW_MOD_ALT);
+    K(in, ACT_CLIP_PREV,       GLFW_KEY_P, GLFW_MOD_ALT);
+    K(in, ACT_CLIP_BLEND_CYCLE,GLFW_KEY_B, GLFW_MOD_CONTROL | GLFW_MOD_ALT);
     K(in, ACT_SHAPE_TRIANGLE_HOLD, GLFW_KEY_1, GLFW_MOD_ALT);
     K(in, ACT_SHAPE_STAR_HOLD,     GLFW_KEY_2, GLFW_MOD_ALT);
     K(in, ACT_SHAPE_CIRCLE_HOLD,   GLFW_KEY_3, GLFW_MOD_ALT);

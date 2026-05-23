@@ -42,6 +42,7 @@
 #include <iostream>
 
 #include "camera.h"
+#include "clip_player.h"
 #include "recorder.h"
 #include "overlay.h"
 #include "ui_panel.h"
@@ -262,6 +263,10 @@ struct Params {
     // (`inject *= 0.85`) is skipped and inject is forced to 1.0. Decremented
     // by dt each frame. Set by animated-pattern triggers (Alt+B → bouncer).
     float injectHoldTimer = 0.0f;
+    // Video clip (pattern 11). clipBlendMode: 0=mix, 1=add, 2=screen, 3=luma-key.
+    // clipFps: playback rate in frames per second (passed to ClipPlayer).
+    int   clipBlendMode   = 0;
+    float clipFps         = 24.0f;
     // physics (Crutchfield camera-side knobs)
     int   invert      = 0;       // 0 = off, 1 = on (Crutchfield's "s")
     int   invertPeriod = 20;     // apply the invert op every Nth frame
@@ -382,9 +387,15 @@ static const char* PATTERN_NAMES[] = {
     "H-bars", "V-bars", "dot", "checker", "gradient",
     "noise", "rings", "spiral", "polka", "starburst",
     "bouncer",   // animated — pairs with injectHoldTimer for long-duration inject
+    "clip",      // video clip frames from clips/ folder (uClip texture, slot 5)
 };
 static constexpr int N_PATTERNS =
     (int)(sizeof(PATTERN_NAMES) / sizeof(PATTERN_NAMES[0]));
+
+// Clip blend modes — kept in sync with clip_blend() in inject.glsl.
+static const char* CLIP_BLEND_NAMES[] = { "mix", "add", "screen", "luma-key" };
+static constexpr int N_CLIP_BLENDS =
+    (int)(sizeof(CLIP_BLEND_NAMES) / sizeof(CLIP_BLEND_NAMES[0]));
 
 // Pixelate styles — keep in sync with shaders/layers/pixelate.glsl.
 // Index 0 = off; 1..9 = (shape × size) per the layer comment.
@@ -645,6 +656,9 @@ struct State {
     GLuint  camTex = 0;
     std::vector<uint8_t> camBuf;
     bool    camReady = false;
+
+    ClipPlayer clipPlayer;
+    GLuint     clipTex = 0;
 
     Recorder rec;
     Overlay  ov;
@@ -970,6 +984,13 @@ static std::vector<UiControl> build_ui_controls() {
         []() { return (float)S.p.pattern; },
         [](float v) { S.p.pattern = (int)fmaxf(0.0f, fminf((float)(N_PATTERNS - 1), roundf(v))); sync_ddj_filter_leds(); },
         [](float v) { return PATTERN_NAMES[(int)fmaxf(0.0f, fminf((float)(N_PATTERNS - 1), roundf(v)))]; });
+    ui_add_integer(controls, "clipBlend", "Clip Blend", 0.0f, (float)(N_CLIP_BLENDS - 1), 1.0f,
+        []() { return (float)S.p.clipBlendMode; },
+        [](float v) { S.p.clipBlendMode = (int)fmaxf(0.0f, fminf((float)(N_CLIP_BLENDS - 1), roundf(v))); },
+        [](float v) { return CLIP_BLEND_NAMES[(int)fmaxf(0.0f, fminf((float)(N_CLIP_BLENDS - 1), roundf(v)))]; });
+    ui_add_slider(controls, "clipFps", "Clip FPS", 1.0f, 120.0f, 1.0f,
+        []() { return S.p.clipFps; },
+        [](float v) { S.p.clipFps = fmaxf(1.0f, fminf(120.0f, v)); }, fmt_float);
     ui_add_integer(controls, "shapeKind", "Shape", 0.0f, 3.0f, 1.0f,
         []() { return (float)S.p.shapeKind; },
         [](float v) { S.p.shapeKind = (int)fmaxf(0.0f, fminf(3.0f, roundf(v))); },
@@ -1439,7 +1460,7 @@ static bool preset_write(const std::string& path) {
 "\n"
 "[trigger]\n"
 "# pattern: 0=H-bars 1=V-bars 2=dot 3=checker 4=gradient\n"
-"#          5=noise 6=rings 7=spiral 8=polka 9=starburst 10=bouncer\n"
+"#          5=noise 6=rings 7=spiral 8=polka 9=starburst 10=bouncer 11=clip\n"
 "# shapeKind: 0=triangle 1=star 2=circle 3=square; shapeCount: 1..16\n"
 "# shapeSize: multiplier, shapeAngle: radians.\n"
 "pattern  = %d\n"
@@ -1510,7 +1531,13 @@ static bool preset_write(const std::string& path) {
 "hueJump  = %s\n"
 "hueJumpStep = %.6f\n"
 "invert   = %s\n"
-"invertDiv = %d\n",
+"invertDiv = %d\n"
+"\n"
+"[clip]\n"
+"# Video clip inject. clipBlend: 0=mix 1=add 2=screen 3=luma-key.\n"
+"# clipFps: playback rate in frames per second.\n"
+"clipBlend = %d\n"
+"clipFps   = %.2f\n",
         ts,
         io(L_WARP), io(L_OPTICS), io(L_GAMMA), io(L_COLOR), io(L_CONTRAST),
         io(L_DECAY), io(L_NOISE), io(L_COUPLE), io(L_EXTERNAL), io(L_INJECT),
@@ -1538,7 +1565,8 @@ static bool preset_write(const std::string& path) {
         p.bpmHueJump  ? "on" : "off",
         p.hueJumpStep,
         p.bpmInvert   ? "on" : "off",
-        p.bpmInvertDiv);
+        p.bpmInvertDiv,
+        p.clipBlendMode, p.clipFps);
     fclose(f);
     return true;
 }
@@ -1725,6 +1753,9 @@ static bool preset_load(const std::string& path) {
             else if (k == "hueJumpStep") p.hueJumpStep = fmaxf(0.f, fminf(100.f, (float)atof(v.c_str())));
             else if (k == "invert")  p.bpmInvert   = parse_bool_onoff(v);
             else if (k == "invertDiv") { int n = atoi(v.c_str()); if (n >= 1 && n <= 64) p.bpmInvertDiv = n; }
+        } else if (section == "clip") {
+            if      (k == "clipBlend") { int n = atoi(v.c_str()); if (n>=0 && n<N_CLIP_BLENDS) p.clipBlendMode = n; }
+            else if (k == "clipFps")   { float fv = (float)atof(v.c_str()); if (fv>=1.f&&fv<=120.f) p.clipFps = fv; }
         }
     }
     fclose(f);
@@ -2389,7 +2420,7 @@ static std::string section_thermal() {
 static std::string section_inject() {
     const auto& p = S.p;
     auto cur = [&](int i) { return i == p.pattern ? "\x10" : " "; };
-    char b[1400];
+    char b[1600];
     snprintf(b, sizeof b,
         "%s  1  %s\n"
         "%s  2  %s\n"
@@ -2402,6 +2433,8 @@ static std::string section_inject() {
         "%s  9  %s\n"
         "%s  0  %s\n"
         "%s Alt+B %s   (hold %.1f s)\n"
+        "%s DP-L/R cursor  (clip: %s %d/%d)\n"
+        "   Alt+N/P next/prev clip   Ctrl+Alt+B blend: %s\n"
         "\n"
         "%-7s triangle hold   %-7s star hold\n"
         "%-7s circle hold     %-7s square hold\n"
@@ -2419,6 +2452,10 @@ static std::string section_inject() {
         cur(8), PATTERN_NAMES[8],
         cur(9), PATTERN_NAMES[9],
         cur(10), PATTERN_NAMES[10], p.injectHoldTimer,
+        cur(11),
+        S.clipPlayer.clipCount() > 0 ? S.clipPlayer.clipName().c_str() : "(none)",
+        S.clipPlayer.currentClip() + 1, S.clipPlayer.clipCount(),
+        CLIP_BLEND_NAMES[p.clipBlendMode],
         keys_for(ACT_SHAPE_TRIANGLE_HOLD).c_str(),
         keys_for(ACT_SHAPE_STAR_HOLD).c_str(),
         keys_for(ACT_SHAPE_CIRCLE_HOLD).c_str(),
@@ -3402,6 +3439,27 @@ static void apply_action(ActionId id, float mag) {
             hold_shape(2, "circle", mag); return;
         case ACT_SHAPE_SQUARE_HOLD:
             hold_shape(3, "square", mag); return;
+        // ── clip player ───────────────────────────────────────────
+        case ACT_CLIP_NEXT:
+            S.clipPlayer.next();
+            { char b[80]; snprintf(b, sizeof b, "clip: %s (%d/%d)",
+                S.clipPlayer.clipName().c_str(),
+                S.clipPlayer.currentClip() + 1,
+                S.clipPlayer.clipCount());
+              S.ov.logEvent(b); } return;
+        case ACT_CLIP_PREV:
+            S.clipPlayer.prev();
+            { char b[80]; snprintf(b, sizeof b, "clip: %s (%d/%d)",
+                S.clipPlayer.clipName().c_str(),
+                S.clipPlayer.currentClip() + 1,
+                S.clipPlayer.clipCount());
+              S.ov.logEvent(b); } return;
+        case ACT_CLIP_BLEND_CYCLE:
+            p.clipBlendMode = (p.clipBlendMode + 1) % N_CLIP_BLENDS;
+            { char b[64]; snprintf(b, sizeof b, "clip blend: %s",
+                CLIP_BLEND_NAMES[p.clipBlendMode]);
+              S.ov.logEvent(b); } return;
+
         case ACT_INJECT_HOLD: {
             if (mag > 0.5f) {
                 p.inject = 1.0f;
@@ -4031,6 +4089,8 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][0].tex);
     glActiveTexture(GL_TEXTURE4);
     glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][1].tex);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D, S.clipTex ? S.clipTex : src.tex);
 
     #define U1f(n, v)  glUniform1f (glGetUniformLocation(progFeedback, n), (v))
     #define U1i(n, v)  glUniform1i (glGetUniformLocation(progFeedback, n), (v))
@@ -4038,7 +4098,7 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     #define U2f(n, x, y) glUniform2f(glGetUniformLocation(progFeedback, n), (x), (y))
 
     U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
-    U1i("uPrevVol", 3); U1i("uOtherVol", 4);
+    U1i("uPrevVol", 3); U1i("uOtherVol", 4); U1i("uClip", 5);
     U2f("uRes", (float)dst.w, (float)dst.h);
     U1f("uTime", (float)glfwGetTime());
     U1ui("uFrame", S.frame);
@@ -4105,6 +4165,8 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1i("uShapeCount", p.shapeCount);
     U1f("uShapeSize", p.shapeSize);
     U1f("uShapeAngle", p.shapeAngle);
+    U1i("uClipActive",    S.clipTex && S.clipPlayer.isActive() ? 1 : 0);
+    U1i("uClipBlendMode", p.clipBlendMode);
 
     // V-4 effect slots. Arrays-of-ints can't be set with U1i; use the
     // array-at-index loc form.
@@ -4141,9 +4203,11 @@ static void render_volume_field(int fieldId, VolumeFBO& src, VolumeFBO& dst,
     glBindTexture(GL_TEXTURE_3D, src.tex);
     glActiveTexture(GL_TEXTURE4);
     glBindTexture(GL_TEXTURE_3D, otherSrc.tex);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D, S.clipTex ? S.clipTex : flatFallback.tex);
 
     U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
-    U1i("uPrevVol", 3); U1i("uOtherVol", 4);
+    U1i("uPrevVol", 3); U1i("uOtherVol", 4); U1i("uClip", 5);
     U2f("uRes", (float)dst.size, (float)dst.size);
     U1f("uTime", (float)glfwGetTime());
     U1ui("uFrame", S.frame);
@@ -4202,6 +4266,8 @@ static void render_volume_field(int fieldId, VolumeFBO& src, VolumeFBO& dst,
     U1i("uShapeCount", p.shapeCount);
     U1f("uShapeSize", p.shapeSize);
     U1f("uShapeAngle", p.shapeAngle);
+    U1i("uClipActive",    S.clipTex && S.clipPlayer.isActive() ? 1 : 0);
+    U1i("uClipBlendMode", p.clipBlendMode);
 
     {
         GLint lEff = glGetUniformLocation(progFeedback, "uVfxEffect");
@@ -4894,6 +4960,22 @@ int main(int argc, char** argv) {
         S.camReady = true;
     }
 
+    // Clip player setup: create a 1×1 placeholder texture, then scan clips/.
+    glGenTextures(1, &S.clipTex);
+    glBindTexture(GL_TEXTURE_2D, S.clipTex);
+    uint8_t black[3] = {0, 0, 0};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, black);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    S.clipPlayer.scan("clips");
+    if (S.clipPlayer.clipCount() > 0)
+        printf("[clips] %d clip(s) found, current: %s\n",
+               S.clipPlayer.clipCount(), S.clipPlayer.clipName().c_str());
+    else
+        printf("[clips] no clips found — drop PNG sequences into clips/<name>/\n");
+
     print_help();
     print_status();
 
@@ -5054,6 +5136,11 @@ int main(int argc, char** argv) {
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                             S.cam.width(), S.cam.height(),
                             GL_RGB, GL_UNSIGNED_BYTE, S.camBuf.data());
+        }
+
+        if (S.clipPlayer.isActive()) {
+            S.clipPlayer.fps = S.p.clipFps;
+            S.clipPlayer.update(dt, S.clipTex);
         }
 
         if (!S.paused) {

@@ -41,7 +41,8 @@ OBJS := $(BUILD_DIR)/main.o \
         $(BUILD_DIR)/overlay.o \
         $(BUILD_DIR)/camera_v4l2.o \
         $(BUILD_DIR)/audio.o \
-        $(BUILD_DIR)/music.o
+        $(BUILD_DIR)/music.o \
+        $(BUILD_DIR)/clip_player.o
 
 QJS_OBJS := $(QJS_DIR)/quickjs.o \
             $(QJS_DIR)/libregexp.o \
@@ -79,6 +80,9 @@ $(BUILD_DIR)/audio.o: $(ROOT)/audio.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -Wno-stringop-overflow -c -o $@ $<
 
 $(BUILD_DIR)/music.o: $(ROOT)/music.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/clip_player.o: $(ROOT)/clip_player.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(QJS_DIR)/%.o: $(ROOT)/vendor/quickjs/%.c | $(QJS_DIR)

@@ -11,6 +11,9 @@ macOS/feedback.app/
 recordings/
 screenshots/
 
+# User video clips and image sequences (user-supplied content, can be large)
+clips/
+
 # Controller capture logs
 macOS/*.log
 

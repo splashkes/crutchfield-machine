@@ -46,7 +46,7 @@ DIST_DIR     := $(DIST_NAME)
 DIST_ZIP     := $(DIST_NAME).zip
 
 CPP_SRCS := $(ROOT)/main.cpp $(ROOT)/input.cpp $(ROOT)/recorder.cpp $(ROOT)/overlay.cpp $(ROOT)/ui_panel.cpp $(ROOT)/music.cpp $(ROOT)/audio.cpp
-MM_SRCS  := camera_avfoundation.mm midi_coremidi.mm
+MM_SRCS  := camera_avfoundation.mm midi_coremidi.mm clip_player_avfoundation.mm
 OBJS     := $(BUILD_DIR)/main.o \
             $(BUILD_DIR)/input.o \
             $(BUILD_DIR)/recorder.o \
@@ -54,6 +54,7 @@ OBJS     := $(BUILD_DIR)/main.o \
             $(BUILD_DIR)/ui_panel.o \
             $(BUILD_DIR)/music.o \
             $(BUILD_DIR)/audio.o \
+            $(BUILD_DIR)/clip_player_avfoundation.o \
             $(BUILD_DIR)/camera_avfoundation.o \
             $(BUILD_DIR)/midi_coremidi.o
 
@@ -85,6 +86,9 @@ $(BUILD_DIR)/music.o: $(ROOT)/music.cpp | $(BUILD_DIR)
 
 $(BUILD_DIR)/audio.o: $(ROOT)/audio.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/clip_player_avfoundation.o: $(ROOT)/clip_player_avfoundation.mm | $(BUILD_DIR)
+	$(CXX) $(OBJCXXFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/input.o: $(ROOT)/input.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<

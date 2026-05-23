@@ -83,6 +83,10 @@ enum ActionId : int {
     ACT_SHAPE_TRIANGLE_HOLD, ACT_SHAPE_STAR_HOLD,
     ACT_SHAPE_CIRCLE_HOLD, ACT_SHAPE_SQUARE_HOLD,
     ACT_INJECT_HOLD,      // TRIGGER: 1.0 on press, 0.0 on release
+    // Clip player (pattern 11)
+    ACT_CLIP_NEXT,        // cycle to next clip folder
+    ACT_CLIP_PREV,        // cycle to prev clip folder
+    ACT_CLIP_BLEND_CYCLE, // cycle blend mode (mix/add/screen/luma-key)
 
     // ── App-level actions ────────────────────────────────────────────
     ACT_CLEAR,
