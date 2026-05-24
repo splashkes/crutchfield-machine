@@ -35,6 +35,9 @@ public:
     // Display name of the current clip (file stem or folder name), or "(none)".
     const std::string& clipName() const;
 
+    // Name of clip at index i (0-based). Returns "(none)" if out of range.
+    const std::string& clipNameAt(int i) const;
+
     // Advance the frame clock by dt seconds. Uploads a new frame to tex when
     // due. Returns true when a new frame was uploaded.
     // tex must be a valid GL_TEXTURE_2D handle (caller creates / owns it).

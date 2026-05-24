@@ -232,6 +232,13 @@ const std::string& ClipPlayer::clipName() const {
     return b->clips[b->current].first;
 }
 
+const std::string& ClipPlayer::clipNameAt(int i) const {
+    static const std::string none = "(none)";
+    ClipBackend* b = (__bridge ClipBackend*)impl_;
+    if (i < 0 || i >= (int)b->clips.size()) return none;
+    return b->clips[i].first;
+}
+
 bool ClipPlayer::isActive() const {
     ClipBackend* b = (__bridge ClipBackend*)impl_;
     return !b->clips.empty();

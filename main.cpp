@@ -198,7 +198,8 @@ enum : int {
     L_INJECT   = 1<<9,
     L_PHYSICS  = 1<<10,
     L_THERMAL  = 1<<11,
-    L_ALL      = (1<<12) - 1
+    L_CLIP     = 1<<12,
+    L_ALL      = (1<<13) - 1
 };
 
 struct LayerInfo { const char* name; int bit; int fkey; };
@@ -215,6 +216,7 @@ static const LayerInfo LAYERS[] = {
     {"inject",   L_INJECT,   GLFW_KEY_F10},
     {"physics",  L_PHYSICS,  GLFW_KEY_INSERT},
     {"thermal",  L_THERMAL,  GLFW_KEY_PAGE_DOWN},
+    {"clip",     L_CLIP,     0},
 };
 
 // ── per-layer parameters ──────────────────────────────────────────────────
@@ -263,10 +265,12 @@ struct Params {
     // (`inject *= 0.85`) is skipped and inject is forced to 1.0. Decremented
     // by dt each frame. Set by animated-pattern triggers (Alt+B → bouncer).
     float injectHoldTimer = 0.0f;
-    // Video clip (pattern 11). clipBlendMode: 0=mix, 1=add, 2=screen, 3=luma-key.
+    // Video clip layer (L_CLIP) and inject pattern 11.
+    // clipBlendMode: 0=mix, 1=add, 2=screen, 3=luma-key.
     // clipFps: playback rate in frames per second (passed to ClipPlayer).
     int   clipBlendMode   = 0;
     float clipFps         = 24.0f;
+    float clipAmount      = 1.0f;  // L_CLIP layer mix amount
     // physics (Crutchfield camera-side knobs)
     int   invert      = 0;       // 0 = off, 1 = on (Crutchfield's "s")
     int   invertPeriod = 20;     // apply the invert op every Nth frame
@@ -869,6 +873,7 @@ static std::vector<UiControl> build_ui_controls() {
     layer("layer.inject", "Inject", L_INJECT);
     layer("layer.physics", "Physics", L_PHYSICS);
     layer("layer.thermal", "Thermal", L_THERMAL);
+    layer("layer.clip",    "Video",   L_CLIP);
 
     ui_add_slider(controls, "decay", "Decay", 0.90f, 1.0f, 0.0005f,
         []() { return S.p.decay; }, [](float v) { S.p.decay = fmaxf(0.90f, fminf(1.0f, v)); }, fmt_float);
@@ -991,6 +996,9 @@ static std::vector<UiControl> build_ui_controls() {
     ui_add_slider(controls, "clipFps", "Clip FPS", 1.0f, 120.0f, 1.0f,
         []() { return S.p.clipFps; },
         [](float v) { S.p.clipFps = fmaxf(1.0f, fminf(120.0f, v)); }, fmt_float);
+    ui_add_slider(controls, "clipAmount", "Clip Amount", 0.0f, 1.0f, 0.01f,
+        []() { return S.p.clipAmount; },
+        [](float v) { S.p.clipAmount = fmaxf(0.0f, fminf(1.0f, v)); }, fmt_pct);
     ui_add_integer(controls, "shapeKind", "Shape", 0.0f, 3.0f, 1.0f,
         []() { return (float)S.p.shapeKind; },
         [](float v) { S.p.shapeKind = (int)fmaxf(0.0f, fminf(3.0f, roundf(v))); },
@@ -1043,6 +1051,7 @@ static std::vector<UiControl> build_ui_controls() {
     depends({"pattern", "shapeKind", "shapeCount", "shapeSize", "shapeAngle"}, L_INJECT);
     depends({"invert", "sensorGamma", "satKnee", "colorCross"}, L_PHYSICS);
     depends({"thermAmp", "thermScale", "thermSpeed", "thermRise", "thermSwirl"}, L_THERMAL);
+    depends({"clipAmount", "clipBlend", "clipFps"}, L_CLIP);
 
     return controls;
 }
@@ -1204,6 +1213,10 @@ static void print_help() {
       " Ctrl+Up/Dn  output fade (feeds back)\n"
       " Alt+Up/Dn   brightness (display only — doesn't feed back)\n"
       " Numpad thermal: 1/4 amp   2/5 scale   3/6 speed   7/8 rise   9/0 swirl\n\n"
+      " --- clips (inject pattern 11) ---\n"
+      " Alt+N/P      next / prev clip\n"
+      " Ctrl+Alt+B   cycle blend mode (mix / add / screen / luma-key)\n"
+      " Drop .mp4 / .mov files in clips/ next to feedback.app\n\n"
       " --- BPM / music ---\n"
       " Tab          tap tempo           Ctrl+Tab  sync on/off   Alt+Tab division\n"
       " Ctrl+Alt+ I/S/V/F/D  inject/strobe/vfx-cycle/flash/decay-dip toggles\n"
@@ -1312,6 +1325,19 @@ static std::string mac_user_base() {
     return mac_executable_dir();
 }
 
+static std::string mac_clips_dir() {
+    std::string exeDir = mac_executable_dir();
+    const std::string marker = ".app/Contents/MacOS/";
+    size_t pos = exeDir.find(marker);
+    if (pos != std::string::npos) {
+        // Walk back to the '/' before the .app bundle name to get its parent dir.
+        size_t slash = exeDir.rfind('/', pos);
+        if (slash != std::string::npos)
+            return exeDir.substr(0, slash + 1) + "clips";
+    }
+    return "clips"; // plain binary: relative to CWD
+}
+
 static void seed_user_tree(const std::string& assetBase, const char* name) {
     fs::path src = fs::path(assetBase) / name;
     fs::path dst = fs::path(name);
@@ -1410,6 +1436,7 @@ static bool preset_write(const std::string& path) {
 "inject   = %s\n"
 "physics  = %s\n"
 "thermal  = %s\n"
+"clip     = %s\n"
 "\n"
 "[quality]\n"
 "# blur:     0=5-tap cross   1=9-tap gauss   2=25-tap gauss\n"
@@ -1534,14 +1561,15 @@ static bool preset_write(const std::string& path) {
 "invertDiv = %d\n"
 "\n"
 "[clip]\n"
-"# Video clip inject. clipBlend: 0=mix 1=add 2=screen 3=luma-key.\n"
-"# clipFps: playback rate in frames per second.\n"
-"clipBlend = %d\n"
-"clipFps   = %.2f\n",
+"# Video clip layer (L_CLIP) and inject pattern 11.\n"
+"# clipBlend: 0=mix 1=add 2=screen 3=luma-key. clipAmount: layer mix (0..1).\n"
+"clipBlend  = %d\n"
+"clipFps    = %.2f\n"
+"clipAmount = %.3f\n",
         ts,
         io(L_WARP), io(L_OPTICS), io(L_GAMMA), io(L_COLOR), io(L_CONTRAST),
         io(L_DECAY), io(L_NOISE), io(L_COUPLE), io(L_EXTERNAL), io(L_INJECT),
-        io(L_PHYSICS), io(L_THERMAL),
+        io(L_PHYSICS), io(L_THERMAL), io(L_CLIP),
         S.blurQ, S.caQ, S.noiseQ, S.activeFields, S.pixelateStyle, S.pixelateBleedIdx, S.pixelateBurnSeed,
         p.zoom, p.theta, p.pivotX, p.pivotY, p.transX, p.transY,
         p.chroma, p.blurX, p.blurY, p.blurAngle,
@@ -1566,7 +1594,7 @@ static bool preset_write(const std::string& path) {
         p.hueJumpStep,
         p.bpmInvert   ? "on" : "off",
         p.bpmInvertDiv,
-        p.clipBlendMode, p.clipFps);
+        p.clipBlendMode, p.clipFps, p.clipAmount);
     fclose(f);
     return true;
 }
@@ -1618,6 +1646,7 @@ static bool preset_load(const std::string& path) {
         if (n == "inject")   return L_INJECT;
         if (n == "physics")  return L_PHYSICS;
         if (n == "thermal")  return L_THERMAL;
+        if (n == "clip")     return L_CLIP;
         return 0;
     };
 
@@ -1754,8 +1783,9 @@ static bool preset_load(const std::string& path) {
             else if (k == "invert")  p.bpmInvert   = parse_bool_onoff(v);
             else if (k == "invertDiv") { int n = atoi(v.c_str()); if (n >= 1 && n <= 64) p.bpmInvertDiv = n; }
         } else if (section == "clip") {
-            if      (k == "clipBlend") { int n = atoi(v.c_str()); if (n>=0 && n<N_CLIP_BLENDS) p.clipBlendMode = n; }
-            else if (k == "clipFps")   { float fv = (float)atof(v.c_str()); if (fv>=1.f&&fv<=120.f) p.clipFps = fv; }
+            if      (k == "clipBlend")  { int n = atoi(v.c_str()); if (n>=0 && n<N_CLIP_BLENDS) p.clipBlendMode = n; }
+            else if (k == "clipFps")    { float fv = (float)atof(v.c_str()); if (fv>=1.f&&fv<=120.f) p.clipFps = fv; }
+            else if (k == "clipAmount") { float fv = (float)atof(v.c_str()); p.clipAmount = fmaxf(0.f, fminf(1.f, fv)); }
         }
     }
     fclose(f);
@@ -2304,7 +2334,7 @@ static std::string section_layers() {
     // bindings next to each layer for quick reference.
     static const char* kbdMap[] = {
         "F1 ", "F2 ", "F3 ", "F4 ", "F5 ", "F6 ", "F7 ", "F8 ",
-        "F9 ", "F10", "Ins", "PgD"
+        "F9 ", "F10", "Ins", "PgD", " - "
     };
     const int N = sizeof(LAYERS) / sizeof(LAYERS[0]);
     std::string out;
@@ -2420,48 +2450,52 @@ static std::string section_thermal() {
 static std::string section_inject() {
     const auto& p = S.p;
     auto cur = [&](int i) { return i == p.pattern ? "\x10" : " "; };
-    char b[1600];
-    snprintf(b, sizeof b,
-        "%s  1  %s\n"
-        "%s  2  %s\n"
-        "%s  3  %s\n"
-        "%s  4  %s\n"
-        "%s  5  %s\n"
-        "%s  6  %s\n"
-        "%s  7  %s\n"
-        "%s  8  %s\n"
-        "%s  9  %s\n"
-        "%s  0  %s\n"
-        "%s Alt+B %s   (hold %.1f s)\n"
-        "%s DP-L/R cursor  (clip: %s %d/%d)\n"
-        "   Alt+N/P next/prev clip   Ctrl+Alt+B blend: %s\n"
-        "\n"
-        "%-7s triangle hold   %-7s star hold\n"
-        "%-7s circle hold     %-7s square hold\n"
-        "\n"
-        "DP-L/R cursor   A tap-inject   LT/RT hold\n"
-        "%-5s  inject (hold)     F10  toggle inject layer",
-        cur(0), PATTERN_NAMES[0],
-        cur(1), PATTERN_NAMES[1],
-        cur(2), PATTERN_NAMES[2],
-        cur(3), PATTERN_NAMES[3],
-        cur(4), PATTERN_NAMES[4],
-        cur(5), PATTERN_NAMES[5],
-        cur(6), PATTERN_NAMES[6],
-        cur(7), PATTERN_NAMES[7],
-        cur(8), PATTERN_NAMES[8],
-        cur(9), PATTERN_NAMES[9],
-        cur(10), PATTERN_NAMES[10], p.injectHoldTimer,
-        cur(11),
-        S.clipPlayer.clipCount() > 0 ? S.clipPlayer.clipName().c_str() : "(none)",
-        S.clipPlayer.currentClip() + 1, S.clipPlayer.clipCount(),
-        CLIP_BLEND_NAMES[p.clipBlendMode],
-        keys_for(ACT_SHAPE_TRIANGLE_HOLD).c_str(),
-        keys_for(ACT_SHAPE_STAR_HOLD).c_str(),
-        keys_for(ACT_SHAPE_CIRCLE_HOLD).c_str(),
-        keys_for(ACT_SHAPE_SQUARE_HOLD).c_str(),
-        keys_for(ACT_INJECT_HOLD).c_str());
-    return b;
+    char tmp[256];
+    std::string s;
+    s.reserve(2048);
+
+    for (int i = 0; i <= 9; i++) {
+        snprintf(tmp, sizeof tmp, "%s  %d  %s\n", cur(i), i, PATTERN_NAMES[i]);
+        s += tmp;
+    }
+    snprintf(tmp, sizeof tmp, "%s Alt+B %s   (hold %.1f s)\n",
+             cur(10), PATTERN_NAMES[10], p.injectHoldTimer);
+    s += tmp;
+    snprintf(tmp, sizeof tmp, "%s DP-L/R cursor  (clip)\n", cur(11));
+    s += tmp;
+
+    // Clip list
+    s += "\n--- clips (Alt+N/P) ---\n";
+    int n = S.clipPlayer.clipCount();
+    if (n == 0) {
+        s += "  (none — drop .mp4/.mov in clips/)\n";
+    } else {
+        for (int i = 0; i < n; i++) {
+            bool isCur = (i == S.clipPlayer.currentClip());
+            snprintf(tmp, sizeof tmp, "%s %s\n",
+                     isCur ? "\x10" : " ",
+                     S.clipPlayer.clipNameAt(i).c_str());
+            s += tmp;
+        }
+    }
+    snprintf(tmp, sizeof tmp,
+             "  blend: %s   fps: %.0f   Ctrl+Alt+B cycle blend\n",
+             CLIP_BLEND_NAMES[p.clipBlendMode], p.clipFps);
+    s += tmp;
+
+    s += "\n";
+    snprintf(tmp, sizeof tmp,
+             "%-7s triangle hold   %-7s star hold\n"
+             "%-7s circle hold     %-7s square hold\n"
+             "\nDP-L/R cursor   A tap-inject   LT/RT hold\n"
+             "%-5s  inject (hold)     F10  toggle inject layer",
+             keys_for(ACT_SHAPE_TRIANGLE_HOLD).c_str(),
+             keys_for(ACT_SHAPE_STAR_HOLD).c_str(),
+             keys_for(ACT_SHAPE_CIRCLE_HOLD).c_str(),
+             keys_for(ACT_SHAPE_SQUARE_HOLD).c_str(),
+             keys_for(ACT_INJECT_HOLD).c_str());
+    s += tmp;
+    return s;
 }
 
 static std::string section_quality() {
@@ -3205,6 +3239,7 @@ static void apply_action(ActionId id, float mag) {
         case ACT_LAYER_INJECT:   toggle_layer(L_INJECT,   "inject");   return;
         case ACT_LAYER_PHYSICS:  toggle_layer(L_PHYSICS,  "physics");  return;
         case ACT_LAYER_THERMAL:  toggle_layer(L_THERMAL,  "thermal");  return;
+        case ACT_LAYER_CLIP:     toggle_layer(L_CLIP,     "clip");     return;
 
         // Layer cursor — gamepad-driven navigation across the 12 layers.
         // Wraps at both ends. Pairs with ACT_LAYER_TOGGLE_ARMED (A).
@@ -4167,6 +4202,7 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
     U1f("uShapeAngle", p.shapeAngle);
     U1i("uClipActive",    S.clipTex && S.clipPlayer.isActive() ? 1 : 0);
     U1i("uClipBlendMode", p.clipBlendMode);
+    U1f("uClipAmount",    p.clipAmount);
 
     // V-4 effect slots. Arrays-of-ints can't be set with U1i; use the
     // array-at-index loc form.
@@ -4268,6 +4304,7 @@ static void render_volume_field(int fieldId, VolumeFBO& src, VolumeFBO& dst,
     U1f("uShapeAngle", p.shapeAngle);
     U1i("uClipActive",    S.clipTex && S.clipPlayer.isActive() ? 1 : 0);
     U1i("uClipBlendMode", p.clipBlendMode);
+    U1f("uClipAmount",    p.clipAmount);
 
     {
         GLint lEff = glGetUniformLocation(progFeedback, "uVfxEffect");
@@ -4969,12 +5006,16 @@ int main(int argc, char** argv) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#ifdef __APPLE__
+    S.clipPlayer.scan(mac_clips_dir());
+#else
     S.clipPlayer.scan("clips");
+#endif
     if (S.clipPlayer.clipCount() > 0)
         printf("[clips] %d clip(s) found, current: %s\n",
                S.clipPlayer.clipCount(), S.clipPlayer.clipName().c_str());
     else
-        printf("[clips] no clips found — drop PNG sequences into clips/<name>/\n");
+        printf("[clips] no clips found — drop .mp4/.mov files into clips/\n");
 
     print_help();
     print_status();

@@ -73,9 +73,10 @@ uniform int   uShapeKind;
 uniform int   uShapeCount;
 uniform float uShapeSize;
 uniform float uShapeAngle;
-// clip (pattern id 11)
+// clip (pattern id 11 and L_CLIP layer)
 uniform int   uClipActive;     // 1 = a clip is loaded and playing
 uniform int   uClipBlendMode;  // 0=mix, 1=add, 2=screen, 3=luma-key
+uniform float uClipAmount;     // L_CLIP layer mix amount (0.0–1.0)
 // pixelate
 uniform int   uPixelateStyle;     // 0 = off; 1..9 = (shape × size)
 uniform int   uPixelateBleedIdx;  // 0 off; 1 soft; 2 CRT; 3 melt; 4 fried; 5 burned
@@ -97,6 +98,7 @@ const int L_EXTERNAL = 1<<8;
 const int L_INJECT   = 1<<9;
 const int L_PHYSICS  = 1<<10;
 const int L_THERMAL  = 1<<11;
+const int L_CLIP     = 1<<12;
 
 // ── layer sources (resolved by host before compile) ─────────
 #include "common.glsl"
@@ -112,6 +114,7 @@ const int L_THERMAL  = 1<<11;
 #include "layers/noise.glsl"
 #include "layers/couple.glsl"
 #include "layers/external.glsl"
+#include "layers/clip.glsl"
 #include "layers/inject.glsl"
 #include "layers/pixelate.glsl"
 #include "layers/vfx_slot.glsl"
@@ -158,6 +161,7 @@ void main() {
         if ((uEnable & L_DECAY) != 0) col = decay_apply(col, uv);
         if ((uEnable & L_COUPLE) != 0) col = couple_apply(col, uv);
         if ((uEnable & L_EXTERNAL) != 0) col = external_apply(col, uv);
+        if ((uEnable & L_CLIP) != 0)     col = clip_layer_apply(col, uv);
         if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);
 
         col = vfx_apply(col, uv, 0);
@@ -273,6 +277,9 @@ void main() {
 
     //  8. external: blend in camera
     if ((uEnable & L_EXTERNAL) != 0) col = external_apply(col, uv);
+
+    //  8.5 clip: blend in video layer
+    if ((uEnable & L_CLIP) != 0) col = clip_layer_apply(col, uv);
 
     // 10. noise: thermal sensor floor — final additive stage before post.
     if ((uEnable & L_NOISE) != 0) col = noise_apply(col, uv, uTime, uFrame);

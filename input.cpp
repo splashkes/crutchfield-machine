@@ -106,6 +106,7 @@ static const ActionInfo ACTIONS[] = {
     { ACT_LAYER_INJECT,    "layer.inject",    AK_DISCRETE, "Layers", "toggle inject" },
     { ACT_LAYER_PHYSICS,   "layer.physics",   AK_DISCRETE, "Layers", "toggle physics" },
     { ACT_LAYER_THERMAL,   "layer.thermal",   AK_DISCRETE, "Layers", "toggle thermal" },
+    { ACT_LAYER_CLIP,      "layer.clip",      AK_DISCRETE, "Layers", "toggle video clip layer" },
     { ACT_LAYER_CURSOR_UP, "layer.cursor.up", AK_DISCRETE, "Layers", "cursor prev" },
     { ACT_LAYER_CURSOR_DN, "layer.cursor.dn", AK_DISCRETE, "Layers", "cursor next" },
     { ACT_LAYER_TOGGLE_ARMED, "layer.toggleArmed", AK_DISCRETE, "Layers", "toggle armed layer" },

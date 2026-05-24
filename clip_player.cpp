@@ -133,6 +133,13 @@ const std::string& ClipPlayer::clipName() const {
     return im->clips[im->current].name;
 }
 
+const std::string& ClipPlayer::clipNameAt(int i) const {
+    static const std::string none = "(none)";
+    auto* im = static_cast<ClipPlayerImpl*>(impl_);
+    if (i < 0 || i >= (int)im->clips.size()) return none;
+    return im->clips[i].name;
+}
+
 bool ClipPlayer::isActive() const {
     auto* im = static_cast<ClipPlayerImpl*>(impl_);
     return !im->clips.empty() && !im->clips[im->current].frames.empty();

@@ -9,7 +9,7 @@ sections:
   - id: layers
     label: Layers
     visualizer: layers
-    controls: [layer.warp, layer.optics, layer.gamma, layer.color, layer.contrast, layer.decay, layer.noise, layer.couple, layer.external, layer.inject, layer.physics, layer.thermal]
+    controls: [layer.warp, layer.optics, layer.gamma, layer.color, layer.contrast, layer.decay, layer.noise, layer.couple, layer.external, layer.inject, layer.physics, layer.thermal, layer.clip]
 
   - id: tone
     label: Tone
@@ -46,6 +46,10 @@ sections:
   - id: inject
     label: Inject
     controls: [pattern, shapeKind, shapeCount, shapeSize, shapeAngle]
+
+  - id: video
+    label: Video
+    controls: [layer.clip, clipAmount, clipBlend, clipFps]
 
   - id: vfx
     label: VFX
