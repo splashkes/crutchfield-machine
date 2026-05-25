@@ -55,6 +55,10 @@ sections:
     label: VFX
     controls: [vfx1Slot, vfx1Param, vfx1BSource, vfx2Slot, vfx2Param, vfx2BSource]
 
+  - id: bpm
+    label: BPM / Link
+    controls: [bpm, divIdx, bpm.sync, link.toggle, bpm.injectOnBeat, bpm.strobeLock, bpm.vfxCycle, bpm.flash, bpm.decayDip, bpm.hueJump, hueJumpStep, bpm.invert, bpmInvertDiv]
+
   - id: output
     label: Output
     controls: [outFade, brightness, sourceWet, fxWet]

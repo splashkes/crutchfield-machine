@@ -49,6 +49,9 @@
 #include "input.h"
 #include "music.h"
 #include "audio.h"
+#ifdef __APPLE__
+#include "link_sync.h"
+#endif
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO_WARNING
@@ -848,6 +851,35 @@ static void ui_add_toggle(std::vector<UiControl>& out, const char* id,
     out.push_back(std::move(c));
 }
 
+// Saved before Link mutes the internal engine; restored on Link disable.
+// File-scope so do_link_toggle() and the UiPanel setter share it.
+static bool g_musicWasPlayingBeforeLink = false;
+
+// Shared toggle logic called from both the keyboard action and the UiPanel
+// setter so both paths get the music-mute / BPM-sync side-effects.
+static void do_link_toggle() {
+#ifdef __APPLE__
+    bool on = !LinkSync::isEnabled();
+    LinkSync::enable(on);
+    if (on) {
+        g_musicWasPlayingBeforeLink = Music::playing();
+        Music::setPlaying(false);
+        S.p.bpmSyncOn = true;
+        auto peers = LinkSync::peerCount();
+        char b[96];
+        snprintf(b, sizeof b, peers > 0
+            ? "Link: ON  (%zu peer%s)  — music paused"
+            : "Link: ON  (waiting for peers)  — music paused",
+            peers, peers == 1 ? "" : "s");
+        S.ov.logEvent(b);
+    } else {
+        Music::setPlaying(g_musicWasPlayingBeforeLink);
+        S.ov.logEvent(g_musicWasPlayingBeforeLink
+            ? "Link: off  — music resumed" : "Link: off");
+    }
+#endif
+}
+
 static std::vector<UiControl> build_ui_controls() {
     std::vector<UiControl> controls;
 
@@ -1052,6 +1084,75 @@ static std::vector<UiControl> build_ui_controls() {
     depends({"invert", "sensorGamma", "satKnee", "colorCross"}, L_PHYSICS);
     depends({"thermAmp", "thermScale", "thermSpeed", "thermRise", "thermSwirl"}, L_THERMAL);
     depends({"clipAmount", "clipBlend", "clipFps"}, L_CLIP);
+
+    // ── BPM / Link controls ───────────────────────────────────────────────
+    ui_add_slider(controls, "bpm", "BPM", 30.0f, 300.0f, 0.5f,
+        []() { return S.p.bpm; },
+        [](float v) { S.p.bpm = fmaxf(30.0f, fminf(300.0f, v)); S.p.beatOrigin = glfwGetTime(); },
+        [](float v) { char b[16]; snprintf(b, sizeof b, "%.1f", v); return std::string(b); });
+
+    ui_add_integer(controls, "divIdx", "Beat Division", 0.0f, (float)(N_BPM_DIVS - 1), 1.0f,
+        []() { return (float)S.p.divIdx; },
+        [](float v) { S.p.divIdx = (int)fmaxf(0.0f, fminf((float)(N_BPM_DIVS - 1), roundf(v))); },
+        [](float v) { return std::string(BPM_DIV_NAMES[(int)fmaxf(0.0f, fminf((float)(N_BPM_DIVS - 1), roundf(v)))]); });
+
+    ui_add_toggle(controls, "bpm.sync", "BPM Sync",
+        []() { return S.p.bpmSyncOn ? 1.0f : 0.0f; },
+        [](float v) { S.p.bpmSyncOn = v >= 0.5f; if (S.p.bpmSyncOn) S.p.beatOrigin = glfwGetTime(); });
+
+    ui_add_toggle(controls, "bpm.injectOnBeat", "Inject On Beat",
+        []() { return S.p.bpmInject ? 1.0f : 0.0f; },
+        [](float v) { S.p.bpmInject = v >= 0.5f; });
+
+    ui_add_toggle(controls, "bpm.strobeLock", "Strobe Lock",
+        []() { return S.p.bpmStrobe ? 1.0f : 0.0f; },
+        [](float v) { S.p.bpmStrobe = v >= 0.5f; });
+
+    ui_add_toggle(controls, "bpm.vfxCycle", "VFX Auto-cycle",
+        []() { return S.p.bpmVfxCycle ? 1.0f : 0.0f; },
+        [](float v) { S.p.bpmVfxCycle = v >= 0.5f; });
+
+    ui_add_toggle(controls, "bpm.flash", "Flash On Beat",
+        []() { return S.p.bpmFlash ? 1.0f : 0.0f; },
+        [](float v) { S.p.bpmFlash = v >= 0.5f; });
+
+    ui_add_toggle(controls, "bpm.decayDip", "Decay Dip",
+        []() { return S.p.bpmDecayDip ? 1.0f : 0.0f; },
+        [](float v) { S.p.bpmDecayDip = v >= 0.5f; });
+
+    ui_add_toggle(controls, "bpm.hueJump", "Hue Jump",
+        []() { return S.p.bpmHueJump ? 1.0f : 0.0f; },
+        [](float v) { S.p.bpmHueJump = v >= 0.5f; });
+
+    ui_add_slider(controls, "hueJumpStep", "Hue Jump Step", 1.0f, 100.0f, 1.0f,
+        []() { return S.p.hueJumpStep; },
+        [](float v) { S.p.hueJumpStep = fmaxf(1.0f, fminf(100.0f, v)); },
+        [](float v) { char b[16]; snprintf(b, sizeof b, "%.0f", v); return std::string(b); });
+
+    ui_add_toggle(controls, "bpm.invert", "Beat Invert",
+        []() { return S.p.bpmInvert ? 1.0f : 0.0f; },
+        [](float v) { S.p.bpmInvert = v >= 0.5f; });
+
+    ui_add_integer(controls, "bpmInvertDiv", "Invert Every N Beats", 1.0f, 64.0f, 1.0f,
+        []() { return (float)S.p.bpmInvertDiv; },
+        [](float v) { S.p.bpmInvertDiv = (int)fmaxf(1.0f, fminf(64.0f, roundf(v))); },
+        [](float v) { char b[16]; snprintf(b, sizeof b, "%.0f beats", v); return std::string(b); });
+
+    ui_add_toggle(controls, "link.toggle", "Ableton Link",
+        []() {
+#ifdef __APPLE__
+            return LinkSync::isEnabled() ? 1.0f : 0.0f;
+#else
+            return 0.0f;
+#endif
+        },
+        [](float v) {
+#ifdef __APPLE__
+            if ((v >= 0.5f) != LinkSync::isEnabled()) do_link_toggle();
+#else
+            (void)v;
+#endif
+        });
 
     return controls;
 }
@@ -2303,6 +2404,17 @@ static std::string section_status() {
     const std::string preset = g_presetFiles.empty() ? "(none)"
                              : (g_currentPreset < 0 ? "(unsaved)"
                                 : preset_current_name());
+    // Live Ableton Link status (macOS only)
+    char linkStatus[128] = "off";
+#ifdef __APPLE__
+    if (LinkSync::isEnabled()) {
+        auto peers = LinkSync::peerCount();
+        snprintf(linkStatus, sizeof linkStatus,
+            "ON  %.1f bpm  %zu peer%s",
+            LinkSync::tempo(), peers, peers == 1 ? "" : "s");
+    }
+#endif
+
     char buf[2048];
     snprintf(buf, sizeof buf,
         "sim     : %d x %d  RGBA%dF\n"
@@ -2313,6 +2425,7 @@ static std::string section_status() {
         "preset  : %s\n"
         "pattern : %s\n"
         "fields  : %d\n"
+        "link    : %s\n"
         "\n"
         "-- quick glance --\n"
         "zoom %.4f  theta %+.3f rad/pass\n"
@@ -2323,6 +2436,7 @@ static std::string section_status() {
         g_smoothedFps, g_cfg.iters, rec,
         S.paused ? "YES" : "no", preset.c_str(),
         PATTERN_NAMES[(unsigned)p.pattern % N_PATTERNS], S.activeFields,
+        linkStatus,
         p.zoom, p.theta, p.decay, p.noise,
         p.couple, p.external);
     return buf;
@@ -2334,7 +2448,7 @@ static std::string section_layers() {
     // bindings next to each layer for quick reference.
     static const char* kbdMap[] = {
         "F1 ", "F2 ", "F3 ", "F4 ", "F5 ", "F6 ", "F7 ", "F8 ",
-        "F9 ", "F10", "Ins", "PgD", " - "
+        "F9 ", "F10", "Ins", "PgD", "Del"
     };
     const int N = sizeof(LAYERS) / sizeof(LAYERS[0]);
     std::string out;
@@ -2643,11 +2757,25 @@ static std::string section_bpm() {
                 mi.lastCcNum, mi.lastCcVal, mi.lastCcCh);
         }
     }
+    char linkLine[128] = "";
+#ifdef __APPLE__
+    if (LinkSync::isEnabled()) {
+        auto peers = LinkSync::peerCount();
+        snprintf(linkLine, sizeof linkLine,
+            "Link     : ON  (%.1f bpm  %zu peer%s)\n",
+            LinkSync::tempo(), peers, peers == 1 ? "" : "s");
+    } else {
+        snprintf(linkLine, sizeof linkLine,
+            "Link     : off  (%s to enable)\n",
+            keys_for(ACT_LINK_TOGGLE).c_str());
+    }
+#endif
     char b[2048];
     snprintf(b, sizeof b,
         "BPM      : %.1f   div: %s\n"
         "sync     : %s\n"
         "%s\n"
+        "%s"
         "%s"
         "\n"
         "%-10s tap tempo (inert when MIDI clock is live)\n"
@@ -2668,6 +2796,7 @@ static std::string section_bpm() {
         p.bpmSyncOn ? "ON" : "off",
         midiLine,
         lastLine,
+        linkLine,
         keys_for(ACT_BPM_TAP).c_str(),
         keys_for(ACT_BPM_SYNC_TOGGLE).c_str(),
         keys_for(ACT_BPM_DIV_CYCLE).c_str(),
@@ -2886,6 +3015,10 @@ static void bpm_tap(double now) {
 // Called once per displayed frame. dt is the frame delta time. Advances
 // the beat phase, detects beat crossings, and fires the enabled
 // modulations for each crossing.
+// Set by update_bpm() on every Link beat crossing; consumed the same frame
+// in the trigger-pulse block to inject a synthetic kick envelope.
+static bool s_linkBeatPending = false;
+
 static void update_bpm(double now, float dt) {
     (void)dt;
     auto& p = S.p;
@@ -2942,11 +3075,24 @@ static void update_bpm(double now, float dt) {
     float period     = basePeriod * BPM_DIV_MUL[p.divIdx];
 
     // Fractional position through the current beat.
-    double since = now - p.beatOrigin;
-    double beats = since / period;
-    float  phase = (float)(beats - std::floor(beats));
-    float  prev  = p.beatPhase;
-    p.beatPhase  = phase;
+    float prev  = p.beatPhase;
+    float phase;
+#ifdef __APPLE__
+    if (LinkSync::isEnabled()) {
+        // Link is the tempo authority. Read both values from the same
+        // atomic session snapshot so they're consistent within this frame.
+        p.bpm       = (float)LinkSync::tempo();
+        p.bpmSyncOn = true;
+        phase       = (float)LinkSync::beatPhase();
+    } else {
+#endif
+        double since = now - p.beatOrigin;
+        double beats = since / period;
+        phase = (float)(beats - std::floor(beats));
+#ifdef __APPLE__
+    }
+#endif
+    p.beatPhase = phase;
 
     // Crossing: phase jumped backwards (wrapped from near-1 to near-0).
     // Also fire on first frame (prev==0 and phase just seeded) — skip
@@ -2995,6 +3141,12 @@ static void update_bpm(double now, float dt) {
                    p.invert ? "ON" : "off", p.bpmInvertDiv);
         }
     }
+#ifdef __APPLE__
+    // Synthesise a kick pulse on every Link beat crossing so that music-reactive
+    // layers (noise dropout mode, etc.) respond to network sync even when the
+    // internal audio engine has no active triggers.
+    if (LinkSync::isEnabled()) s_linkBeatPending = true;
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -3961,6 +4113,9 @@ static void apply_action(ActionId id, float mag) {
             S.ov.logEvent(b);
             return;
         }
+        case ACT_LINK_TOGGLE:
+            do_link_toggle();
+            return;
         case ACT_BPM_HUEJUMP_STEP_UP:
         case ACT_BPM_HUEJUMP_STEP_DN: {
             // Progressive step: small increments at low values so fine
@@ -4732,6 +4887,9 @@ int main(int argc, char** argv) {
 
     // Embedded JS runtime + pattern engine + audio output.
     Audio::init();
+#ifdef __APPLE__
+    LinkSync::init((double)S.p.bpm);
+#endif
     // Try samples/ folder first so real WAVs win over the synth fallbacks.
     Audio::loadSamplesFromDir("samples");
 
@@ -5147,6 +5305,12 @@ int main(int argc, char** argv) {
         // and flavours its corruption per source.
         {
             auto p = Audio::consumeTriggerPulses();
+#ifdef __APPLE__
+            if (s_linkBeatPending) {
+                p.kick = fmaxf(p.kick, 1.0f);
+                s_linkBeatPending = false;
+            }
+#endif
             // Envelope: rise to trigger gain on hit, decay ~0.88/frame
             // (≈ 150 ms half-life at 60 fps).
             auto env = [&](float& e, float hit) {
@@ -5321,6 +5485,9 @@ int main(int argc, char** argv) {
 
     Music::shutdown();
     Audio::shutdown();
+#ifdef __APPLE__
+    LinkSync::shutdown();
+#endif
 
     // Usage summary — call directly (atexit also registered as backup
     // for unusual exit paths). Idempotent: the function closes the CSV

@@ -294,6 +294,7 @@ static const ActionInfo ACTIONS[] = {
     { ACT_BPM_INVERT_TOGGLE,     "bpm.invert",        AK_DISCRETE, "BPM", "toggle beat-driven invert flip" },
     { ACT_BPM_INVERT_DIV_UP,     "bpm.invertDiv+",    AK_STEP,     "BPM", "invert flip divisor +" },
     { ACT_BPM_INVERT_DIV_DN,     "bpm.invertDiv-",    AK_STEP,     "BPM", "invert flip divisor -" },
+    { ACT_LINK_TOGGLE,           "link.toggle",       AK_DISCRETE, "BPM", "toggle Ableton Link sync" },
     { ACT_DDJ_BANK_HOLD,         "ddj.bank.hold",     AK_TRIGGER,  "App", "DDJ alternate pad bank" },
     { ACT_NOISEQ_WHITE,          "q.noise.white",     AK_DISCRETE, "Quality", "noise type: white" },
     { ACT_NOISEQ_PINK,           "q.noise.pink",      AK_DISCRETE, "Quality", "noise type: pink" },
@@ -441,6 +442,7 @@ void Input::installDefaults() {
     K(in, ACT_LAYER_INJECT,   GLFW_KEY_F10);
     K(in, ACT_LAYER_PHYSICS,  GLFW_KEY_INSERT);
     K(in, ACT_LAYER_THERMAL,  GLFW_KEY_PAGE_DOWN);
+    K(in, ACT_LAYER_CLIP,     GLFW_KEY_DELETE);
 
     // Warp
     K(in, ACT_ZOOM_UP,  GLFW_KEY_Q);
