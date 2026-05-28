@@ -27,7 +27,7 @@ LDLIBS   ?= -lglfw -lGLEW -lz \
             -framework CoreMIDI
 
 SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm \
-       recorder.cpp overlay.cpp ui_panel.cpp music.cpp audio.cpp
+       recorder.cpp overlay.cpp ui_panel.cpp music.cpp audio.cpp osc.cpp
 OBJS = $(SRCS:.cpp=.o)
 OBJS := $(OBJS:.mm=.o)
 QJS_SRCS = vendor/quickjs/quickjs.c vendor/quickjs/libregexp.c \

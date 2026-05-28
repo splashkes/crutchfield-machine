@@ -1,6 +1,7 @@
 // input.cpp — action registry + binding resolver.
 
 #include "input.h"
+#include "osc.h"
 
 #include <GLFW/glfw3.h>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <deque>
 #include <mutex>
+#include <unordered_map>
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -50,6 +52,15 @@ struct MidiRuntime {
     double lastClockT = 0.0;
 };
 MidiRuntime g_midiRt;
+
+// OSC runtime — small per-address state for delta tracking. The hot
+// dispatch path is linear over bindings; for delta mode we need to
+// remember the last value per address.
+struct OscRuntime {
+    std::unordered_map<std::string, float> prevValue;
+    std::unordered_map<std::string, bool>  prevInit;
+};
+OscRuntime g_oscRt;
 
 static float midi_relative_delta(int value) {
     value &= 0x7F;
@@ -315,6 +326,11 @@ const ActionInfo* action_info_by_name(const char* name) {
     for (int i = 0; i < N_ACTIONS; i++)
         if (std::strcmp(ACTIONS[i].name, name) == 0) return &ACTIONS[i];
     return nullptr;
+}
+
+const ActionInfo* action_info_by_index(int idx) {
+    if (idx < 0 || idx >= N_ACTIONS) return nullptr;
+    return &ACTIONS[idx];
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1200,6 +1216,23 @@ bool Input::loadIni(const std::string& path) {
             }
         }
 
+        // [osc] section header keys: listen=PORT, learn=on|off. Action
+        // mappings (action.name = osc:/addr) fall through to the
+        // section-aware keyPart parser below.
+        if (section == "osc") {
+            if (k == "listen" || k == "port") {
+                int p = std::atoi(v.c_str());
+                if (p > 0 && p < 65536) setOscPort(p);
+                continue;
+            }
+            if (k == "learn") {
+                std::string lo = v;
+                for (char& c : lo) c = (char)std::tolower((unsigned char)c);
+                oscLearn_ = (lo == "1" || lo == "yes" || lo == "true" || lo == "on");
+                continue;
+            }
+        }
+
         const ActionInfo* info = action_info_by_name(k.c_str());
         if (!info) {
             std::fprintf(stderr, "[bindings] unknown action '%s' — skipped\n", k.c_str());
@@ -1321,6 +1354,34 @@ bool Input::loadIni(const std::string& path) {
             } else {
                 continue;
             }
+        } else if (section == "osc") {
+            // OSC binding spec: osc:/path/to/addr  OR  osct:/path (force trigger)
+            //   osc:/addr   → SRC_OSC_F if action is continuous (AK_STEP/RATE);
+            //                  SRC_OSC_TRIG if discrete/trigger
+            //   osct:/addr  → always SRC_OSC_TRIG (useful for one-shot pulses
+            //                  on otherwise-continuous addresses)
+            std::string addr;
+            bool forceTrig = false;
+            if (keyPart.rfind("osc:", 0) == 0) {
+                addr = keyPart.substr(4);
+            } else if (keyPart.rfind("osct:", 0) == 0) {
+                addr = keyPart.substr(5);
+                forceTrig = true;
+            } else {
+                continue;
+            }
+            if (addr.empty() || addr[0] != '/') {
+                std::fprintf(stderr, "[bindings] osc address must start with '/': '%s'\n",
+                             keyPart.c_str());
+                continue;
+            }
+            const ActionInfo* ai = action_info(b.action);
+            bool isTrigger = forceTrig ||
+                             (ai && (ai->kind == AK_DISCRETE || ai->kind == AK_TRIGGER));
+            b.source     = isTrigger ? SRC_OSC_TRIG : SRC_OSC_F;
+            b.code       = 0;
+            b.modmask    = 0;
+            b.oscAddress = addr;
         } else {
             continue;  // unknown section
         }
@@ -1336,6 +1397,8 @@ bool Input::loadIni(const std::string& path) {
                 if (b.source == SRC_MIDI_CC || b.source == SRC_MIDI_CC14 || b.source == SRC_MIDI_NOTE)
                     return x.code == b.code && x.modmask == b.modmask
                         && x.shifted == b.shifted;
+                if (b.source == SRC_OSC_F || b.source == SRC_OSC_TRIG)
+                    return x.oscAddress == b.oscAddress;
                 return true;
             }), bindings_.end());
         bindings_.push_back(b);
@@ -2082,6 +2145,129 @@ void Input::pollMidi(float) {
 bool Input::sendMidiNote(int, int, int) { return false; }
 #endif
 
+// ─────────────────────────────────────────────────────────────────────────
+// OSC polling — cross-platform. Opens the UDP listener on first call if
+// oscPort_ > 0, drains the queue, and dispatches each message through
+// handler_ via SRC_OSC_F / SRC_OSC_TRIG bindings. Address matching is
+// literal — no wildcard support in v1.
+// ─────────────────────────────────────────────────────────────────────────
+void Input::pollOsc(float /*dt*/) {
+    if (oscPort_ <= 0) {
+        if (oscOpened_) {
+            feedback_osc_close();
+            oscOpened_ = false;
+        }
+        oscFailedPort_ = 0;
+        return;
+    }
+    if (!oscOpened_) {
+        // Don't spam the log: once a port fails to bind, stop retrying
+        // until the user changes the port. The latch only clears when
+        // oscPort_ changes.
+        if (oscFailedPort_ == oscPort_) return;
+        if (feedback_osc_open(oscPort_) != 0) {
+            oscOpened_ = true;
+            oscFailedPort_ = 0;
+        } else {
+            oscFailedPort_ = oscPort_;
+            return;
+        }
+    }
+
+    FeedbackOscMsg msgs[256];
+    int n = feedback_osc_poll(msgs, 256);
+    if (n <= 0) return;
+
+    for (int i = 0; i < n; i++) {
+        const FeedbackOscMsg& m = msgs[i];
+
+        if (oscLearn_) {
+            switch (m.arg_type) {
+                case 'f': std::printf("[osc-learn] %s f=%.4f\n", m.address, m.arg_f); break;
+                case 'i': std::printf("[osc-learn] %s i=%d\n",   m.address, m.arg_i); break;
+                case 'T': std::printf("[osc-learn] %s T\n",      m.address); break;
+                case 'F': std::printf("[osc-learn] %s F\n",      m.address); break;
+                case 's': std::printf("[osc-learn] %s s\n",      m.address); break;
+                case 0:   std::printf("[osc-learn] %s (no args)\n", m.address); break;
+                default:  std::printf("[osc-learn] %s %c=?\n",   m.address, m.arg_type); break;
+            }
+        }
+        if (!handler_) continue;
+
+        // Linear scan — number of OSC bindings is small (tens at most).
+        for (const Binding& b : bindings_) {
+            if (b.source != SRC_OSC_F && b.source != SRC_OSC_TRIG) continue;
+            if (b.oscAddress.empty()) continue;
+            if (std::strcmp(b.oscAddress.c_str(), m.address) != 0) continue;
+            const ActionInfo* info = action_info(b.action);
+            if (!info) continue;
+
+            // Treat any incoming arg as a float in [0..1] or signed. T/F
+            // become 1.0/0.0. No-arg messages become 1.0 (treat as a
+            // "bang" for triggers).
+            float norm = (m.arg_type == 0) ? 1.0f : m.arg_f;
+
+            auto fire = [&](ActionId a, float mg) {
+                handler_(a, mg);
+                if (usageLogger_) usageLogger_({USAGE_OSC, 0, 0, 0, a, mg});
+            };
+
+            if (b.source == SRC_OSC_TRIG) {
+                // Discrete: any value > 0.5 = press; trigger: edge both ways.
+                switch (info->kind) {
+                case AK_DISCRETE:
+                    if (norm > 0.5f) fire(b.action, 1.0f);
+                    break;
+                case AK_TRIGGER:
+                    fire(b.action, norm > 0.5f ? 1.0f : 0.0f);
+                    break;
+                case AK_STEP:
+                case AK_RATE:
+                    // Bound as trigger but action is continuous — fire scaled.
+                    {
+                        float mg = norm * b.scale;
+                        if (b.invert) mg = -mg;
+                        fire(b.action, mg);
+                    }
+                    break;
+                }
+                continue;
+            }
+
+            // SRC_OSC_F (axis-style)
+            float mg = norm;
+            if (b.delta) {
+                bool& init = g_oscRt.prevInit[b.oscAddress];
+                float& prev = g_oscRt.prevValue[b.oscAddress];
+                if (!init) {
+                    init = true;
+                    prev = norm;
+                    continue;
+                }
+                mg = norm - prev;
+                prev = norm;
+            } else if (b.bipolar) {
+                mg = norm * 2.0f - 1.0f;
+            }
+            if (b.invert) mg = -mg;
+            mg *= b.scale;
+
+            switch (info->kind) {
+            case AK_RATE:
+            case AK_STEP:
+                fire(b.action, mg);
+                break;
+            case AK_DISCRETE:
+                if (norm > 0.5f) fire(b.action, 1.0f);
+                break;
+            case AK_TRIGGER:
+                fire(b.action, norm > 0.5f ? 1.0f : 0.0f);
+                break;
+            }
+        }
+    }
+}
+
 bool Input::saveIni(const std::string& path) const {
     FILE* f = std::fopen(path.c_str(), "w");
     if (!f) return false;
@@ -2136,6 +2322,10 @@ bool Input::saveIni(const std::string& path) const {
                     std::fprintf(f, "%-24s = cc14:%d", ACTIONS[i].name, b.code);
                 } else if (src == SRC_MIDI_NOTE) {
                     std::fprintf(f, "%-24s = note:%d", ACTIONS[i].name, b.code);
+                } else if (src == SRC_OSC_F) {
+                    std::fprintf(f, "%-24s = osc:%s", ACTIONS[i].name, b.oscAddress.c_str());
+                } else if (src == SRC_OSC_TRIG) {
+                    std::fprintf(f, "%-24s = osct:%s", ACTIONS[i].name, b.oscAddress.c_str());
                 }
                 if ((src == SRC_MIDI_CC || src == SRC_MIDI_CC14 || src == SRC_MIDI_NOTE)
                     && b.modmask != 0) {
@@ -2202,6 +2392,31 @@ bool Input::saveIni(const std::string& path) const {
     dump_section("midi",     SRC_MIDI_CC,   /*emitHeader=*/false);
     dump_section("midi",     SRC_MIDI_CC14, /*emitHeader=*/false);
     dump_section("midi",     SRC_MIDI_NOTE, /*emitHeader=*/false);
+
+    // OSC section — UDP listener for TouchDesigner and any OSC source.
+    std::fprintf(f,
+"[osc]\n"
+"# OSC ingestion over UDP. Disabled by default; enable with --osc-listen\n"
+"# on the command line or by setting `listen = PORT` here.\n"
+"#\n"
+"# Top-level keys:\n"
+"#   listen = 7700   UDP port to bind. 0 = disabled.\n"
+"#   learn  = on     print every incoming OSC address+arg to stdout.\n"
+"#\n"
+"# Binding syntax:\n"
+"#   action.name = osc:/path/to/addr            axis (continuous) or auto-trigger\n"
+"#   action.name = osct:/path/to/addr           force trigger semantics\n"
+"#\n"
+"# Options match the MIDI options where they make sense: scale=X, invert,\n"
+"# bipolar (remap 0..1 -> -1..+1), delta (dispatch change vs. last value).\n"
+"#\n"
+"listen = %d\n"
+"learn  = %s\n"
+"\n",
+    oscPort_, oscLearn_ ? "on" : "off");
+
+    dump_section("osc", SRC_OSC_F,    /*emitHeader=*/false);
+    dump_section("osc", SRC_OSC_TRIG, /*emitHeader=*/false);
 
     std::fclose(f);
     return true;

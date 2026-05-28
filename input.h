@@ -185,6 +185,8 @@ enum BindSource : int {
     SRC_MIDI_CC,       // code = CC number,        modmask = channel (0 = omni)
     SRC_MIDI_CC14,     // code = CC MSB number,    modmask = channel (0 = omni)
     SRC_MIDI_NOTE,     // code = MIDI note number, modmask = channel (0 = omni)
+    SRC_OSC_F,         // OSC address dispatched as an axis (float 0..1 or signed)
+    SRC_OSC_TRIG,      // OSC address dispatched as discrete/trigger (>0.5 = press)
 };
 
 // Gamepad binding context — what "mode" the controller is in. Keyboard
@@ -233,6 +235,7 @@ struct Binding {
     bool      bipolar  = false;    // MIDI CC/CC14 absolute: 0..1 -> -1..+1
     bool      shifted  = false;    // MIDI note: require software Shift note held
     BindContext context = CTX_ANY; // gamepad only; keyboard ignores this
+    std::string oscAddress;        // SRC_OSC_*: literal OSC address (e.g. /cma/decay)
 };
 
 
@@ -248,6 +251,10 @@ struct ActionInfo {
 const ActionInfo* action_info(ActionId id);
 const ActionInfo* action_info_by_name(const char* name);
 
+// Lookup by table index (0..action_info_count()-1). Useful for iterating the
+// catalogue without re-querying by ActionId.
+const ActionInfo* action_info_by_index(int idx);
+
 // Total count of entries in the action_info table.
 int action_info_count();
 
@@ -262,6 +269,7 @@ enum UsageSource : int {
     USAGE_MIDI_CC,
     USAGE_GAMEPAD_BTN,
     USAGE_GAMEPAD_AXIS,
+    USAGE_OSC,
 };
 
 // Per-fire event for the optional usage logger. Channel is 0 for non-MIDI.
@@ -351,6 +359,15 @@ public:
     void setMidiLearn(bool enabled) { midiLearn_ = enabled; }
     bool sendMidiNote(int channel, int note, int velocity);
 
+    // OSC input — opens a UDP listener on the given port and dispatches
+    // incoming addresses through handler_ via the same [osc] bindings the
+    // INI parser populates. setOscPort(0) disables. Idempotent.
+    void pollOsc(float dt);
+    void setOscPort(int port) { oscPort_ = port; }
+    void setOscLearn(bool enabled) { oscLearn_ = enabled; }
+    int  oscPort() const { return oscPort_; }
+    bool oscLearn() const { return oscLearn_; }
+
     // Low-level insert (used by installDefaults and loadIni).
     void bind(const Binding& b) { bindings_.push_back(b); }
 
@@ -364,6 +381,10 @@ private:
     MidiState   midi_;
     std::string midiPortHint_;
     bool        midiLearn_ = false;
+    int         oscPort_   = 0;     // 0 = disabled
+    bool        oscLearn_  = false;
+    bool        oscOpened_ = false; // set after first successful open
+    int         oscFailedPort_ = 0; // latch: stop retrying after first failure
 };
 
 // Global instance; defined in input.cpp.

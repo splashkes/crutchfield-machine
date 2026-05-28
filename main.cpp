@@ -76,6 +76,8 @@ struct Cfg {
     float demoPresetSec = 0.0f;     // >0 = cycle to next preset every N seconds
     float demoInjectSec = 0.0f;     // >0 = fire an injection every N seconds
     bool midiLearn = false;          // print incoming MIDI messages
+    int  oscPort   = 0;              // 0 = OSC disabled; >0 = bind UDP port
+    bool oscLearn  = false;          // print incoming OSC addresses/args
     bool logUsage  = false;          // stream every action fire to a session CSV
 };
 
@@ -124,6 +126,9 @@ static void print_cli_help() {
       "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
       "  --high-color        windowed, max colour pipeline (float32 + blur-q 2 + ca-q 2 + fields 4)\n"
       "  --midi-learn        print incoming MIDI notes/CCs for controller mapping\n"
+      "  --osc-listen [PORT] open UDP OSC listener (default port 7700)\n"
+      "  --osc-learn         print incoming OSC addresses+args (mapping mode)\n"
+      "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
       "On Windows only: launch with NO arguments to get an interactive mode\n"
@@ -161,6 +166,26 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--demo-inject"))  { c.demoInjectSec = (float)atof(next()); if (c.demoInjectSec < 0) c.demoInjectSec = 0; }
         else if (eq("--demo"))         { c.demoPresetSec = 30.0f; c.demoInjectSec = 8.0f; }
         else if (eq("--midi-learn"))   { c.midiLearn = true; }
+        else if (eq("--osc-listen"))   {
+            // Optional port follows. If absent/non-numeric, use default 7700.
+            int p = 0;
+            if (i+1 < argc && argv[i+1][0] >= '0' && argv[i+1][0] <= '9') {
+                p = atoi(next());
+            }
+            c.oscPort = (p > 0 && p < 65536) ? p : 7700;
+        }
+        else if (eq("--osc-learn"))    { c.oscLearn = true; if (c.oscPort == 0) c.oscPort = 7700; }
+        else if (eq("--list-actions")) {
+            for (int ai = 0; ai < action_info_count(); ai++) {
+                const ActionInfo* a = action_info_by_index(ai);
+                if (!a || !a->name) continue;
+                printf("%-32s  [%s]  %s\n",
+                       a->name,
+                       a->group ? a->group : "",
+                       a->desc ? a->desc : "");
+            }
+            exit(0);
+        }
         else if (eq("--log-usage"))    { c.logUsage  = true; }
         // Convenience bundle — windowed, full-float feedback, max blur/CA,
         // 4-field coupling. For exploring the colour pipeline without
@@ -4723,6 +4748,10 @@ int main(int argc, char** argv) {
     // on first run so users have something to edit.
     g_input.installDefaults();
     g_input.setMidiLearn(g_cfg.midiLearn);
+    // OSC config: CLI overrides bindings.ini. If the user passed --osc-listen
+    // we set port + learn here; bindings.ini may still set learn=on later.
+    if (g_cfg.oscPort  > 0)   g_input.setOscPort(g_cfg.oscPort);
+    if (g_cfg.oscLearn)       g_input.setOscLearn(true);
     g_input.setHandler(apply_action);
 
     // ── usage logger ─────────────────────────────────────────────────
@@ -4969,6 +4998,7 @@ int main(int argc, char** argv) {
         }
         g_input.pollGamepad(GLFW_JOYSTICK_1, dt, gpCtx);
         g_input.pollMidi(dt);
+        g_input.pollOsc(dt);
         if (g_input.midi().connected && !midiWasConnected) {
             sync_ddj_layer_leds();
             sync_ddj_filter_leds();
