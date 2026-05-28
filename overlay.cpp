@@ -866,101 +866,63 @@ void Overlay::drawMathPanel() {
 
     y += 14.f;
 
-    // ── Parameter editor ─────────────────────────────────────────────
-    tx(x, y, "parameters", TextRender::SZ_MEDIUM, headingC);
-    tx(x + 200.f, y + 4.f, "up/down select  ·  left/right adjust",
+    // ── Meta-controls hint ───────────────────────────────────────────
+    tx(x, y, "meta-controls", TextRender::SZ_MEDIUM, headingC);
+    y += lh(TextRender::SZ_MEDIUM) + 4.f;
+    tx(x, y, "dyn.halflife.axis        memory in seconds",
        TextRender::SZ_SMALL, dimC);
-    y += lh(TextRender::SZ_MEDIUM) + 10.f;
+    y += lh(TextRender::SZ_SMALL);
+    tx(x, y, "regime.distance.axis    walk stable → chaotic",
+       TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_SMALL);
+    tx(x, y, "pad.regime.x / .y         radial compass",
+       TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_SMALL);
+    tx(x, y, "theater.failsafe          DIVERGENT >2s → recall STABLE",
+       TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_SMALL);
+    tx(x, y, "math.echo                 publish /cma/math/* @ 30 Hz",
+       TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_SMALL) + 12.f;
 
-    // Layout: [ label  |  value text  |  ──── slider ────  |  spark ]
-    const float labelW   = 110.f;
-    const float valueW   = 90.f;
-    const float sparkW   = 110.f;
-    const float rowH     = lh(TextRender::SZ_MEDIUM) + 14.f;
-    const float hlPadX   = 10.f;
-    const float sliderX  = x + labelW + valueW;
-    const float sparkRX  = panelX + panelW - 24.f;        // right edge of spark
-    const float sparkLX  = sparkRX - sparkW;
-    const float sliderW  = sparkLX - sliderX - 18.f;
-    const float trackH   = 8.f;
+    // ── Sparkline strip ──────────────────────────────────────────────
+    tx(x, y, "parameter history (last ~6 s)", TextRender::SZ_MEDIUM, headingC);
+    y += lh(TextRender::SZ_MEDIUM) + 8.f;
 
-    unsigned char selBg[4]      = { 32, 72, 110, 230 };
-    unsigned char selLabel[4]   = { 255, 255, 255, 255 };
-    unsigned char selValue[4]   = { 255, 255, 255, 255 };
-    unsigned char trackBg[4]    = { 28, 36, 52, 255 };
-    unsigned char trackFill[4]  = { 100, 200, 255, 255 };
-    unsigned char trackKnob[4]  = { 240, 248, 255, 255 };
-    unsigned char trackFillS[4] = { 160, 220, 255, 255 };
+    // Mathlab is now a pure analytical view. Parameter editing lives in
+    // the existing ui_panel.cpp (press H) — this panel shows recent
+    // history and the math characterization. The two views share the
+    // same backing parameters, so changes in one show up immediately
+    // in the other.
+    const float sparkX = x;
+    const float sparkW = panelW - 56.f;
+    const float rowH   = lh(TextRender::SZ_SMALL) + 10.f;
 
-    mathRowGeom_.clear();
-    mathRowGeom_.reserve(N_MATH_ROWS);
+    mathRowGeom_.clear();  // sliders gone — keep geometry empty
+
+    unsigned char miniLabel[4] = { 180, 195, 220, 255 };
 
     for (int i = 0; i < N_MATH_ROWS; i++) {
-        if (y + rowH > panelY + panelH - lh(TextRender::SZ_SMALL) - 24.f) {
-            mathRowGeom_.push_back({0,0,0,0});  // off-screen marker
-            continue;
-        }
+        if (y + rowH > panelY + panelH - lh(TextRender::SZ_SMALL) - 24.f) break;
         const MathRow& r = MATH_ROWS[i];
         float v = r.accessor(cur);
-        // Map v to slider's [0..1] position using its declared range.
-        float vrange = r.vmax - r.vmin;
-        if (vrange < 1e-6f) vrange = 1.f;
-        float pos = (v - r.vmin) / vrange;
-        if (pos < 0.f) pos = 0.f;
-        if (pos > 1.f) pos = 1.f;
 
-        bool isSel = (i == mathSelectedRow_);
-        unsigned char* lblC = isSel ? selLabel : dimC;
-        unsigned char* valC = isSel ? selValue : valueC;
+        // Compact one-line readout: "label   value   ──── sparkline ────"
+        char rowBuf[80];
+        snprintf(rowBuf, sizeof rowBuf, "%s", r.label);
+        tx(sparkX, y, rowBuf, TextRender::SZ_SMALL, miniLabel);
+        snprintf(rowBuf, sizeof rowBuf, "%.4f", v);
+        txR(sparkX + 220.f, y, rowBuf, TextRender::SZ_SMALL, valueC);
 
-        if (isSel) {
-            drawFilledRect(panelX + hlPadX, y - 4.f,
-                           panelW - 2.f * hlPadX, rowH,
-                           selBg, 0.65f);
-        }
-
-        // Label + value
-        float labelX = x + (isSel ? 14.f : 0.f);
-        tx(labelX, y, r.label, TextRender::SZ_MEDIUM, lblC);
-        snprintf(buf, sizeof buf, "%.4f", v);
-        txR(sliderX - 12.f, y, buf, TextRender::SZ_MEDIUM, valC);
-
-        // Slider track
-        float trackY = y + (rowH - 4.f) * 0.5f - trackH * 0.5f - 4.f;
-        drawFilledRect(sliderX, trackY, sliderW, trackH, trackBg, 1.f);
-        // Fill up to current position
-        unsigned char* fillC = isSel ? trackFillS : trackFill;
-        drawFilledRect(sliderX, trackY, sliderW * pos, trackH, fillC, 1.f);
-        // Knob
-        float knobX = sliderX + sliderW * pos - 5.f;
-        drawFilledRect(knobX, trackY - 4.f, 10.f, trackH + 8.f, trackKnob, 1.f);
-
-        // Sparkline — small
-        unsigned char* spkC = isSel ? trackFillS : accent;
-        drawSparkline(sparkLX, y + 6.f, sparkW, rowH - 16.f,
-                      r.accessor, 0.f, 0.f, spkC);
-
-        // Record geometry for hit-testing in mouse paths. We accept
-        // clicks anywhere across the row so the user doesn't have to
-        // hit the slim track precisely.
-        RowGeom g {};
-        g.x = panelX + hlPadX;
-        g.y = y - 4.f;
-        g.w = panelW - 2.f * hlPadX;
-        g.h = rowH;
-        // But the slider HIT region is just the track area — we store
-        // it separately by mapping the row's geometry. To keep the
-        // struct simple, we keep g as the row bounding box and let
-        // hit-test detect "click in slider band" vs "click anywhere
-        // else in the row -> just select".
-        mathRowGeom_.push_back(g);
-
+        // Sparkline takes the remaining width
+        drawSparkline(sparkX + 240.f, y + 2.f, sparkW - 240.f, rowH - 6.f,
+                      r.accessor, 0.f, 0.f, accent);
         y += rowH;
     }
 
-    // Footer
-    float footY = panelY + panelH - lh(TextRender::SZ_SMALL) - 12.f;
+    // Footer — points users to the editor
+    float footY = panelY + panelH - lh(TextRender::SZ_SMALL) - 16.f;
     tx(panelX + 28.f, footY,
-       "shift+arrow = 20x coarse step  ·  M closes",
+       "Mathlab is analysis only.  Press H for the parameter editor.",
        TextRender::SZ_SMALL, dimC);
 }
