@@ -90,6 +90,7 @@ struct Cfg {
     bool logUsage  = false;          // stream every action fire to a session CSV
     bool linkOn    = false;          // enable Ableton Link discovery on start
     std::string syphonName;          // "" disables; otherwise Syphon server name
+    bool musicOn   = true;           // play the bundled metronome/preset on start
 };
 
 static std::string g_program_name = "feedback";
@@ -144,6 +145,9 @@ static void print_cli_help() {
       "  --link              enable Ableton Link on start (network tempo sync)\n"
       "  --syphon [NAME]     publish the render texture as a Syphon source on macOS\n"
       "                        (default name: \"Crutchfield Machine\")\n"
+      "  --no-music          don't auto-play the bundled metronome on startup\n"
+      "  --music on|off      explicit music engine state on startup\n"
+      "                        (Ctrl+Alt+Space toggles at runtime regardless)\n"
       "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
@@ -192,6 +196,11 @@ static Cfg parse_cli(int argc, char** argv) {
         }
         else if (eq("--osc-learn"))    { c.oscLearn = true; if (c.oscPort == 0) c.oscPort = 7700; }
         else if (eq("--link"))         { c.linkOn = true; }
+        else if (eq("--no-music"))     { c.musicOn = false; }
+        else if (eq("--music")) {
+            std::string v = next();
+            c.musicOn = (v == "on" || v == "true" || v == "1" || v == "yes");
+        }
         else if (eq("--syphon")) {
             // Optional name follows
             if (i+1 < argc && argv[i+1][0] != '-') c.syphonName = next();
@@ -4783,7 +4792,10 @@ int main(int argc, char** argv) {
                 ")"
             );
         }
-        Music::setPlaying(true);
+        // CLI controls whether the music engine starts playing. Patterns
+        // are loaded regardless so Ctrl+Alt+Space (or OSC music.playpause)
+        // can start playback later without touching presets.
+        Music::setPlaying(g_cfg.musicOn);
     }
 
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
