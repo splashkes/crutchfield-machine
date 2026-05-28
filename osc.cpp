@@ -37,6 +37,7 @@
   #include <arpa/inet.h>
   #include <netinet/in.h>
   #include <sys/socket.h>
+  #include <sys/time.h>
   #include <unistd.h>
   #include <fcntl.h>
   using socket_t = int;
@@ -124,6 +125,23 @@ const char* read_osc_string(const uint8_t* buf, int len, int& off, int& slen) {
     return reinterpret_cast<const char*>(buf + start);
 }
 
+// OSC NTP timetag (uint64 big-endian, seconds since 1900-01-01 in the
+// high 32 bits, fractional in the low 32). Special value: 1 means
+// "immediate". Convert to a Unix timestamp (seconds since 1970) by
+// subtracting the NTP epoch offset. Returns 0.0 for "immediate".
+constexpr uint64_t NTP_UNIX_OFFSET = 2208988800ULL;
+
+double ntp_to_unix(uint64_t timetag) {
+    if (timetag == 0 || timetag == 1) return 0.0;
+    uint32_t secs = (uint32_t)(timetag >> 32);
+    uint32_t frac = (uint32_t)(timetag & 0xFFFFFFFFULL);
+    return (double)(secs - NTP_UNIX_OFFSET) + (double)frac / 4294967296.0;
+}
+
+// Active timetag for the message being parsed. Set by parse_bundle()
+// before recursing; reset to 0 (immediate) for top-level messages.
+thread_local double t_fire_unix = 0.0;
+
 // Parse one OSC message and push to the queue. Returns true if a
 // dispatchable message was parsed (regardless of whether we recognized
 // the type tag).
@@ -140,6 +158,7 @@ bool parse_message(const uint8_t* buf, int len) {
         FeedbackOscMsg m = {};
         std::strncpy(m.address, addr, sizeof(m.address) - 1);
         m.arg_type = 0;
+        m.fire_unix = t_fire_unix;
         std::lock_guard<std::mutex> lk(g_osc.mu);
         if (g_osc.q.size() >= 4096) g_osc.q.pop_front();
         g_osc.q.push_back(m);
@@ -151,6 +170,7 @@ bool parse_message(const uint8_t* buf, int len) {
     m.arg_type = 0;
     m.arg_f = 0.0f;
     m.arg_i = 0;
+    m.fire_unix = t_fire_unix;
     bool got_first = false;
 
     // Walk type chars after the ','.
@@ -226,12 +246,20 @@ bool parse_message(const uint8_t* buf, int len) {
 void parse_bundle(const uint8_t* buf, int len) {
     // "#bundle\0" + 8-byte timetag = 16 bytes
     if (len < 16) return;
+    // Read timetag (offset 8, 8 bytes big-endian uint64).
+    uint64_t tt = 0;
+    for (int i = 0; i < 8; i++) tt = (tt << 8) | buf[8 + i];
+    double saved = t_fire_unix;
+    double mine = ntp_to_unix(tt);
+    // Nested bundles inherit the OUTER timetag unless they specify
+    // their own (the spec lets contained bundles override).
+    t_fire_unix = (mine > 0.0) ? mine : saved;
+
     int off = 16;
     while (off + 4 <= len) {
         uint32_t sz;
-        if (!read_be32(buf, len, off, sz)) return;
-        if ((int)sz < 0 || off + (int)sz > len) return;
-        // contained element: either a nested bundle or a message
+        if (!read_be32(buf, len, off, sz)) break;
+        if ((int)sz < 0 || off + (int)sz > len) break;
         if (sz >= 8 && std::memcmp(buf + off, "#bundle\0", 8) == 0) {
             parse_bundle(buf + off, (int)sz);
         } else {
@@ -239,6 +267,7 @@ void parse_bundle(const uint8_t* buf, int len) {
         }
         off += (int)sz;
     }
+    t_fire_unix = saved;
 }
 
 void listener_thread() {
@@ -326,11 +355,24 @@ extern "C" void feedback_osc_close(void) {
 
 extern "C" int feedback_osc_poll(FeedbackOscMsg* out, int max_count) {
     if (!out || max_count <= 0) return 0;
+    // Current wall-clock seconds since Unix epoch (double for sub-second
+    // precision). Used to hold back future-timetagged bundle messages.
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    double now_unix = (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+
     std::lock_guard<std::mutex> lk(g_osc.mu);
     int n = 0;
-    while (n < max_count && !g_osc.q.empty()) {
-        out[n++] = g_osc.q.front();
-        g_osc.q.pop_front();
+    // Walk the queue and emit any due messages while preserving order.
+    // O(N) per poll but typical queue depth is tiny (a frame's worth).
+    for (auto it = g_osc.q.begin(); n < max_count && it != g_osc.q.end(); ) {
+        if (it->fire_unix > 0.0 && it->fire_unix > now_unix) {
+            // Not yet due — keep in queue, scan past.
+            ++it;
+            continue;
+        }
+        out[n++] = *it;
+        it = g_osc.q.erase(it);
     }
     return n;
 }

@@ -23,12 +23,18 @@ extern "C" {
 // arg_f holds the first numeric argument as a float (ints are cast). If
 // the type tag is T/F, arg_f is 1.0/0.0 respectively. Type tag char is
 // preserved in arg_type for callers that need it.
+//
+// fire_unix is 0 for "dispatch immediately" or a Unix timestamp (seconds
+// since epoch as a double) for messages parsed from a bundle whose
+// timetag is in the future. The poll path holds back any message whose
+// fire_unix > current time.
 struct FeedbackOscMsg {
     char    address[128];
     float   arg_f;
     int32_t arg_i;
     char    arg_type;   // 'f', 'i', 'T', 'F', 's', or 0 if no args
     uint8_t reserved[3];
+    double  fire_unix;  // 0 = immediate; otherwise Unix epoch seconds
 };
 
 // Open a UDP socket bound to the given port and start the listener

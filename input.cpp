@@ -323,6 +323,130 @@ int action_info_count() { return N_ACTIONS; }
 // macro-synthesized ActionIds. Initialized by registerMacro().
 static Input* s_macroRegistryOwner = nullptr;
 
+// ─────────────────────────────────────────────────────────────────────────
+// OSC address pattern matching (per OSC 1.0 spec):
+//   ?           matches a single char (except '/')
+//   *           matches any number of chars (except '/')
+//   [abc]       matches one char in the set; [a-z] is a range; [!abc] negates
+//   {foo,bar}   matches one of the comma-separated alternatives
+// Matching is segment-aware: '/' separators are anchors and patterns never
+// cross them. This is the standard OSC interpretation.
+// ─────────────────────────────────────────────────────────────────────────
+static bool osc_match_segment(const char* pat, const char* p_end,
+                              const char* str, const char* s_end);
+
+static bool osc_match_class(const char*& p, const char* p_end, char c) {
+    // p points at '[' on entry; advance past matching ']' on success.
+    // Returns true if c matches the class.
+    if (p >= p_end || *p != '[') return false;
+    p++;
+    bool neg = (p < p_end && *p == '!');
+    if (neg) p++;
+    bool match = false;
+    while (p < p_end && *p != ']') {
+        char a = *p++;
+        if (p + 1 < p_end && *p == '-' && p[1] != ']') {
+            char b = p[1]; p += 2;
+            if (c >= a && c <= b) match = true;
+        } else {
+            if (c == a) match = true;
+        }
+    }
+    if (p < p_end && *p == ']') p++;
+    return neg ? !match : match;
+}
+
+static bool osc_match_alts(const char*& p, const char* p_end,
+                           const char*& s, const char* s_end) {
+    // p points at '{' on entry. Try each comma-separated alternative
+    // against the head of s. On success: advance both p and s.
+    if (p >= p_end || *p != '{') return false;
+    const char* p0 = p + 1;
+    const char* alt_start = p0;
+    int depth = 1;
+    const char* alts[64]; int n_alts = 0;
+    const char* p_close = nullptr;
+    for (const char* q = p0; q < p_end; q++) {
+        if (*q == '{') depth++;
+        else if (*q == '}') {
+            depth--;
+            if (depth == 0) {
+                if (n_alts < 64) alts[n_alts++] = q;
+                p_close = q;
+                break;
+            }
+        } else if (*q == ',' && depth == 1) {
+            if (n_alts < 64) alts[n_alts++] = q;
+        }
+    }
+    if (!p_close) return false;
+    const char* cursor = alt_start;
+    for (int i = 0; i < n_alts; i++) {
+        size_t alen = (size_t)(alts[i] - cursor);
+        if ((size_t)(s_end - s) >= alen && std::memcmp(s, cursor, alen) == 0) {
+            s += alen;
+            p = p_close + 1;
+            return true;
+        }
+        cursor = alts[i] + 1;
+    }
+    return false;
+}
+
+static bool osc_match_segment(const char* pat, const char* p_end,
+                              const char* str, const char* s_end) {
+    while (pat < p_end) {
+        char pc = *pat;
+        if (pc == '*') {
+            pat++;
+            // Try every possible suffix of the remaining string.
+            for (const char* try_s = str; try_s <= s_end; try_s++) {
+                if (osc_match_segment(pat, p_end, try_s, s_end)) return true;
+            }
+            return false;
+        }
+        if (pc == '?') {
+            if (str >= s_end) return false;
+            pat++; str++;
+            continue;
+        }
+        if (pc == '[') {
+            if (str >= s_end) return false;
+            if (!osc_match_class(pat, p_end, *str)) return false;
+            str++;
+            continue;
+        }
+        if (pc == '{') {
+            if (!osc_match_alts(pat, p_end, str, s_end)) return false;
+            continue;
+        }
+        // Literal char
+        if (str >= s_end || *str != pc) return false;
+        pat++; str++;
+    }
+    return str == s_end;
+}
+
+bool osc_address_matches(const char* pattern, const char* address) {
+    // Both must start with /
+    if (!pattern || !address) return false;
+    if (pattern[0] != '/' || address[0] != '/') return false;
+    // Walk segment by segment so wildcards never cross '/'
+    const char* p = pattern + 1;
+    const char* a = address + 1;
+    while (true) {
+        const char* p_slash = std::strchr(p, '/');
+        const char* a_slash = std::strchr(a, '/');
+        const char* p_end = p_slash ? p_slash : (p + std::strlen(p));
+        const char* a_end = a_slash ? a_slash : (a + std::strlen(a));
+        if (!osc_match_segment(p, p_end, a, a_end)) return false;
+        if (!p_slash && !a_slash) return true;
+        if (!p_slash || !a_slash) return false;
+        p = p_slash + 1;
+        a = a_slash + 1;
+    }
+}
+
 const ActionInfo* action_info(ActionId id) {
     if ((int)id >= ACT_MACRO_BASE && s_macroRegistryOwner) {
         int n = (int)id - ACT_MACRO_BASE;
@@ -2293,7 +2417,7 @@ void Input::pollOsc(float /*dt*/) {
         for (const Binding& b : bindings_) {
             if (b.source != SRC_OSC_F && b.source != SRC_OSC_TRIG) continue;
             if (b.oscAddress.empty()) continue;
-            if (std::strcmp(b.oscAddress.c_str(), m.address) != 0) continue;
+            if (!osc_address_matches(b.oscAddress.c_str(), m.address)) continue;
             const ActionInfo* info = action_info(b.action);
             if (!info) continue;
 
