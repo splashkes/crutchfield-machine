@@ -31,6 +31,22 @@ OSC_PORT=7700
 ECHO_PORT=7701
 SYPHON_NAME="Crutchfield"
 
+# Detect stale build (overlay.h / input.h newer than overlay.o / main.o).
+# Mixed-ODR builds blow up at runtime in nasty ways (e.g. mathPushFrame
+# segfaulting because the host-side MathSample layout disagrees with
+# the overlay-side one). Force a clean rebuild whenever a header that
+# affects struct layout has been touched since the binary was linked.
+if [[ -f "$BIN" ]]; then
+  for h in overlay.h input.h ui_panel.h text_render.h osc.h link_glue.h syphon_glue.h; do
+    if [[ -f "$REPO/$h" && "$REPO/$h" -nt "$BIN" ]]; then
+      echo "[launch] $h is newer than the binary — clean rebuilding"
+      (cd "$REPO" && make -f Makefile.macos clean >/dev/null 2>&1 && \
+        make -f Makefile.macos -j8 >/dev/null 2>&1)
+      break
+    fi
+  done
+fi
+
 # ── Commands ─────────────────────────────────────────────────────────
 case "${1:-}" in
   stop)
