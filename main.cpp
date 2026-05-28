@@ -3136,7 +3136,58 @@ static const ActionLayerReq ACTION_REQS[] = {
     { ACT_INJECT_HOLD,   L_INJECT,   "inject",        "F10" },
 };
 
+// ── State snapshots ──────────────────────────────────────────────────
+// 8 slots, indexed 1..8. Each slot stores Params + enable mask + a
+// per-slot timestamp for the UI panel. Slot 0 is unused (so 1..8 maps
+// directly to MIDI note numbers / OSC int values without -1 fiddling).
+namespace {
+struct StateSnapshot {
+    bool   used = false;
+    int    enableBits = 0;
+    Params p;
+    double savedAt = 0.0;   // wall-clock seconds since launch
+};
+StateSnapshot g_snapshots[9];   // indices 0..8; 0 unused
+
+void snapshot_save(int slot) {
+    if (slot < 1 || slot > 8) return;
+    g_snapshots[slot].used = true;
+    g_snapshots[slot].enableBits = S.enable;
+    g_snapshots[slot].p = S.p;
+    g_snapshots[slot].savedAt = glfwGetTime();
+    char buf[64];
+    snprintf(buf, sizeof buf, "snapshot saved → slot %d", slot);
+    S.ov.logEvent(buf);
+    printf("[snapshot] saved slot %d\n", slot);
+}
+
+void snapshot_recall(int slot) {
+    if (slot < 1 || slot > 8) return;
+    if (!g_snapshots[slot].used) {
+        char buf[64];
+        snprintf(buf, sizeof buf, "snapshot slot %d empty", slot);
+        S.ov.logEvent(buf);
+        return;
+    }
+    S.enable = g_snapshots[slot].enableBits;
+    S.p      = g_snapshots[slot].p;
+    char buf[64];
+    snprintf(buf, sizeof buf, "snapshot recalled → slot %d", slot);
+    S.ov.logEvent(buf);
+    printf("[snapshot] recalled slot %d\n", slot);
+}
+} // namespace
+
 static void apply_action(ActionId id, float mag) {
+    // Synthetic macro ids dispatch through Input — each step re-enters
+    // apply_action via handler_, so a macro's steps land here naturally.
+    if ((int)id >= ACT_MACRO_BASE) {
+        g_input.fireMacroById(id);
+        return;
+    }
+    // State snapshots — mag carries the slot number.
+    if (id == ACT_SNAPSHOT_SAVE)   { snapshot_save((int)mag);   return; }
+    if (id == ACT_SNAPSHOT_RECALL) { snapshot_recall((int)mag); return; }
     auto& p = S.p;
 
     // Warn when a parameter action fires but its layer is off. We still

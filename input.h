@@ -107,6 +107,14 @@ enum ActionId : int {
     ACT_PRINT_HELP_STDOUT,
     ACT_QUIT,
 
+    // ── State snapshots (8 named slots, 1..8) ─────────────────────────
+    // Snapshot a complete parameter state (every continuous value +
+    // every layer enable bit) into a numbered slot, then recall it later.
+    // value passed to dispatch selects the slot (1..8); fractional values
+    // are floor'd.
+    ACT_SNAPSHOT_SAVE,
+    ACT_SNAPSHOT_RECALL,
+
     // ── V-4 effect slots (C4+) ───────────────────────────────────────
     ACT_VFX1_CYCLE_FWD, ACT_VFX1_CYCLE_BACK, ACT_VFX1_OFF,
     ACT_VFX1_PARAM_UP, ACT_VFX1_PARAM_DN,
@@ -188,6 +196,12 @@ enum BindSource : int {
     SRC_OSC_F,         // OSC address dispatched as an axis (float 0..1 or signed)
     SRC_OSC_TRIG,      // OSC address dispatched as discrete/trigger (>0.5 = press)
 };
+
+// Macros get synthetic ActionIds above this base. action_info() resolves
+// them to dynamically-registered entries via Input. The dispatch path
+// treats them as AK_DISCRETE; the apply_action handler in main.cpp
+// short-circuits to Input::fireMacroById().
+static constexpr int ACT_MACRO_BASE = 10000;
 
 // Gamepad binding context — what "mode" the controller is in. Keyboard
 // always uses CTX_ANY (keyboard is never contextually remapped).
@@ -395,6 +409,24 @@ public:
     // Read-only access (help UI wants to print "Q/A  zoom" style rows).
     const std::vector<Binding>& bindings() const { return bindings_; }
 
+    // Action macros — fire a sequence of (action, value) pairs as one
+    // logical unit. Defined in bindings.ini's [macros] section as
+    //   macro.name = action1(v1) ; action2(v2) ; action3(v3) ; ...
+    // Bound from any source via the `macro:macro.name` pseudo-source,
+    // or invoked programmatically via fireMacro().
+    struct MacroStep { ActionId action; float value; };
+
+    // Register or update a macro. Returns the synthetic ActionId assigned
+    // to this macro (stable across re-registration of the same name).
+    ActionId registerMacro(const std::string& name, std::vector<MacroStep> steps);
+    bool fireMacro(const std::string& name);
+    void fireMacroById(ActionId id);
+    const std::vector<std::string>& macroNames() const { return macroNames_; }
+    const ActionInfo* macroInfoByIndex(int idx) const {
+        if (idx < 0 || idx >= (int)macroInfos_.size()) return nullptr;
+        return &macroInfos_[idx];
+    }
+
 private:
     std::vector<Binding> bindings_;
     Handler handler_;
@@ -417,6 +449,15 @@ private:
     std::string oscEchoHost_;       // e.g. "127.0.0.1"
     int         oscEchoPort_   = 0; // 0 = disabled
     bool        oscEchoApplied_ = false; // lazy bind to feedback_osc_set_echo
+
+    // Macros — synthetic ActionId range starts at ACT_MACRO_BASE. The
+    // index into macroSteps_ + macroNames_ is (id - ACT_MACRO_BASE).
+    // macroInfos_ holds an ActionInfo per macro so action_info() can
+    // return a stable pointer.
+    std::vector<std::string>                macroNames_;
+    std::vector<std::vector<MacroStep>>     macroSteps_;
+    std::vector<ActionInfo>                 macroInfos_;
+    std::vector<std::string>                macroDescs_;  // backing storage for ActionInfo::desc
 };
 
 // Global instance; defined in input.cpp.

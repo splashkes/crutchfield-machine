@@ -232,6 +232,8 @@ static const ActionInfo ACTIONS[] = {
     { ACT_PATTERN_CURSOR_DN,"pattern.cursor.dn",  AK_DISCRETE, "Inject", "pattern next" },
     { ACT_PRINT_HELP_STDOUT,"app.helpStdout",     AK_DISCRETE, "App", "print help to stdout" },
     { ACT_QUIT,             "app.quit",           AK_DISCRETE, "App", "quit" },
+{ ACT_SNAPSHOT_SAVE,    "snapshot.save",      AK_STEP,     "App", "save state to slot (value=slot 1..8)" },
+{ ACT_SNAPSHOT_RECALL,  "snapshot.recall",    AK_STEP,     "App", "recall state from slot (value=slot 1..8)" },
 
     // V-4 slots (bindings wired in C4+)
     { ACT_VFX1_CYCLE_FWD, "vfx1.next",      AK_DISCRETE, "VFX-1", "slot 1: next effect" },
@@ -317,13 +319,43 @@ static constexpr int N_ACTIONS = (int)(sizeof(ACTIONS) / sizeof(ACTIONS[0]));
 
 int action_info_count() { return N_ACTIONS; }
 
+// Forward-declared for action_info / action_info_by_name lookup of
+// macro-synthesized ActionIds. Initialized by registerMacro().
+static Input* s_macroRegistryOwner = nullptr;
+
 const ActionInfo* action_info(ActionId id) {
+    if ((int)id >= ACT_MACRO_BASE && s_macroRegistryOwner) {
+        int n = (int)id - ACT_MACRO_BASE;
+        const auto& infos = s_macroRegistryOwner->bindings(); (void)infos; // tickle
+        // Friend-equivalent access via a const_cast-free path: we stored
+        // macroInfos_ inside Input and expose it through a small accessor.
+        // For now, use a helper that walks Input via its public methods.
+        // Direct private access is allowed because this function lives
+        // in the same translation unit as Input's definition.
+        // Walk the names_ vector to find the index (already known) and
+        // return the matching ActionInfo pointer.
+        const std::vector<std::string>& names = s_macroRegistryOwner->macroNames();
+        if (n < (int)names.size()) {
+            // s_macroRegistryOwner->macroInfos_[n] — but that's private.
+            // We expose macroInfoByIndex() as a public accessor.
+            return s_macroRegistryOwner->macroInfoByIndex(n);
+        }
+        return nullptr;
+    }
     for (int i = 0; i < N_ACTIONS; i++)
         if (ACTIONS[i].id == id) return &ACTIONS[i];
     return nullptr;
 }
 
 const ActionInfo* action_info_by_name(const char* name) {
+    if (name && std::strncmp(name, "macro.", 6) == 0 && s_macroRegistryOwner) {
+        const char* sub = name + 6;
+        const std::vector<std::string>& names = s_macroRegistryOwner->macroNames();
+        for (size_t i = 0; i < names.size(); i++)
+            if (names[i] == sub)
+                return s_macroRegistryOwner->macroInfoByIndex((int)i);
+        return nullptr;
+    }
     for (int i = 0; i < N_ACTIONS; i++)
         if (std::strcmp(ACTIONS[i].name, name) == 0) return &ACTIONS[i];
     return nullptr;
@@ -1199,6 +1231,49 @@ bool Input::loadIni(const std::string& path) {
         // strip trailing "# comment"
         size_t hash = v.find('#');
         if (hash != std::string::npos) v = s_trim(v.substr(0, hash));
+
+        // [macros] section: each line defines a named macro that any
+        // binding can target by writing "macro.<name>" as the action.
+        //   scene.intro = layer.warp(1) ; dyn.decay.axis(0.95) ; color.sat.setAxis(0.2)
+        // Trailing semicolons and whitespace are tolerated. Each step
+        // is "action.name(value)" — value defaults to 1.0 if omitted.
+        if (section == "macros") {
+            std::vector<MacroStep> steps;
+            size_t pos = 0;
+            std::string body = v;
+            while (pos < body.size()) {
+                size_t semi = body.find(';', pos);
+                std::string step = s_trim(body.substr(
+                    pos, (semi == std::string::npos ? body.size() : semi) - pos));
+                pos = (semi == std::string::npos ? body.size() : semi + 1);
+                if (step.empty()) continue;
+                // action.name(value)  or  action.name  (value defaults 1.0)
+                std::string act;
+                float vv = 1.0f;
+                size_t paren = step.find('(');
+                if (paren != std::string::npos) {
+                    act = s_trim(step.substr(0, paren));
+                    size_t close = step.find(')', paren);
+                    if (close == std::string::npos) close = step.size();
+                    std::string val = s_trim(step.substr(paren + 1, close - paren - 1));
+                    if (!val.empty()) vv = (float)std::atof(val.c_str());
+                } else {
+                    act = step;
+                }
+                const ActionInfo* info = action_info_by_name(act.c_str());
+                if (!info) {
+                    std::fprintf(stderr,
+                        "[macros] '%s': unknown action '%s' — step skipped\n",
+                        k.c_str(), act.c_str());
+                    continue;
+                }
+                steps.push_back({ info->id, vv });
+            }
+            registerMacro(k, std::move(steps));
+            std::fprintf(stdout, "[macros] registered '%s' (%zu steps)\n",
+                         k.c_str(), macroSteps_.back().size());
+            continue;
+        }
 
         // Top-level keys inside [midi]: `port = …`, `clock = follow|ignore`,
         // `learn = on|off`. These configure the MIDI input rather than
@@ -2307,6 +2382,69 @@ void Input::pollOsc(float /*dt*/) {
 // from CLI or bindings.ini. The downstream listener subscribes to
 // /cma/echo/* and reads action.name + value pairs.
 // ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// Macros — defined in bindings.ini's [macros] section as:
+//   scene1 = layer.warp(1) ; layer.noise(0) ; dyn.decay.axis(0.85)
+// Bound by referring to "macro.scene1" on the LHS of any binding line in
+// [keyboard]/[gamepad]/[midi]/[osc] sections. apply_action in main.cpp
+// detects synthetic ActionIds >= ACT_MACRO_BASE and short-circuits to
+// fireMacroById() which iterates the step list and re-enters handler_.
+// ─────────────────────────────────────────────────────────────────────────
+// s_macroRegistryOwner is declared near action_info() at the top of this
+// file so it's visible to both the lookup helpers and registerMacro().
+static void register_macro_registry_owner(Input* in) { s_macroRegistryOwner = in; }
+
+ActionId Input::registerMacro(const std::string& name, std::vector<MacroStep> steps) {
+    register_macro_registry_owner(this);
+    for (size_t i = 0; i < macroNames_.size(); i++) {
+        if (macroNames_[i] == name) {
+            macroSteps_[i] = std::move(steps);
+            return (ActionId)(ACT_MACRO_BASE + (int)i);
+        }
+    }
+    size_t idx = macroNames_.size();
+    macroNames_.push_back(name);
+    macroSteps_.push_back(std::move(steps));
+    macroDescs_.push_back("macro: " + name);
+    // ActionInfo points into macroNames_ / macroDescs_ — both are stable
+    // because we only push_back (never erase) and string contents are
+    // moved into the vector at append time.
+    ActionInfo info {};
+    info.id    = (ActionId)(ACT_MACRO_BASE + (int)idx);
+    info.kind  = AK_DISCRETE;
+    info.group = "Macros";
+    macroInfos_.push_back(info);
+    // Patch the name/desc pointers after the vector is stable. We must
+    // re-patch after every push_back because vector growth invalidates
+    // the const char* slots in earlier ActionInfo entries.
+    for (size_t i = 0; i < macroInfos_.size(); i++) {
+        macroInfos_[i].name = macroNames_[i].c_str();
+        macroInfos_[i].desc = macroDescs_[i].c_str();
+    }
+    return (ActionId)(ACT_MACRO_BASE + (int)idx);
+}
+
+bool Input::fireMacro(const std::string& name) {
+    for (size_t i = 0; i < macroNames_.size(); i++) {
+        if (macroNames_[i] == name) {
+            fireMacroById((ActionId)(ACT_MACRO_BASE + (int)i));
+            return true;
+        }
+    }
+    return false;
+}
+
+void Input::fireMacroById(ActionId id) {
+    int n = (int)id - ACT_MACRO_BASE;
+    if (n < 0 || n >= (int)macroSteps_.size() || !handler_) return;
+    for (const MacroStep& step : macroSteps_[n]) {
+        // Recursive macros (a macro that fires another macro) work
+        // because handler_ is set to apply_action which itself detects
+        // ACT_MACRO_BASE and re-enters fireMacroById.
+        handler_(step.action, step.value);
+    }
+}
+
 void Input::echoActionDispatch(ActionId id, float value) {
     if (oscEchoPort_ <= 0 || oscEchoHost_.empty()) return;
     if (!oscEchoApplied_) {
