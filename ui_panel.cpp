@@ -584,6 +584,29 @@ void UiPanel::drawSliderRow(int idx, float x, float y, float w, bool pinnedRow) 
     float t = (c.maxValue > c.minValue) ? (v - c.minValue) / (c.maxValue - c.minValue) : 0.0f;
     t = clampf(t, 0.0f, 1.0f);
     drawRect(sx, y + 18.0f, sw, 7.0f, line, enabled ? 0.85f : 0.35f);
+
+    // Math augmentation — bifurcation markers on the sliders whose
+    // values directly affect regime classification. Couple has two
+    // thresholds (TURBULENT entry at 0.3, CHAOTIC entry at 0.6).
+    // Decay shows a single danger zone above 0.99 (near-MARGINAL).
+    // We draw a thin vertical tick at the threshold position and a
+    // 1-pixel "danger band" beyond it.
+    if (c.id == "couple") {
+        unsigned char tWarn[4]   = { 250, 180,  90, 255 };
+        unsigned char tDanger[4] = { 248, 110, 110, 255 };
+        float t30 = clampf((0.30f - c.minValue) / (c.maxValue - c.minValue), 0.f, 1.f);
+        float t60 = clampf((0.60f - c.minValue) / (c.maxValue - c.minValue), 0.f, 1.f);
+        // Mark at K_c=0.3 (TURBULENT entry)
+        drawRect(sx + sw * t30 - 1.0f, y + 15.0f, 2.0f, 13.0f, tWarn, 0.85f);
+        // Mark at K_c=0.6 (CHAOTIC entry)
+        drawRect(sx + sw * t60 - 1.0f, y + 15.0f, 2.0f, 13.0f, tDanger, 0.85f);
+    } else if (c.id == "decay") {
+        unsigned char tWarn[4] = { 250, 180,  90, 255 };
+        float t99 = clampf((0.99f - c.minValue) / (c.maxValue - c.minValue), 0.f, 1.f);
+        // Mark at decay=0.99 (approaching MARGINAL)
+        drawRect(sx + sw * t99 - 1.0f, y + 15.0f, 2.0f, 13.0f, tWarn, 0.85f);
+    }
+
     drawRect(sx, y + 18.0f, sw * t, 7.0f, enabled ? hi : dim, enabled ? 0.95f : 0.38f);
     drawRect(sx + sw * t - 3.0f, y + 12.0f, 6.0f, 19.0f, enabled ? fg : dim, enabled ? 0.9f : 0.42f);
     hits_.push_back({HitKind::Control, idx, x, y, w - 34.0f, 40.0f, sx, sw});
