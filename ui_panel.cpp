@@ -784,15 +784,30 @@ void UiPanel::drawDock() {
     unsigned char fg[4] = {226, 236, 232, 255};
     unsigned char hi[4] = {92, 214, 170, 255};
     float x = 10.0f, y = 10.0f;
-    drawRect(x, y, std::min(900.0f, (float)winW_ - 20.0f), 42.0f, bg, 0.52f);
+    float dockW = std::min(900.0f, (float)winW_ - 20.0f);
+    drawRect(x, y, dockW, 42.0f, bg, 0.52f);
     drawText(x + 12.0f, y + 13.0f, "Tab/H: UI", hi, 0.95f, 1.35f);
+    // Right-side regime badge (math augmentation). Fixed width so it
+    // doesn't disturb the pinned-controls layout to its left.
+    float badgeW = 0.0f;
+    if (!regimeName_.empty()) {
+        badgeW = 140.0f;
+        float bx = x + dockW - badgeW - 4.0f;
+        unsigned char tag[4] = { regimeColor_[0], regimeColor_[1], regimeColor_[2], 255 };
+        drawRect(bx, y + 7.0f, badgeW, 28.0f, tag, 0.22f);
+        // tiny dim "regime" label
+        unsigned char dim[4] = { 110, 122, 140, 255 };
+        drawText(bx + 10.0f, y + 11.0f, "regime", dim, 0.85f, 0.85f);
+        drawText(bx + 10.0f, y + 22.0f, regimeName_, tag, 1.0f, 1.30f);
+    }
     float cx = x + 118.0f;
+    float maxCx = x + dockW - badgeW - 10.0f;
     for (const auto& id : pinned_) {
         int idx = controlIndexById(id);
         if (idx < 0) continue;
         std::string label = controls_[idx].label + " " + valueText(idx);
         float cw = std::min(210.0f, 24.0f + (float)label.size() * 9.2f);
-        if (cx + cw > winW_ - 10.0f) break;
+        if (cx + cw > maxCx) break;
         drawRect(cx, y + 7.0f, cw, 28.0f, hi, 0.15f);
         drawText(cx + 9.0f, y + 14.0f, label, fg, 0.78f, 1.15f);
         cx += cw + 6.0f;

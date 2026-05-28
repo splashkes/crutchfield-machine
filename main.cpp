@@ -5721,6 +5721,19 @@ int main(int argc, char** argv) {
             int regime = classify_regime(S.p);
             failsafe_tick(now, regime);
             math_echo_tick(now, regime);
+            // Push the regime badge into the UI panel dock so the
+            // pinned bar always carries the dynamical state alongside
+            // the per-parameter controls.
+            static const unsigned char REGIME_RGB[5][3] = {
+                {130, 220, 150},  // STABLE (green)
+                {245, 175,  90},  // TURBULENT (orange)
+                {248, 110, 110},  // CHAOTIC (red)
+                {250, 200, 110},  // MARGINAL (warn)
+                {248,  80,  80},  // DIVERGENT (danger)
+            };
+            int rc = (regime >= 0 && regime <= 4) ? regime : 0;
+            S.ui.setRegimeBadge(regime_name(regime),
+                                REGIME_RGB[rc][0], REGIME_RGB[rc][1], REGIME_RGB[rc][2]);
         }
 
         S.ov.draw();
