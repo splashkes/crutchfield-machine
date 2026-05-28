@@ -92,6 +92,8 @@ enum ActionId : int {
     ACT_RELOAD_SHADERS,
     ACT_FULLSCREEN,
     ACT_REC_TOGGLE,
+    ACT_REC_MP4_TOGGLE,        // HEVC MP4 recorder (separate from EXR archive)
+    ACT_REC_MP4_CYCLE,         // cycle MP4 codec preset (HEVC → H264 → ProRes)
     ACT_SCREENSHOT,
     ACT_SCREENSHOT_HIRES,
     ACT_PRESET_SAVE, ACT_PRESET_NEXT, ACT_PRESET_PREV,

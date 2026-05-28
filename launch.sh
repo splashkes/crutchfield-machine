@@ -37,7 +37,7 @@ SYPHON_NAME="Crutchfield"
 # the overlay-side one). Force a clean rebuild whenever a header that
 # affects struct layout has been touched since the binary was linked.
 if [[ -f "$BIN" ]]; then
-  for h in overlay.h input.h ui_panel.h text_render.h osc.h link_glue.h syphon_glue.h; do
+  for h in overlay.h input.h ui_panel.h text_render.h osc.h link_glue.h syphon_glue.h mp4_recorder.h camera.h; do
     if [[ -f "$REPO/$h" && "$REPO/$h" -nt "$BIN" ]]; then
       echo "[launch] $h is newer than the binary — clean rebuilding"
       (cd "$REPO" && make -f Makefile.macos clean >/dev/null 2>&1 && \

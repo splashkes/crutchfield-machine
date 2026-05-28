@@ -52,6 +52,7 @@
 
 #include "camera.h"
 #include "recorder.h"
+#include "mp4_recorder.h"
 #include "overlay.h"
 #include "ui_panel.h"
 #include "input.h"
@@ -96,6 +97,10 @@ struct Cfg {
     std::string camMatch;            // "" = first available; substring match against
                                      // device name / model / uniqueID (macOS only).
                                      // e.g. "phone" picks Continuity Camera.
+    // MP4 recorder knobs (parallel to the EXR recorder, separate codec path).
+    std::string mp4OutDir;           // "" = ~/Movies/CrutchfieldMachine
+    std::string ffmpegPath;          // "" = auto-detect homebrew → /usr/local → PATH
+    int  mp4Quality = 0;             // 0 = use Mp4Recorder default (65)
 };
 
 static std::string g_program_name = "feedback";
@@ -156,6 +161,9 @@ static void print_cli_help() {
       "  --camera NAME       pick capture device by substring of name/model/uniqueID\n"
       "                        (macOS only; e.g. \"phone\" → Continuity Camera)\n"
       "  --list-cameras      enumerate every camera AVFoundation can see and exit\n"
+      "  --mp4-dir DIR       output dir for HQ MP4 recordings (default: ~/Movies/CrutchfieldMachine)\n"
+      "  --mp4-quality N     hardware-encoder quality 0-100 (default: 65)\n"
+      "  --ffmpeg PATH       explicit ffmpeg binary (default: auto-detect)\n"
       "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
@@ -241,6 +249,10 @@ static Cfg parse_cli(int argc, char** argv) {
             Camera::listDevices();
             exit(0);
         }
+        else if (eq("--mp4-dir"))      { c.mp4OutDir = next(); }
+        else if (eq("--mp4-quality"))  { int q = atoi(next());
+                                          if (q >= 0 && q <= 100) c.mp4Quality = q; }
+        else if (eq("--ffmpeg"))       { c.ffmpegPath = next(); }
         else if (eq("--list-actions")) {
             for (int ai = 0; ai < action_info_count(); ai++) {
                 const ActionInfo* a = action_info_by_index(ai);
@@ -743,6 +755,7 @@ struct State {
     bool    camReady = false;
 
     Recorder rec;
+    Mp4Recorder mp4;
     Overlay  ov;
     UiPanel  ui;
     // List of recording directories created this session (filled when each
@@ -3965,6 +3978,42 @@ static void apply_action(ActionId id, float mag) {
                 S.ov.logEvent("recording: started");
             }
             return;
+        case ACT_REC_MP4_TOGGLE: {
+            if (S.mp4.active()) {
+                S.mp4.stop();
+                char b[256]; snprintf(b, sizeof b, "MP4 stopped → %s",
+                                      S.mp4.lastFile().c_str());
+                S.ov.logEvent(b);
+            } else {
+                Mp4Recorder::Config mcfg{};
+                // Persist the codec choice across toggles by keeping the
+                // last value the user cycled to. First start defaults to
+                // hevc; subsequent starts honour whatever cycleCodec()
+                // landed on.
+                if (!S.mp4.codec().empty()) mcfg.codec = S.mp4.codec();
+                mcfg.outDir     = g_cfg.mp4OutDir;
+                mcfg.ffmpegPath = g_cfg.ffmpegPath;
+                mcfg.quality    = g_cfg.mp4Quality > 0 ? g_cfg.mp4Quality : 65;
+                if (S.mp4.start(S.simW, S.simH,
+                                g_cfg.recFps > 0 ? g_cfg.recFps : 60,
+                                mcfg)) {
+                    char b[128]; snprintf(b, sizeof b,
+                        "MP4 recording (%s) → %s",
+                        mcfg.codec.c_str(), S.mp4.lastFile().c_str());
+                    S.ov.logEvent(b);
+                } else {
+                    S.ov.logEvent("MP4 start FAILED (ffmpeg missing?)");
+                }
+            }
+            return;
+        }
+        case ACT_REC_MP4_CYCLE: {
+            S.mp4.cycleCodec();
+            char b[64]; snprintf(b, sizeof b, "MP4 codec: %s",
+                                 S.mp4.codec().c_str());
+            S.ov.logEvent(b);
+            return;
+        }
         case ACT_SCREENSHOT:
             S.screenshotPending = true;
             S.ov.logEvent("screenshot queued");
@@ -5713,6 +5762,9 @@ int main(int argc, char** argv) {
         // Record from the sim-resolution texture (not the display framebuffer)
         // so recordings get the full internal quality regardless of window size.
         if (S.rec.active()) S.rec.capture(latest.fbo);
+        // MP4 recorder reads from the same pre-overlay FBO. HUD + DYNAMICS
+        // panel are drawn after this, so the output never contains UI.
+        if (S.mp4.active()) S.mp4.capture(latest.fbo);
 
         // One-shot screenshot request from PrtSc (ACT_SCREENSHOT).
         if (S.screenshotPending) {
@@ -5824,6 +5876,9 @@ int main(int argc, char** argv) {
         if (!S.rec.lastDir().empty())
             S.recordingsThisSession.push_back(S.rec.lastDir());
     }
+    // Flush the MP4 pipe so the moov atom gets written. Skipping this
+    // leaves a half-baked file that QuickTime refuses to open.
+    if (S.mp4.active()) S.mp4.stop();
     S.ov.shutdown();
     S.ui.shutdown();
     close_ui_windows();

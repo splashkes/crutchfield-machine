@@ -220,7 +220,9 @@ static const ActionInfo ACTIONS[] = {
     { ACT_HELP_BACK,        "help.back",          AK_DISCRETE, "App", "help back / close" },
     { ACT_RELOAD_SHADERS,   "app.reloadShaders",  AK_DISCRETE, "App", "reload shaders" },
     { ACT_FULLSCREEN,       "app.fullscreen",     AK_DISCRETE, "App", "fullscreen toggle" },
-    { ACT_REC_TOGGLE,       "rec.toggle",         AK_DISCRETE, "App", "recording start/stop" },
+    { ACT_REC_TOGGLE,       "rec.toggle",         AK_DISCRETE, "App", "recording start/stop (lossless EXR sequence)" },
+    { ACT_REC_MP4_TOGGLE,   "rec.mp4.toggle",     AK_DISCRETE, "App", "HQ MP4 recording start/stop (hardware HEVC)" },
+    { ACT_REC_MP4_CYCLE,    "rec.mp4.codec",      AK_DISCRETE, "App", "cycle MP4 codec preset (HEVC → H264 → ProRes)" },
     { ACT_SCREENSHOT,       "app.screenshot",     AK_DISCRETE, "App", "screenshot (PNG, sim resolution, no HUD)" },
     { ACT_SCREENSHOT_HIRES, "app.screenshot.hires", AK_DISCRETE, "App", "screenshot (PNG, supersampled K x sim, no HUD)" },
     { ACT_PRESET_SAVE,      "preset.save",        AK_DISCRETE, "App", "preset save" },
@@ -725,6 +727,10 @@ void Input::installDefaults() {
     K(in, ACT_RELOAD_SHADERS,    GLFW_KEY_BACKSLASH);
     K(in, ACT_FULLSCREEN,        GLFW_KEY_F11);
     K(in, ACT_REC_TOGGLE,        GLFW_KEY_GRAVE_ACCENT);
+    // HQ MP4 recorder. Cmd+R toggles, Cmd+Shift+R cycles codec preset.
+    // (Plain R is taken by sat-up; backtick is the EXR archive recorder.)
+    K(in, ACT_REC_MP4_TOGGLE,    GLFW_KEY_R, GLFW_MOD_SUPER);
+    K(in, ACT_REC_MP4_CYCLE,     GLFW_KEY_R, GLFW_MOD_SUPER | GLFW_MOD_SHIFT);
     K(in, ACT_SCREENSHOT,        GLFW_KEY_PRINT_SCREEN);
     K(in, ACT_SCREENSHOT_HIRES,  GLFW_KEY_PRINT_SCREEN, GLFW_MOD_SHIFT);
     K(in, ACT_PRESET_SAVE,       GLFW_KEY_S, GLFW_MOD_CONTROL);
