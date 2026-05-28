@@ -81,9 +81,24 @@ public:
               hueRate, noise, couple, external, sphereReverb, outFade;
         float zoom, theta;
     };
-    void toggleMath() { mathVisible_ = !mathVisible_; }
+    void toggleMath() {
+        mathVisible_ = !mathVisible_;
+        if (mathVisible_ && mathSelectedRow_ < 0) mathSelectedRow_ = 0;
+    }
     bool mathVisible() const { return mathVisible_; }
     void mathPushFrame(const MathSample& s);
+
+    // Cursor navigation in the Mathlab panel. While mathVisible, the
+    // host should intercept its arrow keys (translate normally) and
+    // route them here. mathSelectedActionDec()/Inc() return the
+    // ActionId to fire for "lower / raise the current parameter" —
+    // host's apply_action will land them in the existing dispatch.
+    void  mathSelectNext();
+    void  mathSelectPrev();
+    int   mathSelectedRow() const { return mathSelectedRow_; }
+    int   mathNumRows() const;                       // total selectable rows
+    int   mathSelectedActionDec() const;             // returns int ActionId
+    int   mathSelectedActionInc() const;
 
 private:
     enum View { VIEW_MENU, VIEW_SECTION };
@@ -130,6 +145,7 @@ private:
 
     // Math dashboard
     bool mathVisible_ = false;
+    int  mathSelectedRow_ = -1;            // -1 until first open
     std::vector<MathSample> mathRing_;     // ring buffer; ~240 samples = 4s @ 60fps
     int                     mathRingHead_ = 0;
     int                     mathRingCount_ = 0;

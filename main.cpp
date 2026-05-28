@@ -3223,6 +3223,24 @@ static void apply_action(ActionId id, float mag) {
     if (id == ACT_SNAPSHOT_SAVE)   { snapshot_save((int)mag);   return; }
     if (id == ACT_SNAPSHOT_RECALL) { snapshot_recall((int)mag); return; }
     if (id == ACT_MATH_TOGGLE)     { S.ov.toggleMath(); return; }
+
+    // ── Mathlab nav: while the panel is visible, the four arrow keys
+    //    drive cursor + value adjust instead of warp translate. M/Esc
+    //    closes the panel and returns the arrows to translate.
+    if (S.ov.mathVisible()) {
+        if (id == ACT_TRANS_UP)    { S.ov.mathSelectPrev(); return; }
+        if (id == ACT_TRANS_DN)    { S.ov.mathSelectNext(); return; }
+        if (id == ACT_TRANS_LEFT) {
+            int act = S.ov.mathSelectedActionDec();
+            if (act) apply_action((ActionId)act, mag);
+            return;
+        }
+        if (id == ACT_TRANS_RIGHT) {
+            int act = S.ov.mathSelectedActionInc();
+            if (act) apply_action((ActionId)act, mag);
+            return;
+        }
+    }
     if (id == ACT_LINK_TOGGLE) {
         bool on = !link_enabled();
         link_set_enabled(on ? 1 : 0);

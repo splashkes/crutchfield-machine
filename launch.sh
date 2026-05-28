@@ -75,12 +75,6 @@ case "${1:-}" in
     ;;
 esac
 
-# ── Music override: scan the args for --music to skip the default mute ─
-WANT_MUSIC=0
-for a in "$@"; do
-  if [[ "$a" == "--music" ]]; then WANT_MUSIC=1; fi
-done
-
 # ── Pre-flight: clear UDP 7700 if held by a zombie ──────────────────
 PIDS=$(lsof -nP -iUDP:"$OSC_PORT" -t 2>/dev/null || true)
 if [[ -n "$PIDS" ]]; then
@@ -100,22 +94,11 @@ ARGS=(
 # ignored when SYPHON=0 so it's safe to pass either way.
 ARGS+=(--syphon "$SYPHON_NAME")
 
-# Default to MUTED. Pass --music on the command line to turn the
-# bundled metronome / strudel preset back on. --music is a real
-# feedback flag (it accepts on|off|--no-music form), but we translate
-# the bare "--music" here to "--music on" for terseness.
-if [[ "$WANT_MUSIC" -eq 1 ]]; then
-  # Strip the bare "--music" from user args, since feedback wants
-  # "--music on" or just nothing (default is on if neither is given).
-  NEW_ARGS=()
-  for a in "$@"; do
-    if [[ "$a" != "--music" ]]; then NEW_ARGS+=("$a"); fi
-  done
-  set -- "${NEW_ARGS[@]}"
-  ARGS+=(--music on)
-else
-  ARGS+=(--no-music)
-fi
+# The binary now defaults to silent (a stdout + on-screen HUD hint
+# tells the user how to start the metronome). --music on the command
+# line turns it on at boot. We just pass user args through; no
+# translation needed since both --music and --no-music are valid
+# feedback flags now.
 
 # Pass through any additional flags the user gave.
 ARGS+=("$@")

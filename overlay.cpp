@@ -482,6 +482,80 @@ void Overlay::drawHelpSection(float x, float y, float w, float h) {
     (void)w;
 }
 
+// Forward to use ActionId values from input.h without dragging the
+// header into overlay.h (and keep overlay.h dep-free of the action
+// catalogue). We re-state the integer values that match the enum.
+#include "input.h"
+
+// Forward declarations for the accessor functions defined further down
+// (in the same anonymous namespace shared with fmt4 / drawMathPanel
+// helpers). Keeping the row table near the public methods means we
+// need the forward decls here.
+namespace {
+float acc_decay(const Overlay::MathSample& s);
+float acc_blurX(const Overlay::MathSample& s);
+float acc_blurY(const Overlay::MathSample& s);
+float acc_chroma(const Overlay::MathSample& s);
+float acc_gamma(const Overlay::MathSample& s);
+float acc_sat(const Overlay::MathSample& s);
+float acc_contrast(const Overlay::MathSample& s);
+float acc_noise(const Overlay::MathSample& s);
+float acc_couple(const Overlay::MathSample& s);
+float acc_external(const Overlay::MathSample& s);
+float acc_outfade(const Overlay::MathSample& s);
+float acc_zoom(const Overlay::MathSample& s);
+float acc_theta(const Overlay::MathSample& s);
+}  // namespace
+
+// Row table — shared between drawMathPanel (display) and the public
+// mathSelectedActionDec/Inc accessors (so cursor nav and rendering
+// agree on what's editable). Keep this in sync with the visual order
+// in drawMathPanel.
+namespace {
+struct MathRow {
+    const char* label;
+    float (*accessor)(const Overlay::MathSample&);
+    int   actionDec;   // ActionId to fire on Left arrow (decrement)
+    int   actionInc;   // ActionId to fire on Right arrow (increment)
+};
+const MathRow MATH_ROWS[] = {
+    { "decay",     acc_decay,     ACT_DECAY_DN,    ACT_DECAY_UP    },
+    { "blur X",    acc_blurX,     ACT_BLURX_DN,    ACT_BLURX_UP    },
+    { "blur Y",    acc_blurY,     ACT_BLURY_DN,    ACT_BLURY_UP    },
+    { "sat",       acc_sat,       ACT_SAT_DN,      ACT_SAT_UP      },
+    { "noise",     acc_noise,     ACT_NOISE_DN,    ACT_NOISE_UP    },
+    { "couple",    acc_couple,    ACT_COUPLE_DN,   ACT_COUPLE_UP   },
+    { "external",  acc_external,  ACT_EXTERNAL_DN, ACT_EXTERNAL_UP },
+    { "zoom",      acc_zoom,      ACT_ZOOM_DN,     ACT_ZOOM_UP     },
+    { "theta",     acc_theta,     ACT_THETA_DN,    ACT_THETA_UP    },
+    { "chroma",    acc_chroma,    ACT_CHROMA_DN,   ACT_CHROMA_UP   },
+    { "gamma",     acc_gamma,     ACT_GAMMA_DN,    ACT_GAMMA_UP    },
+    { "contrast",  acc_contrast,  ACT_CONTRAST_DN, ACT_CONTRAST_UP },
+};
+constexpr int N_MATH_ROWS = (int)(sizeof(MATH_ROWS) / sizeof(MATH_ROWS[0]));
+} // namespace
+
+int Overlay::mathNumRows() const { return N_MATH_ROWS; }
+
+int Overlay::mathSelectedActionDec() const {
+    if (mathSelectedRow_ < 0 || mathSelectedRow_ >= N_MATH_ROWS) return 0;
+    return MATH_ROWS[mathSelectedRow_].actionDec;
+}
+int Overlay::mathSelectedActionInc() const {
+    if (mathSelectedRow_ < 0 || mathSelectedRow_ >= N_MATH_ROWS) return 0;
+    return MATH_ROWS[mathSelectedRow_].actionInc;
+}
+void Overlay::mathSelectNext() {
+    if (!mathVisible_) return;
+    if (mathSelectedRow_ < 0) mathSelectedRow_ = 0;
+    else mathSelectedRow_ = (mathSelectedRow_ + 1) % N_MATH_ROWS;
+}
+void Overlay::mathSelectPrev() {
+    if (!mathVisible_) return;
+    if (mathSelectedRow_ < 0) mathSelectedRow_ = 0;
+    else mathSelectedRow_ = (mathSelectedRow_ - 1 + N_MATH_ROWS) % N_MATH_ROWS;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Math dashboard — an analytical view of the running feedback system.
 // Renders a translucent panel on the right side of the screen showing:
@@ -709,45 +783,57 @@ void Overlay::drawMathPanel() {
 
     y += 14.f;
 
-    // ── Section 2: parameter sparklines ───────────────────────────────
-    drawTextLine(x, y, "parameters (last ~6 s)", headingC, 1.0f, TS_H1);
+    // ── Section 2: parameter editor with sparklines ───────────────────
+    drawTextLine(x, y, "parameters  (↑↓ select · ←→ adjust)",
+                 headingC, 1.0f, TS_H1);
     y += lineHFor(TS_H1) + 8.f;
 
-    struct Row {
-        const char* label;
-        float (*accessor)(const MathSample&);
-        float vmin, vmax;
-    };
-    // Curated short list — the params most worth watching as sparklines.
-    Row rows[] = {
-        { "decay",     acc_decay,    0.f, 0.f },
-        { "blur X",    acc_blurX,    0.f, 0.f },
-        { "blur Y",    acc_blurY,    0.f, 0.f },
-        { "sat",       acc_sat,      0.f, 0.f },
-        { "noise",     acc_noise,    0.f, 0.f },
-        { "couple",    acc_couple,   0.f, 0.f },
-        { "out fade",  acc_outfade,  0.f, 0.f },
-        { "zoom",      acc_zoom,     0.f, 0.f },
-    };
-
-    // Each row: label (left), current value, sparkline (right).
+    // Each row: highlight bar (if selected) + label + value + sparkline.
     const float labelW   = 0.18f * panelW;
     const float valueW   = 0.18f * panelW;
     const float sparkX   = x + labelW + valueW;
     const float sparkW   = panelW - (sparkX - panelX) - 28.f;
     const float rowH     = lineHFor(TS_BODY) + 14.f;
+    const float hlPadX   = 8.f;
 
-    for (const Row& r : rows) {
+    unsigned char selBg[4]    = { 30, 60, 95, 220 };
+    unsigned char selLabel[4] = { 255, 255, 255, 255 };
+    unsigned char selValue[4] = { 255, 255, 255, 255 };
+    unsigned char selSpark[4] = { 170, 230, 255, 255 };
+
+    for (int i = 0; i < N_MATH_ROWS; i++) {
         if (y + rowH > panelY + panelH - 12.f) break;
+        const MathRow& r = MATH_ROWS[i];
         float v = r.accessor(cur);
 
-        drawTextLine(x, y + 2.f, r.label, dimC, 1.0f, TS_BODY);
-        snprintf(buf, sizeof buf, "%.4f", v);
-        drawTextLine(x + labelW, y + 2.f, buf, valueC, 1.0f, TS_BODY);
+        bool isSel = (i == mathSelectedRow_);
+        unsigned char* lblC = isSel ? selLabel : dimC;
+        unsigned char* valC = isSel ? selValue : valueC;
+        unsigned char* spkC = isSel ? selSpark : accent;
 
-        // Sparkline to the right of the value
+        if (isSel) {
+            // Highlight bar spanning the full row width.
+            drawFilledRect(panelX + hlPadX, y - 2.f,
+                           panelW - 2.f * hlPadX, rowH - 2.f,
+                           selBg, 0.65f);
+            // Arrow glyphs on either side as a hint.
+            drawTextLine(panelX + hlPadX + 6.f, y + 2.f, "<", lblC, 1.0f, TS_BODY);
+            drawTextLine(panelX + panelW - hlPadX - 18.f, y + 2.f, ">", lblC, 1.0f, TS_BODY);
+        }
+
+        drawTextLine(x + (isSel ? 18.f : 0.f), y + 2.f,
+                     r.label, lblC, 1.0f, TS_BODY);
+        snprintf(buf, sizeof buf, "%.4f", v);
+        drawTextLine(x + labelW, y + 2.f, buf, valC, 1.0f, TS_BODY);
+
         drawSparkline(sparkX, y + 3.f, sparkW, rowH - 8.f,
-                      r.accessor, r.vmin, r.vmax, accent);
+                      r.accessor, 0.f, 0.f, spkC);
         y += rowH;
     }
+
+    // Footer help bar.
+    float footY = panelY + panelH - lineHFor(TS_NOTE) - 12.f;
+    drawTextLine(panelX + 24.f, footY,
+                 "shift+arrow = coarse 20x  ·  M closes",
+                 dimC, 1.0f, TS_NOTE);
 }
