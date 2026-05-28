@@ -19,6 +19,8 @@
   #include <limits.h>
   #include <signal.h>
 #endif
+
+#include "link_glue.h"
 #if !defined(_WIN32)
   #include <signal.h>
 #endif
@@ -85,6 +87,7 @@ struct Cfg {
     std::string oscEchoHost;         // "" = default 127.0.0.1
     int  oscEchoPort = 0;            // 0 = echo disabled
     bool logUsage  = false;          // stream every action fire to a session CSV
+    bool linkOn    = false;          // enable Ableton Link discovery on start
 };
 
 static std::string g_program_name = "feedback";
@@ -136,6 +139,7 @@ static void print_cli_help() {
       "  --osc-learn         print incoming OSC addresses+args (mapping mode)\n"
       "  --osc-echo HOST:PORT  emit /cma/echo/<action> for every dispatched action\n"
       "                        (e.g. --osc-echo 127.0.0.1:7701)\n"
+      "  --link              enable Ableton Link on start (network tempo sync)\n"
       "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
@@ -183,6 +187,7 @@ static Cfg parse_cli(int argc, char** argv) {
             c.oscPort = (p > 0 && p < 65536) ? p : 7700;
         }
         else if (eq("--osc-learn"))    { c.oscLearn = true; if (c.oscPort == 0) c.oscPort = 7700; }
+        else if (eq("--link"))         { c.linkOn = true; }
         else if (eq("--osc-echo")) {
             const char* spec = next();
             // Parse HOST:PORT or just :PORT or PORT
@@ -3189,6 +3194,28 @@ static void apply_action(ActionId id, float mag) {
     if (id == ACT_SNAPSHOT_SAVE)   { snapshot_save((int)mag);   return; }
     if (id == ACT_SNAPSHOT_RECALL) { snapshot_recall((int)mag); return; }
     if (id == ACT_MATH_TOGGLE)     { S.ov.toggleMath(); return; }
+    if (id == ACT_LINK_TOGGLE) {
+        bool on = !link_enabled();
+        link_set_enabled(on ? 1 : 0);
+        char buf[80];
+        snprintf(buf, sizeof buf, "Ableton Link: %s (%d peers)",
+                 on ? "on" : "off", link_num_peers());
+        S.ov.logEvent(buf);
+        return;
+    }
+    if (id == ACT_LINK_TAP) {
+        // Pull current beat phase + advance one beat. Quick local tap;
+        // proper tap-tempo would use a multi-tap regression.
+        link_set_tempo(link_tempo());
+        S.ov.logEvent("link.tap");
+        return;
+    }
+    if (id == ACT_LINK_TRANSPORT) {
+        bool on = !link_is_playing();
+        link_set_playing(on ? 1 : 0);
+        S.ov.logEvent(on ? "link.transport ▶" : "link.transport ◼");
+        return;
+    }
     auto& p = S.p;
 
     // Warn when a parameter action fires but its layer is off. We still
@@ -4821,6 +4848,14 @@ int main(int argc, char** argv) {
     // bindings.ini lives next to the executable (or at CWD) — we write a default
     // on first run so users have something to edit.
     g_input.installDefaults();
+    // Initialize Ableton Link with a sensible default BPM. Discovery is
+    // off by default to avoid surprise network chatter; users enable via
+    // link.toggle action or the --link CLI flag.
+    link_init(120.0);
+    if (g_cfg.linkOn) {
+        link_set_enabled(1);
+        printf("[link] discovery enabled\n");
+    }
     g_input.setMidiLearn(g_cfg.midiLearn);
     // OSC config: CLI overrides bindings.ini. If the user passed --osc-listen
     // we set port + learn here; bindings.ini may still set learn=on later.
@@ -5097,6 +5132,7 @@ int main(int argc, char** argv) {
         g_input.pollMidi(dt);
         g_input.pollOsc(dt);
         g_input.pollAudio(dt);
+        g_input.pollLink(dt);
         g_input.tryReload(dt);
         if (g_input.midi().connected && !midiWasConnected) {
             sync_ddj_layer_leds();

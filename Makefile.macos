@@ -16,6 +16,16 @@ CXXFLAGS ?= -O3 -std=c++17 -Wall -Wextra -Wno-deprecated-declarations \
             -Wno-missing-field-initializers \
             -DGL_SILENCE_DEPRECATION -arch $(ARCH) -I$(BREW_PREFIX)/include \
             -Ivendor/quickjs
+
+# Ableton Link needs ASIO + a platform define. Build a separate flag set
+# for link_glue.o so the rest of the tree doesn't drag the Link headers.
+LINK_CXXFLAGS = $(CXXFLAGS) \
+                -Ivendor/link/include \
+                -Ivendor/link/modules/asio-standalone/asio/include \
+                -DLINK_PLATFORM_MACOSX=1 -DLINK_PLATFORM_UNIX=1 \
+                -DASIO_STANDALONE -DASIO_DISABLE_THREADS=0 \
+                -Wno-unused-but-set-variable -Wno-unused-variable \
+                -Wno-unused-parameter
 QJSFLAGS = -O3 -std=c99 -DCONFIG_VERSION="\"2025-04-26\"" \
            -Wno-sign-compare -Wno-unused-parameter -Wno-implicit-fallthrough \
            -Wno-array-bounds -Wno-format-truncation
@@ -27,7 +37,8 @@ LDLIBS   ?= -lglfw -lGLEW -lz \
             -framework CoreMIDI
 
 SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm \
-       recorder.cpp overlay.cpp ui_panel.cpp music.cpp audio.cpp osc.cpp
+       recorder.cpp overlay.cpp ui_panel.cpp music.cpp audio.cpp osc.cpp \
+       link_glue.cpp
 OBJS = $(SRCS:.cpp=.o)
 OBJS := $(OBJS:.mm=.o)
 QJS_SRCS = vendor/quickjs/quickjs.c vendor/quickjs/libregexp.c \
@@ -51,6 +62,10 @@ $(BIN): $(OBJS) $(QJS_OBJS)
 
 vendor/quickjs/%.o: vendor/quickjs/%.c
 	$(CC) $(QJSFLAGS) -Ivendor/quickjs -c -o $@ $<
+
+# link_glue.cpp gets a heavier flag set because it pulls in Link + ASIO.
+link_glue.o: link_glue.cpp link_glue.h
+	$(CXX) $(LINK_CXXFLAGS) -c -o $@ $<
 
 dist: $(BIN)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)

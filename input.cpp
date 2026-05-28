@@ -2,6 +2,7 @@
 
 #include "input.h"
 #include "osc.h"
+#include "link_glue.h"
 
 #include <GLFW/glfw3.h>
 #include <sys/stat.h>
@@ -243,6 +244,9 @@ static const ActionInfo ACTIONS[] = {
 { ACT_SNAPSHOT_SAVE,    "snapshot.save",      AK_STEP,     "App", "save state to slot (value=slot 1..8)" },
 { ACT_SNAPSHOT_RECALL,  "snapshot.recall",    AK_STEP,     "App", "recall state from slot (value=slot 1..8)" },
 { ACT_MATH_TOGGLE,      "app.math",           AK_DISCRETE, "App", "toggle math dashboard (M)" },
+{ ACT_LINK_TOGGLE,      "link.toggle",        AK_DISCRETE, "App", "Ableton Link enable/disable" },
+{ ACT_LINK_TAP,         "link.tap",           AK_DISCRETE, "App", "Ableton Link tap tempo" },
+{ ACT_LINK_TRANSPORT,   "link.transport",     AK_DISCRETE, "App", "Ableton Link start/stop transport" },
 
     // V-4 slots (bindings wired in C4+)
     { ACT_VFX1_CYCLE_FWD, "vfx1.next",      AK_DISCRETE, "VFX-1", "slot 1: next effect" },
@@ -1546,6 +1550,28 @@ bool Input::loadIni(const std::string& path) {
         b.shifted  = shifted;
         b.context  = ctx;
 
+        // link: source — Ableton Link bridge. Channels:
+        //   phase   sweep 0..quantum within each bar
+        //   beat    fires once per beat (use with discrete/trigger actions)
+        //   bpm     network tempo, raw BPM (e.g. 120.0)
+        //   peers   peer count on the local Link session
+        if (keyPart.rfind("link:", 0) == 0) {
+            std::string ch = keyPart.substr(5);
+            if (ch.empty()) continue;
+            b.source     = SRC_LINK;
+            b.code       = 0;
+            b.modmask    = 0;
+            b.oscAddress = ch;
+            bindings_.erase(std::remove_if(bindings_.begin(), bindings_.end(),
+                [&](const Binding& x) {
+                    if (x.action != b.action || x.source != b.source ||
+                        x.context != b.context) return false;
+                    return x.oscAddress == b.oscAddress;
+                }), bindings_.end());
+            bindings_.push_back(b);
+            continue;
+        }
+
         // audio: source — valid in any section. Bindings of the form
         //   action.name = audio:rms       [scale=X] [invert] [bipolar]
         // dispatch through Input::pollAudio() once per frame using the
@@ -2697,6 +2723,51 @@ void Input::pollAudio(float /*dt*/) {
             break;
         }
         if (usageLogger_) usageLogger_({USAGE_OSC, 0, 0, 0, b.action, norm});
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// pollLink — dispatches bindings whose source is SRC_LINK using the
+// Ableton Link bridge. Channels: phase (0..quantum), beat (once per
+// beat), bpm (raw network tempo), peers (peer count on the Link
+// session).
+// ─────────────────────────────────────────────────────────────────────────
+void Input::pollLink(float /*dt*/) {
+    if (!handler_) return;
+    double phase = link_beat_phase(4.0);
+    double bpm   = link_tempo();
+    int    peers = link_num_peers();
+    bool   beat  = link_did_beat(4.0) != 0;
+
+    for (const Binding& b : bindings_) {
+        if (b.source != SRC_LINK) continue;
+        float norm = 0.f;
+        bool   isTrigger = false;
+        if      (b.oscAddress == "phase") norm = (float)(phase / 4.0);
+        else if (b.oscAddress == "beat")  { norm = beat ? 1.f : 0.f; isTrigger = true; }
+        else if (b.oscAddress == "bpm")   norm = (float)bpm;
+        else if (b.oscAddress == "peers") norm = (float)peers;
+        else continue;
+
+        if (b.bipolar) norm = norm * 2.0f - 1.0f;
+        if (b.invert)  norm = -norm;
+        norm *= b.scale;
+
+        const ActionInfo* info = action_info(b.action);
+        if (!info) continue;
+        switch (info->kind) {
+        case AK_RATE:
+        case AK_STEP:
+            handler_(b.action, norm);
+            break;
+        case AK_DISCRETE:
+            if (isTrigger ? (norm > 0.f) : (norm > 0.5f))
+                handler_(b.action, 1.0f);
+            break;
+        case AK_TRIGGER:
+            handler_(b.action, norm > 0.5f ? 1.0f : 0.0f);
+            break;
+        }
     }
 }
 

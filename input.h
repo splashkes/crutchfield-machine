@@ -116,6 +116,11 @@ enum ActionId : int {
     ACT_SNAPSHOT_RECALL,
     ACT_MATH_TOGGLE,    // toggle the Mathlab dashboard overlay
 
+    // Ableton Link
+    ACT_LINK_TOGGLE,    // enable/disable Link network discovery
+    ACT_LINK_TAP,       // local tap-tempo into Link (ignored if disabled)
+    ACT_LINK_TRANSPORT, // toggle start/stop sync
+
     // ── V-4 effect slots (C4+) ───────────────────────────────────────
     ACT_VFX1_CYCLE_FWD, ACT_VFX1_CYCLE_BACK, ACT_VFX1_OFF,
     ACT_VFX1_PARAM_UP, ACT_VFX1_PARAM_DN,
@@ -197,6 +202,7 @@ enum BindSource : int {
     SRC_OSC_F,         // OSC address dispatched as an axis (float 0..1 or signed)
     SRC_OSC_TRIG,      // OSC address dispatched as discrete/trigger (>0.5 = press)
     SRC_AUDIO,         // built-in audio analyzer; oscAddress = "rms"/"peak"/"low"/"mid"/"high"
+    SRC_LINK,          // Ableton Link beat/phase; oscAddress = "phase"/"beat"/"bpm"/"peers"
 };
 
 // Macros get synthetic ActionIds above this base. action_info() resolves
@@ -403,6 +409,13 @@ public:
     //   dyn.decay.axis = audio:rms scale=2.0
     //   color.sat.setAxis = audio:mid bipolar
     void pollAudio(float dt);
+
+    // Ableton Link — dispatched by bindings of the form
+    //   action.name = link:phase   [scale=X]  ; 0..quantum, smooth sweep
+    //   action.name = link:beat                ; once per beat (trigger)
+    //   action.name = link:bpm                 ; tempo in BPM
+    //   action.name = link:peers               ; peer count
+    void pollLink(float dt);
 
     // Hot reload: tracks the last loaded bindings file. tryReload()
     // checks its mtime against a remembered value and, if newer,
