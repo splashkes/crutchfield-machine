@@ -368,6 +368,14 @@ public:
     int  oscPort() const { return oscPort_; }
     bool oscLearn() const { return oscLearn_; }
 
+    // Hot reload: tracks the last loaded bindings file. tryReload()
+    // checks its mtime against a remembered value and, if newer,
+    // clears bindings, re-installs defaults, and re-runs loadIni.
+    // Safe to call every frame — internally rate-limited.
+    void rememberBindingsPath(const std::string& path);
+    bool tryReload(float dt);    // returns true if a reload happened
+    void requestReload() { reloadRequested_ = true; }
+
     // Low-level insert (used by installDefaults and loadIni).
     void bind(const Binding& b) { bindings_.push_back(b); }
 
@@ -385,6 +393,12 @@ private:
     bool        oscLearn_  = false;
     bool        oscOpened_ = false; // set after first successful open
     int         oscFailedPort_ = 0; // latch: stop retrying after first failure
+
+    // Hot-reload bookkeeping
+    std::string bindingsPath_;      // set by loadIni / rememberBindingsPath
+    int64_t     bindingsMtime_ = 0; // last-known mtime in seconds (0 = never loaded)
+    float       reloadAccum_   = 0.0f; // accumulator: throttle stat() to 1 Hz
+    bool        reloadRequested_ = false; // set by SIGHUP handler
 };
 
 // Global instance; defined in input.cpp.

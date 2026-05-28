@@ -4,6 +4,7 @@
 #include "osc.h"
 
 #include <GLFW/glfw3.h>
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -1177,6 +1178,10 @@ static std::string key_spec_string(int key, int mods) {
 bool Input::loadIni(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "r");
     if (!f) return false;
+    // Remember the path + mtime for hot-reload tracking.
+    bindingsPath_ = path;
+    struct stat st {};
+    if (::stat(path.c_str(), &st) == 0) bindingsMtime_ = (int64_t)st.st_mtime;
     char line[512];
     std::string section;
 
@@ -2266,6 +2271,50 @@ void Input::pollOsc(float /*dt*/) {
             }
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Hot reload — polls the bindings file's mtime once per second and runs
+// a full reload when it changes. Also honors an explicit SIGHUP-driven
+// flag (set by the signal handler in main.cpp). A full reload clears
+// every binding, re-runs installDefaults(), then loadIni() — equivalent
+// to a process restart without losing the GL context or simulation
+// state.
+// ─────────────────────────────────────────────────────────────────────────
+void Input::rememberBindingsPath(const std::string& path) {
+    bindingsPath_ = path;
+    struct stat st {};
+    if (::stat(path.c_str(), &st) == 0) bindingsMtime_ = (int64_t)st.st_mtime;
+}
+
+bool Input::tryReload(float dt) {
+    if (bindingsPath_.empty()) return false;
+
+    bool fire = reloadRequested_;
+    reloadRequested_ = false;
+    if (!fire) {
+        // Throttle mtime checks to once per second.
+        reloadAccum_ += dt;
+        if (reloadAccum_ < 1.0f) return false;
+        reloadAccum_ = 0.0f;
+        struct stat st {};
+        if (::stat(bindingsPath_.c_str(), &st) != 0) return false;
+        if ((int64_t)st.st_mtime <= bindingsMtime_) return false;
+        fire = true;
+    }
+    if (!fire) return false;
+
+    std::fprintf(stdout, "[bindings] hot-reload triggered for %s\n",
+                 bindingsPath_.c_str());
+    // Save the path before clear/installDefaults wipes it.
+    std::string path = bindingsPath_;
+    clear();
+    installDefaults();
+    bool ok = loadIni(path);
+    std::fprintf(stdout, "[bindings] reload %s — %zu bindings active\n",
+                 ok ? "ok" : "fallback to defaults",
+                 bindings_.size());
+    return ok;
 }
 
 bool Input::saveIni(const std::string& path) const {

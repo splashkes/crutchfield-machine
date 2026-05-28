@@ -17,6 +17,10 @@
   #include <mach-o/dyld.h>
   #include <unistd.h>
   #include <limits.h>
+  #include <signal.h>
+#endif
+#if !defined(_WIN32)
+  #include <signal.h>
 #endif
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -4754,6 +4758,19 @@ int main(int argc, char** argv) {
     if (g_cfg.oscLearn)       g_input.setOscLearn(true);
     g_input.setHandler(apply_action);
 
+#if !defined(_WIN32)
+    // SIGHUP triggers a bindings.ini reload. Async-signal-safe: just
+    // pokes a flag the main thread polls inside Input::tryReload.
+    {
+        struct sigaction sa {};
+        sa.sa_handler = [](int) { g_input.requestReload(); };
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART;
+        ::sigaction(SIGHUP, &sa, nullptr);
+        ::sigaction(SIGUSR1, &sa, nullptr);
+    }
+#endif
+
     // ── usage logger ─────────────────────────────────────────────────
     // When --log-usage is set: open a session-timestamped CSV and stream
     // every action fire. An in-memory histogram is always kept (cheap)
@@ -4999,6 +5016,7 @@ int main(int argc, char** argv) {
         g_input.pollGamepad(GLFW_JOYSTICK_1, dt, gpCtx);
         g_input.pollMidi(dt);
         g_input.pollOsc(dt);
+        g_input.tryReload(dt);
         if (g_input.midi().connected && !midiWasConnected) {
             sync_ddj_layer_leds();
             sync_ddj_filter_leds();
