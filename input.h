@@ -195,6 +195,7 @@ enum BindSource : int {
     SRC_MIDI_NOTE,     // code = MIDI note number, modmask = channel (0 = omni)
     SRC_OSC_F,         // OSC address dispatched as an axis (float 0..1 or signed)
     SRC_OSC_TRIG,      // OSC address dispatched as discrete/trigger (>0.5 = press)
+    SRC_AUDIO,         // built-in audio analyzer; oscAddress = "rms"/"peak"/"low"/"mid"/"high"
 };
 
 // Macros get synthetic ActionIds above this base. action_info() resolves
@@ -394,6 +395,13 @@ public:
     // Called internally on every dispatched action. Public so an
     // external policy (e.g. only echo certain actions) can call it.
     void echoActionDispatch(ActionId id, float value);
+
+    // Built-in audio reactivity. The audio engine writes RMS/peak/band
+    // values to global atomics; pollAudio() fires bound handlers each
+    // frame using those values. Bindings are written as:
+    //   dyn.decay.axis = audio:rms scale=2.0
+    //   color.sat.setAxis = audio:mid bipolar
+    void pollAudio(float dt);
 
     // Hot reload: tracks the last loaded bindings file. tryReload()
     // checks its mtime against a remembered value and, if newer,

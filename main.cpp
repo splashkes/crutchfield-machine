@@ -5095,6 +5095,7 @@ int main(int argc, char** argv) {
         g_input.pollGamepad(GLFW_JOYSTICK_1, dt, gpCtx);
         g_input.pollMidi(dt);
         g_input.pollOsc(dt);
+        g_input.pollAudio(dt);
         g_input.tryReload(dt);
         if (g_input.midi().connected && !midiWasConnected) {
             sync_ddj_layer_leds();

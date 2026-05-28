@@ -5,6 +5,14 @@
 
 #include <GLFW/glfw3.h>
 #include <sys/stat.h>
+
+// Audio reactivity getters (defined in audio.cpp). Returned values are
+// normalized envelope amplitudes in 0..~1.
+extern "C" float feedback_audio_rms (void);
+extern "C" float feedback_audio_peak(void);
+extern "C" float feedback_audio_low (void);
+extern "C" float feedback_audio_mid (void);
+extern "C" float feedback_audio_high(void);
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -1536,6 +1544,28 @@ bool Input::loadIni(const std::string& path) {
         b.shifted  = shifted;
         b.context  = ctx;
 
+        // audio: source — valid in any section. Bindings of the form
+        //   action.name = audio:rms       [scale=X] [invert] [bipolar]
+        // dispatch through Input::pollAudio() once per frame using the
+        // current value of the audio analyzer's envelope follower.
+        if (keyPart.rfind("audio:", 0) == 0) {
+            std::string ch = keyPart.substr(6);
+            if (ch.empty()) continue;
+            b.source     = SRC_AUDIO;
+            b.code       = 0;
+            b.modmask    = 0;
+            b.oscAddress = ch;   // reusing for channel name (rms/peak/low/mid/high)
+            // Fall through to dedup + push.
+            bindings_.erase(std::remove_if(bindings_.begin(), bindings_.end(),
+                [&](const Binding& x) {
+                    if (x.action != b.action || x.source != b.source ||
+                        x.context != b.context) return false;
+                    return x.oscAddress == b.oscAddress;
+                }), bindings_.end());
+            bindings_.push_back(b);
+            continue;
+        }
+
         if (section == "keyboard" || section.empty()) {
             int code = 0, mods = 0;
             if (!parse_key_spec(keyPart, code, mods)) {
@@ -2617,6 +2647,55 @@ bool Input::tryReload(float dt) {
                  ok ? "ok" : "fallback to defaults",
                  bindings_.size());
     return ok;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// pollAudio — drives bindings whose source is SRC_AUDIO each frame.
+// Audio-reactive bindings continuously dispatch the current envelope
+// value, with flag transformations applied (scale, invert, bipolar).
+// Channel names are: rms, peak, low, mid, high.
+// ─────────────────────────────────────────────────────────────────────────
+void Input::pollAudio(float /*dt*/) {
+    if (!handler_) return;
+    // Cache values once per frame — atomics are read-cheap but still
+    // worth memoizing per-channel.
+    float vals[5] = {
+        feedback_audio_rms(),
+        feedback_audio_peak(),
+        feedback_audio_low(),
+        feedback_audio_mid(),
+        feedback_audio_high()
+    };
+    auto lookup = [&](const std::string& ch) -> float {
+        if (ch == "rms")  return vals[0];
+        if (ch == "peak") return vals[1];
+        if (ch == "low")  return vals[2];
+        if (ch == "mid")  return vals[3];
+        if (ch == "high") return vals[4];
+        return 0.f;
+    };
+    for (const Binding& b : bindings_) {
+        if (b.source != SRC_AUDIO) continue;
+        float norm = lookup(b.oscAddress);
+        if (b.bipolar) norm = norm * 2.0f - 1.0f;
+        if (b.invert)  norm = -norm;
+        norm *= b.scale;
+        const ActionInfo* info = action_info(b.action);
+        if (!info) continue;
+        switch (info->kind) {
+        case AK_RATE:
+        case AK_STEP:
+            handler_(b.action, norm);
+            break;
+        case AK_DISCRETE:
+            if (norm > 0.5f) handler_(b.action, 1.0f);
+            break;
+        case AK_TRIGGER:
+            handler_(b.action, norm > 0.5f ? 1.0f : 0.0f);
+            break;
+        }
+        if (usageLogger_) usageLogger_({USAGE_OSC, 0, 0, 0, b.action, norm});
+    }
 }
 
 bool Input::saveIni(const std::string& path) const {
