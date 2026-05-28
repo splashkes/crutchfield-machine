@@ -409,13 +409,17 @@ bool UiPanel::textInput(unsigned int codepoint) {
 bool UiPanel::mouseButton(int button, int action, double x, double y) {
     if (button != GLFW_MOUSE_BUTTON_LEFT || !visible_) return false;
     if (action == GLFW_RELEASE) {
+        // Only swallow the release if we owned the press — otherwise let
+        // it fall through to the overlay panels (DYNAMICS cockpit) that
+        // need the release event to disarm their own drag state.
+        bool owned = dragging_ || reorderDragging_;
         dragging_ = false;
         reorderDragging_ = false;
         dragControl_ = -1;
         reorderControl_ = -1;
-        return true;
+        return owned;
     }
-    if (action != GLFW_PRESS) return true;
+    if (action != GLFW_PRESS) return false;
 
     cancelEdit();
     for (const Hit& h : hits_) {
@@ -466,7 +470,8 @@ bool UiPanel::mouseButton(int button, int action, double x, double y) {
             return true;
         }
     }
-    return true;
+    // No hit matched — let the overlay (DYNAMICS cockpit) try.
+    return false;
 }
 
 bool UiPanel::cursor(double x, double y) {
@@ -482,7 +487,9 @@ bool UiPanel::cursor(double x, double y) {
         movePinnedControl(reorderControl_, pos);
         return true;
     }
-    if (!dragging_ || dragControl_ < 0) return true;
+    // Only consume cursor movement if we own an active drag — otherwise
+    // pass through so overlay panels can drive their own drag state.
+    if (!dragging_ || dragControl_ < 0) return false;
     for (const Hit& h : hits_) {
         if (h.kind != HitKind::Slider || h.index != dragControl_) continue;
         const UiControl& c = controls_[h.index];

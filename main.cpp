@@ -4464,14 +4464,36 @@ static void size_cb(GLFWwindow* win, int w, int h) {
     S.ui.resize(ww, wh);
 }
 
+// Mouse coords from glfwGetCursorPos are in WINDOW pixels. The overlay
+// (math panel) renders in FRAMEBUFFER pixels — on Retina these differ
+// by the per-axis scale. Convert window→framebuffer for overlay hit
+// tests so clicks land where the user sees them.
+static void cursor_to_overlay(GLFWwindow* win, double& x, double& y) {
+    int wW = 0, wH = 0, fW = 0, fH = 0;
+    glfwGetWindowSize(win, &wW, &wH);
+    glfwGetFramebufferSize(win, &fW, &fH);
+    if (wW > 0 && wH > 0) {
+        x *= (double)fW / (double)wW;
+        y *= (double)fH / (double)wH;
+    }
+}
+
 static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
     double x = 0.0, y = 0.0;
     glfwGetCursorPos(win, &x, &y);
+    // ui_panel sees window-pixel coords first. Its mouseButton only
+    // returns true when it actually consumed the click (a hit on a
+    // control, or a release that ended an in-progress drag) — so we
+    // can safely fall through to the overlay cockpit otherwise.
     if (S.ui.mouseButton(button, action, x, y)) return;
-    // Mathlab takes mouse first when the panel is open.
+    // Overlay (DYNAMICS cockpit) hit-tests in framebuffer pixels.
+    // On Retina, window is 1280×720 logical, framebuffer is 2560×1440;
+    // scale window coords up before handing them to the overlay.
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        double ox = x, oy = y;
+        cursor_to_overlay(win, ox, oy);
         if (action == GLFW_PRESS) {
-            if (S.ov.mathMouseDown(x, y)) return;
+            if (S.ov.mathMouseDown(ox, oy)) return;
         } else if (action == GLFW_RELEASE) {
             S.ov.mathMouseUp();
         }
@@ -4485,9 +4507,12 @@ static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
     }
 }
 
-static void cursor_pos_cb(GLFWwindow*, double x, double y) {
+static void cursor_pos_cb(GLFWwindow* win, double x, double y) {
     if (S.ui.cursor(x, y)) return;
-    if (S.ov.mathMouseDrag(x, y)) return;
+    // Math panel hit-test in framebuffer pixels.
+    double ox = x, oy = y;
+    cursor_to_overlay(win, ox, oy);
+    if (S.ov.mathMouseDrag(ox, oy)) return;
     if (!S.mouseDrag) return;
     double dx = x - S.mouseLastX;
     double dy = y - S.mouseLastY;
