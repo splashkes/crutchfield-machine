@@ -1,0 +1,29 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install deps
+        run: brew install glfw glew pkg-config
+
+      - name: build + dist
+        run: |
+          make -f Makefile.macos -j
+          make -f Makefile.macos dist
+
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: feedback-macos-arm64.zip
+          generate_release_notes: true
+          name: ${{ github.ref_name }}
