@@ -1,19 +1,29 @@
 # OSC Reference
 
-Real-time OSC control for every parameter in the action catalogue. Built for TouchDesigner, Novation Launch Control (via TD as bridge or directly via MIDI), and any other OSC-speaking control surface.
+Real-time OSC control for every parameter in the action catalogue, plus built-in audio reactivity, Ableton Link tempo sync, Syphon publishing, hot-reloadable bindings, action macros, and an analytical Mathlab dashboard.
 
-The OSC layer dispatches through the same `Input::handler_(ActionId, float)` callback the MIDI path uses. Anything you can bind to a key, gamepad, or MIDI message can be bound to an OSC address.
+The OSC layer dispatches through the same `Input::handler_(ActionId, float)` callback the MIDI path uses. Anything you can bind to a key, gamepad, or MIDI message can be bound to an OSC address — and the inverse: any keyboard/MIDI input emits OSC on the echo port for downstream listeners.
 
 > **Looking for the deep documentation?** Start at [`docs/README.md`](docs/README.md).
-> Topic-specific docs:
+>
+> **Feature deep dives:**
+> - [`docs/features/HOT_RELOAD.md`](docs/features/HOT_RELOAD.md) — live edits to bindings.ini
+> - [`docs/features/OSC_ECHO.md`](docs/features/OSC_ECHO.md) — bidirectional OSC, TD UI mirroring
+> - [`docs/features/MACROS_SNAPSHOTS.md`](docs/features/MACROS_SNAPSHOTS.md) — action macros + state recall
+> - [`docs/features/AUDIO_REACTIVITY.md`](docs/features/AUDIO_REACTIVITY.md) — built-in FFT envelope followers
+> - [`docs/features/ABLETON_LINK.md`](docs/features/ABLETON_LINK.md) — networked tempo sync
+> - [`docs/features/SYPHON.md`](docs/features/SYPHON.md) — publish to Resolume / TD / OBS
+> - [`docs/features/MATHLAB.md`](docs/features/MATHLAB.md) — the dynamical-system dashboard
+>
+> **Reference docs:**
 > - [`docs/osc/ARCHITECTURE.md`](docs/osc/ARCHITECTURE.md) — how the OSC layer fits into the dispatch model
 > - [`docs/osc/PROTOCOL.md`](docs/osc/PROTOCOL.md) — OSC 1.0 wire format + our parser specifics
-> - [`docs/osc/BINDINGS.md`](docs/osc/BINDINGS.md) — full bindings syntax + every flag
+> - [`docs/osc/BINDINGS.md`](docs/osc/BINDINGS.md) — full bindings syntax + every flag (OSC + audio + link + macros)
 > - [`docs/osc/CLI.md`](docs/osc/CLI.md) — every command-line flag and config key
 > - [`docs/osc/COOKBOOK.md`](docs/osc/COOKBOOK.md) — recipes for common scenarios
-> - [`docs/osc/ACTIONS.md`](docs/osc/ACTIONS.md) — full catalogue (181 actions, grouped)
+> - [`docs/osc/ACTIONS.md`](docs/osc/ACTIONS.md) — full action catalogue
 > - [`docs/osc/TROUBLESHOOTING.md`](docs/osc/TROUBLESHOOTING.md) — diagnostics
-> - [`docs/launch-control/V1_GUIDE.md`](docs/launch-control/V1_GUIDE.md) — Launch Control original (2013, 2017)
+> - [`docs/launch-control/V1_GUIDE.md`](docs/launch-control/V1_GUIDE.md) — Launch Control original
 > - [`docs/launch-control/XL_GUIDE.md`](docs/launch-control/XL_GUIDE.md) — Launch Control XL
 > - [`docs/touchdesigner/GETTING_STARTED.md`](docs/touchdesigner/GETTING_STARTED.md) — TouchDesigner walkthrough
 
@@ -55,9 +65,18 @@ To dump every action name:
 | --- | --- |
 | `--osc-listen [PORT]` | Open UDP listener (default port `7700`) |
 | `--osc-learn` | Print every incoming OSC message to stdout (mapping mode) |
+| `--osc-echo HOST:PORT` | Emit `/cma/echo/<action>` for every dispatched action |
+| `--link` | Enable Ableton Link discovery on startup |
+| `--syphon [NAME]` | Publish render as a Syphon source (macOS only, opt-in build) |
+| `--midi-learn` | Print incoming MIDI for mapping |
 | `--list-actions` | Dump action.name + group + description, then exit |
+| `--log-usage` | Per-fire CSV stream |
 
-CLI overrides `bindings.ini` `[osc]` config. Full reference: [`docs/osc/CLI.md`](docs/osc/CLI.md).
+Runtime: `SIGHUP` / `SIGUSR1` triggers immediate `bindings.ini` reload.
+
+Live keys: **M** toggles the Mathlab dashboard; **H** opens the help panel.
+
+CLI overrides `bindings.ini` config. Full reference: [`docs/osc/CLI.md`](docs/osc/CLI.md).
 
 ---
 

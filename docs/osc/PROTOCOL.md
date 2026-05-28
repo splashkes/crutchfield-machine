@@ -80,11 +80,24 @@ Addresses must:
 
 Addresses up to 127 bytes are accepted; the 128-byte buffer in `FeedbackOscMsg::address` includes the trailing `\0`. Longer addresses are silently truncated to fit.
 
-We do **not** implement OSC address pattern matching (`?`, `*`, `[]`, `{}`, `//`). Bindings match by literal `strcmp`. This is the single biggest spec departure; for our usage (binding fixed addresses from a config file) it's correct.
+We **do** implement OSC address pattern matching (`?`, `*`, `[abc]`, `{a,b}`), per the OSC 1.0 spec. Wildcards are segment-aware: they never cross `/`. The `//` recursive matcher from later spec drafts is not supported.
+
+Pattern syntax is documented in [BINDINGS.md](BINDINGS.md#address-rules-osc); the matcher implementation lives in `osc_address_matches()` in `input.cpp`.
+
+<a id="wildcards"></a>
+
+## Wildcards
+
+Per OSC 1.0 segment-aware glob:
+
+- `?` matches any single char (not `/`)
+- `*` matches any number of chars (not `/`)
+- `[abc]` matches one of; `[a-z]` is a range; `[!abc]` negates
+- `{foo,bar}` matches any alternative
 
 ## What we do not support
 
-- **OSC 1.1 timetags / scheduling**. Bundles parsed; timetag ignored.
+- **OSC 1.0 timetags / scheduling**. ✅ Bundles parsed AND timetag honored — future-dated messages are queued and dispatched when wall-clock catches up.
 - **OSC over TCP, SLIP-framed serial**. UDP only.
 - **OSC multicast / broadcast**. Single unicast bind on INADDR_ANY.
 - **Address pattern matching** (wildcards). Literal `strcmp` only.
@@ -186,15 +199,15 @@ Both `/cma/decay 0.5` and `/cma/sat 0.9` should appear in `--osc-learn` output.
 | Spec feature | Status |
 | --- | --- |
 | OSC 1.0 messages | ✅ full |
-| OSC 1.0 bundles | ✅ parsed and recursed; timetag ignored |
+| OSC 1.0 bundles | ✅ parsed and recursed; timetag honored (scheduled dispatch) |
 | Types `i f s b T F N I` | ✅ all parsed (b skipped, s/S logged & ignored as first arg) |
 | Types `h t d S c r m` | ❌ unsupported, message bailed |
 | Type tag with no leading `,` | ✅ tolerated; treated as no-arg |
 | Empty arg list (`,\0\0\0`) | ✅ tolerated |
-| Pattern matching addresses | ❌ literal `strcmp` only |
+| Pattern matching addresses | ✅ `?`, `*`, `[abc]`, `{a,b}` (segment-aware) |
 | OSC 1.1 (no type tag, immediate, …) | ❌ |
 | Nested bundles | ✅ recursive parse |
 | UDP transport | ✅ |
 | TCP transport | ❌ |
 | SLIP-framed serial | ❌ |
-| Sender (outgoing) | ❌ (Phase 3, deferred) |
+| Sender (outgoing) | ✅ via `--osc-echo` and the echo API in `osc.h` |

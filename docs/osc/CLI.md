@@ -4,13 +4,34 @@ Every command-line flag and every `bindings.ini` `[osc]` key that the OSC layer 
 
 ## CLI flags
 
+### OSC + control
+
 | Flag | Arg | Effect |
 | --- | --- | --- |
-| `--osc-listen [PORT]` | optional int (default `7700`) | Open the UDP listener on the given port. If the arg is missing or non-numeric, defaults to 7700. |
-| `--osc-learn` | none | Print every incoming OSC message to stdout. Implies `--osc-listen 7700` if no port set yet. |
+| `--osc-listen [PORT]` | optional int (default `7700`) | Open the UDP listener on the given port. |
+| `--osc-learn` | none | Print every incoming OSC message to stdout. Implies `--osc-listen 7700`. |
+| `--osc-echo HOST:PORT` | string | Emit `/cma/echo/<action>` for every dispatched action. `:PORT` or `PORT` alone imply `127.0.0.1`. |
 | `--list-actions` | none | Dump every bindable action.name + group + description to stdout, then exit 0. |
 
+### Integrations
+
+| Flag | Arg | Effect |
+| --- | --- | --- |
+| `--link` | none | Enable Ableton Link discovery on startup (off by default). |
+| `--syphon` `[NAME]` | optional string | Publish render texture as a Syphon source on macOS. Default name "Crutchfield Machine". Requires `make SYPHON=1`. |
+| `--midi-learn` | none | Print incoming MIDI for controller mapping. |
+| `--log-usage` | none | Stream every action fire to a session CSV. |
+
 These join the existing flags (`--fullscreen`, `--sim-res`, etc.) — see `./feedback --help` for the full set.
+
+### Runtime signals
+
+| Signal | Effect |
+| --- | --- |
+| `SIGHUP` | reload `bindings.ini` immediately (hot reload bypasses 1 Hz throttle) |
+| `SIGUSR1` | same as SIGHUP |
+| `SIGTERM` | clean shutdown — closes OSC socket, joins listener, exits |
+| `SIGINT` (Ctrl+C) | same as SIGTERM |
 
 ### Flag precedence
 
@@ -20,17 +41,49 @@ If you pass `--osc-listen 9000` and the INI says `listen = 7700`, the CLI wins; 
 
 If you pass neither and the INI is silent, the listener does not start (port 0 means disabled).
 
-## `bindings.ini` `[osc]` section
+## `bindings.ini` sections
+
+### `[osc]`
 
 ```ini
 [osc]
 listen = 7700                  # int, UDP port. 0 = disabled.
 learn  = on                    # on|off|true|false|yes|no|1|0
+echo   = 127.0.0.1:7701        # echo every dispatch as /cma/echo/<action>
 
 # Bindings (one per line)
 <action.name> = osc:/path  [scale=X] [invert] [bipolar] [delta]
 <action.name> = osct:/path [scale=X] [invert]
 ```
+
+### `[audio]`
+
+```ini
+[audio]
+# No top-level keys. Just bindings:
+<action.name> = audio:rms|peak|low|mid|high  [scale=X] [invert] [bipolar]
+```
+
+See [features/AUDIO_REACTIVITY.md](../features/AUDIO_REACTIVITY.md).
+
+### `[link]`
+
+```ini
+[link]
+# No top-level keys. Enable via --link or link.toggle action.
+<action.name> = link:phase|beat|bpm|peers  [scale=X] [invert] [bipolar]
+```
+
+See [features/ABLETON_LINK.md](../features/ABLETON_LINK.md).
+
+### `[macros]`
+
+```ini
+[macros]
+macro.name = action.1(value) ; action.2(value) ; action.3(value)
+```
+
+Reference a macro from any binding section using `macro.<name>` on the LHS. See [features/MACROS_SNAPSHOTS.md](../features/MACROS_SNAPSHOTS.md).
 
 Section-level keys (`listen`, `learn`) and binding lines can interleave in any order. Comments use `#`. Empty lines are ignored.
 

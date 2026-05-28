@@ -1,6 +1,6 @@
 # Bindings reference
 
-Every OSC binding syntax, every flag, and exactly how each one transforms the wire value before dispatch.
+Every binding syntax, every flag, and exactly how each one transforms a source value before dispatch. Covers OSC, audio reactivity, Ableton Link, and macro targets.
 
 ## Where bindings live
 
@@ -12,11 +12,25 @@ The `[osc]` section is the new one. The other sections (`[keyboard]`, `[gamepad]
 
 ```ini
 [osc]
-listen = 7700         # UDP port to bind. 0 = disabled.
-learn  = on           # print every incoming OSC msg to stdout (off|on)
+listen = 7700                 # UDP port to bind. 0 = disabled.
+learn  = on                   # print every incoming OSC msg to stdout
+echo   = 127.0.0.1:7701       # emit /cma/echo/<action> for every dispatch
 ```
 
-CLI flags (`--osc-listen [PORT]`, `--osc-learn`) override these if set; otherwise the INI values win.
+CLI flags (`--osc-listen [PORT]`, `--osc-learn`, `--osc-echo HOST:PORT`) override these if set; otherwise the INI values win.
+
+```ini
+[macros]                       ; define named sequences of actions
+scene.intro = layer.warp(1) ; dyn.decay.axis(0.95) ; color.sat.setAxis(0.2)
+
+[audio]                        ; built-in audio analyzer bindings (no top-level keys)
+dyn.decay.axis = audio:rms scale=2.0
+
+[link]                         ; Ableton Link (no top-level keys; --link or link.toggle action)
+warp.zoom.axis = link:phase bipolar
+```
+
+The `[audio]` and `[link]` headers are conventions for organization — the `audio:` and `link:` keyPart prefixes work in *any* section because the source type is decided by the prefix, not the header.
 
 ## Binding syntax
 
@@ -24,7 +38,22 @@ CLI flags (`--osc-listen [PORT]`, `--osc-learn`) override these if set; otherwis
 <action.name> = <spec> [flag]...
 ```
 
-Two specs are valid in the `[osc]` section:
+All available `<spec>` prefixes:
+
+| Prefix | Source | Section it lives in by convention | Example |
+| --- | --- | --- | --- |
+| (none — keyspec) | keyboard | `[keyboard]` | `app.fullscreen = F11` |
+| `btn:N` / `axis:N` | gamepad | `[gamepad]` | `warp.zoom.axis = axis:1` |
+| `cc:N` `cc14:N` `note:N` | MIDI | `[midi]` | `dyn.decay.axis = cc:77 ch=9` |
+| `osc:/path` | OSC ingress (auto-pick F/TRIG by action kind) | `[osc]` | `dyn.decay.axis = osc:/cma/decay` |
+| `osct:/path` | OSC ingress, force trigger | `[osc]` | `app.screenshot = osct:/cma/shot/now` |
+| `audio:CHAN` | built-in audio analyzer (rms/peak/low/mid/high) | `[audio]` | `dyn.decay.axis = audio:rms scale=2` |
+| `link:CHAN` | Ableton Link (phase/beat/bpm/peers) | `[link]` | `warp.zoom.axis = link:phase bipolar` |
+| LHS `macro.NAME` | fires a macro defined in `[macros]` | any | `macro.scene.calm = osc:/cma/scene/calm` |
+
+The `audio:` and `link:` prefixes work in *any* section header — the source is decided by the prefix, not the header. Conventional sections just make `bindings.ini` more readable and let the persistence layer group entries.
+
+### OSC specifics
 
 ```ini
 # Auto-pick: SRC_OSC_F if action is continuous (AK_STEP/RATE),
@@ -37,13 +66,40 @@ action.name = osct:/path/to/address [flags]
 
 `osc:` is what you want 99% of the time. Use `osct:` only when you have a continuous-shaped TD source (e.g. a Pulse Trigger CHOP that sends 1.0 then 0.0) wired to an action that's continuous but you want momentary press/release behavior.
 
-### Address rules
+### Address rules (OSC)
 
 - Must start with `/`
 - Up to 127 characters (truncated if longer)
-- Matched literally by `strcmp` — no wildcards
 - Case-sensitive
-- Slashes form a hierarchy by convention (`/cma/layer/noise`) but are just chars to us
+- Slashes are segment separators; wildcards never cross `/`
+- **Wildcards supported** (per OSC 1.0 spec):
+  - `?` matches any single char (not `/`)
+  - `*` matches any number of chars (not `/`)
+  - `[abc]` matches one of; `[a-z]` is a range; `[!abc]` negates
+  - `{foo,bar}` matches any alternative
+
+Examples:
+
+```ini
+# Any value sent to /cma/decay or /cma/recay or /cma/Decay
+dyn.decay.axis = osc:/cma/?ecay
+
+# Any of /cma/shot/regular, /cma/shot/jpg, /cma/shot/png
+app.screenshot = osc:/cma/shot/{regular,jpg,png}
+
+# Either /cma/layer/noise or /cma/layer/Noise
+layer.noise = osc:/cma/layer/[nN]oise
+```
+
+### Bundles + timetag scheduling
+
+OSC bundles (`#bundle`) are parsed recursively. The 8-byte NTP timetag at the bundle header is honored:
+
+- Timetag `0` or `1` → dispatch contained messages immediately
+- Future timetag → messages are held in the queue until wall-clock catches up
+- Nested bundles can override the parent timetag
+
+Most OSC sources (TouchDesigner, hardware controllers) send individual messages, not bundles, so this matters mostly for `oscbundle`-using sequencers.
 
 ## Flags
 
