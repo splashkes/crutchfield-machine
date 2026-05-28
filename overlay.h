@@ -160,17 +160,41 @@ private:
     // Math dashboard
     bool mathVisible_ = false;
     int  mathSelectedRow_ = -1;            // -1 until first open
-    // Mouse drag bookkeeping. The geometry block for each row is
-    // computed once per frame in drawMathPanel and stashed here so the
-    // mouse path can hit-test without re-running the whole layout.
+    // Hit list for the interactive Dynamics panel. drawMathPanel
+    // rebuilds it every frame; mouse handlers route through it.
   public:
-    struct RowGeom { float x, y, w, h; };  // slider hit area in panel coords
+    enum MathHitKind {
+        MHIT_NONE = 0,
+        MHIT_SLIDER_DIST,      // regime.distance.axis    (horizontal slider)
+        MHIT_SLIDER_HALFLIFE,  // dyn.halflife.axis       (horizontal slider)
+        MHIT_PAD_COMPASS,      // pad.regime.x + .y       (2D pad)
+        MHIT_BUTTON_REGIME,    // regime.set              (value = idx)
+        MHIT_BUTTON_INVERT,    // regime.invert
+        MHIT_BUTTON_FAILSAFE,  // theater.failsafe
+        MHIT_BUTTON_ECHO,      // math.echo
+        MHIT_BUTTON_SNAP_SAVE, // snapshot.save           (value = slot)
+        MHIT_BUTTON_SNAP_RECALL_STABLE, // recall most-recent STABLE snap
+    };
+    struct MathHit {
+        MathHitKind kind;
+        float x, y, w, h;
+        int   value;           // slot number, regime index, etc.
+    };
   private:
-    std::vector<RowGeom> mathRowGeom_;
+  public:
+    struct PendingDispatch { int actionId; float value; };
+  private:
+    std::vector<MathHit> mathHits_;
+    // Mouse drag state (single active hit at a time).
+    int    mathActiveHit_  = -1;
+    bool   mathDragArmed_  = false;
+    // Pending actions for the host's apply_action; drained in
+    // mathTickDrag.
+    std::vector<PendingDispatch> mathPending_;
     bool   mathDragging_ = false;
     int    mathDragRow_  = -1;
     double mathDragX_    = 0.0;
-    bool   mathDragPending_ = false;       // a value awaits dispatch this frame
+    bool   mathDragPending_ = false;       // legacy; no longer set
     float  mathDragValue_   = 0.f;
     std::vector<MathSample> mathRing_;     // ring buffer; ~240 samples = 4s @ 60fps
     int                     mathRingHead_ = 0;

@@ -561,76 +561,118 @@ void Overlay::mathSelectPrev() {
     else mathSelectedRow_ = (mathSelectedRow_ - 1 + N_MATH_ROWS) % N_MATH_ROWS;
 }
 
-// ── Mouse drag editing ───────────────────────────────────────────────
-// Hit test a (mx, my) in window pixel coords against the cached row
-// geometry. Returns the row index hit, or -1.
-static int math_hit_row(const std::vector<Overlay::RowGeom>& rows,
-                        double mx, double my) {
-    for (size_t i = 0; i < rows.size(); i++) {
-        const Overlay::RowGeom& r = rows[i];
-        if (r.w <= 0.f || r.h <= 0.f) continue;
-        if (mx >= r.x && mx <= r.x + r.w &&
-            my >= r.y && my <= r.y + r.h) {
+// ── Mouse routing through the hit list ──────────────────────────────
+static int math_hit_test(const std::vector<Overlay::MathHit>& hits,
+                         double mx, double my) {
+    for (size_t i = 0; i < hits.size(); i++) {
+        const auto& h = hits[i];
+        if (mx >= h.x && mx <= h.x + h.w && my >= h.y && my <= h.y + h.h)
             return (int)i;
-        }
     }
     return -1;
 }
 
-bool Overlay::mathMouseDown(double mx, double my) {
-    if (!mathVisible_) return false;
-    int row = math_hit_row(mathRowGeom_, mx, my);
-    if (row < 0) return false;
-    mathSelectedRow_ = row;
-    mathDragging_ = true;
-    mathDragRow_  = row;
-    mathDragX_    = mx;
-    // Queue an immediate setAxis fire for this initial click position
-    // so a single click on a value sets it (no drag required).
-    mathDragPending_ = true;
-    // Compute the slider position from mx using the row geometry.
-    // The slider band starts after labelW + valueW from the row's x.
-    // We approximate by clamping mx to the row's middle 60% horizontal
-    // range — same fraction as the slider's pixel position in
-    // drawMathPanel. This couples loosely to layout but is robust.
-    const RowGeom& g = mathRowGeom_[row];
-    float sliderL = g.x + g.w * 0.34f;   // matches sliderX in draw
-    float sliderR = g.x + g.w * 0.84f;   // matches sliderX + sliderW
-    float t = (float)((mx - sliderL) / (sliderR - sliderL));
+static void math_queue_slider_value(std::vector<Overlay::PendingDispatch>& q,
+                                    const Overlay::MathHit& h,
+                                    double mx, int actionId) {
+    float t = (float)((mx - h.x) / h.w);
     if (t < 0.f) t = 0.f;
     if (t > 1.f) t = 1.f;
-    mathDragValue_ = t;
+    q.push_back({ actionId, t });
+}
+
+bool Overlay::mathMouseDown(double mx, double my) {
+    if (!mathVisible_) return false;
+    int hit = math_hit_test(mathHits_, mx, my);
+    if (hit < 0) return false;
+    mathActiveHit_ = hit;
+    mathDragArmed_ = true;
+    const MathHit& h = mathHits_[hit];
+
+    // Buttons fire on press immediately; sliders/pads queue values.
+    switch (h.kind) {
+    case MHIT_SLIDER_DIST:
+        // fire ACT_REGIME_DISTANCE_AXIS — see Math/regime.distance.axis
+        math_queue_slider_value(mathPending_, h, mx, /*ACT_REGIME_DISTANCE_AXIS*/
+                                ACT_REGIME_DISTANCE_AXIS);
+        break;
+    case MHIT_SLIDER_HALFLIFE:
+        math_queue_slider_value(mathPending_, h, mx, ACT_DYN_HALFLIFE_AXIS);
+        break;
+    case MHIT_PAD_COMPASS: {
+        float tx = (float)((mx - h.x) / h.w);
+        float ty = (float)((my - h.y) / h.h);
+        if (tx < 0.f) tx = 0.f; if (tx > 1.f) tx = 1.f;
+        if (ty < 0.f) ty = 0.f; if (ty > 1.f) ty = 1.f;
+        // Pad: visual Y axis is inverted (top of screen is +Y in pad sense).
+        ty = 1.0f - ty;
+        mathPending_.push_back({ ACT_PAD_REGIME_X, tx });
+        mathPending_.push_back({ ACT_PAD_REGIME_Y, ty });
+        break;
+    }
+    case MHIT_BUTTON_REGIME:
+        mathPending_.push_back({ ACT_REGIME_SET, (float)h.value });
+        break;
+    case MHIT_BUTTON_INVERT:
+        mathPending_.push_back({ ACT_REGIME_INVERT, 1.0f });
+        break;
+    case MHIT_BUTTON_FAILSAFE:
+        mathPending_.push_back({ ACT_THEATER_FAILSAFE, 1.0f });
+        break;
+    case MHIT_BUTTON_ECHO:
+        mathPending_.push_back({ ACT_MATH_ECHO_TOGGLE, 1.0f });
+        break;
+    case MHIT_BUTTON_SNAP_SAVE:
+        mathPending_.push_back({ ACT_SNAPSHOT_SAVE, (float)h.value });
+        break;
+    case MHIT_BUTTON_SNAP_RECALL_STABLE:
+        // We don't have a regime-tagged recall action exposed, so fire
+        // snapshot.recall on slot 1 as a sane default for one-click
+        // recovery. Users can rebind via [osc] for richer behavior.
+        mathPending_.push_back({ ACT_SNAPSHOT_RECALL, 1.0f });
+        break;
+    case MHIT_NONE:
+    default: break;
+    }
     return true;
 }
 
 bool Overlay::mathMouseDrag(double mx, double my) {
-    (void)my;
-    if (!mathVisible_ || !mathDragging_ || mathDragRow_ < 0) return false;
-    if (mathDragRow_ >= (int)mathRowGeom_.size()) return false;
-    const RowGeom& g = mathRowGeom_[mathDragRow_];
-    float sliderL = g.x + g.w * 0.34f;
-    float sliderR = g.x + g.w * 0.84f;
-    float t = (float)((mx - sliderL) / (sliderR - sliderL));
-    if (t < 0.f) t = 0.f;
-    if (t > 1.f) t = 1.f;
-    mathDragValue_   = t;
-    mathDragPending_ = true;
-    return true;
+    if (!mathVisible_ || !mathDragArmed_ || mathActiveHit_ < 0) return false;
+    if (mathActiveHit_ >= (int)mathHits_.size()) return false;
+    const MathHit& h = mathHits_[mathActiveHit_];
+    switch (h.kind) {
+    case MHIT_SLIDER_DIST:
+        math_queue_slider_value(mathPending_, h, mx, ACT_REGIME_DISTANCE_AXIS);
+        return true;
+    case MHIT_SLIDER_HALFLIFE:
+        math_queue_slider_value(mathPending_, h, mx, ACT_DYN_HALFLIFE_AXIS);
+        return true;
+    case MHIT_PAD_COMPASS: {
+        float tx = (float)((mx - h.x) / h.w);
+        float ty = (float)((my - h.y) / h.h);
+        if (tx < 0.f) tx = 0.f; if (tx > 1.f) tx = 1.f;
+        if (ty < 0.f) ty = 0.f; if (ty > 1.f) ty = 1.f;
+        ty = 1.0f - ty;
+        mathPending_.push_back({ ACT_PAD_REGIME_X, tx });
+        mathPending_.push_back({ ACT_PAD_REGIME_Y, ty });
+        return true;
+    }
+    default:
+        return true;  // press-only hits absorb the drag but do nothing
+    }
 }
 
 void Overlay::mathMouseUp() {
-    mathDragging_ = false;
-    mathDragRow_  = -1;
+    mathDragArmed_ = false;
+    mathActiveHit_ = -1;
 }
 
 void Overlay::mathTickDrag(const std::function<void(int, float)>& dispatch) {
-    if (!mathDragPending_ || mathDragRow_ < 0) return;
-    if (mathDragRow_ >= N_MATH_ROWS) { mathDragPending_ = false; return; }
-    int act = MATH_ROWS[mathDragRow_].actionSet;
-    mathDragPending_ = false;
-    if (!act) return;   // no direct-set action for this row (e.g. chroma)
-    // setAxis actions take a 0..1 value; we already clamped mathDragValue_.
-    dispatch(act, mathDragValue_);
+    if (mathPending_.empty()) return;
+    auto pending = std::move(mathPending_);
+    mathPending_.clear();
+    for (const auto& p : pending) dispatch(p.actionId, p.value);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -783,6 +825,10 @@ void Overlay::drawMathPanel() {
     const float panelY = 24.f;
     const float panelH = std::min((float)winH_ - 48.f, 1080.f);
 
+    // Reset hit list — drawMathPanel is the source of truth for what's
+    // clickable this frame.
+    mathHits_.clear();
+
     unsigned char bg[4]      = { 8, 12, 20, 240 };
     unsigned char accent[4]  = { 80, 180, 250, 255 };
     unsigned char titleC[4]  = { 240, 244, 252, 255 };
@@ -798,15 +844,14 @@ void Overlay::drawMathPanel() {
     drawFilledRect(panelX, panelY, panelW, 4.f, accent, 1.f);
     drawFilledRect(panelX + panelW - 56.f, panelY + 14.f, 44.f, 4.f, accent, 0.6f);
 
-    float x = panelX + 28.f;
-    float y = panelY + 26.f;
+    float x = panelX + 24.f;
+    float y = panelY + 22.f;
 
     // Title
-    tx(x, y, "MATHLAB", TextRender::SZ_LARGE, titleC);
-    y += lh(TextRender::SZ_LARGE);
-    tx(x, y, "feedback dynamics  ·  M to close",
+    tx(x, y, "DYNAMICS", TextRender::SZ_LARGE, titleC);
+    tx(x + 220.f, y + 12.f, "the cockpit  ·  M to close",
        TextRender::SZ_SMALL, dimC);
-    y += lh(TextRender::SZ_SMALL) + 18.f;
+    y += lh(TextRender::SZ_LARGE) + 8.f;
 
     // ── Derived quantities ───────────────────────────────────────────
     float halflife_frames = (cur.decay > 0.f && cur.decay < 1.f)
@@ -828,101 +873,260 @@ void Overlay::drawMathPanel() {
 
     char buf[160];
 
-    // REGIME headline
-    tx(x, y, "REGIME", TextRender::SZ_SMALL, dimC);
-    y += lh(TextRender::SZ_SMALL);
-    tx(x, y, regime, TextRender::SZ_LARGE, regColor);
-    y += lh(TextRender::SZ_LARGE) + 18.f;
+    // ── REGIME header with a "you are here" position bar ────────────
+    // The bar visualizes regime distance along [0..1] with threshold
+    // markers at 0.5 (TURB) and 1.0 (CHAOS).
+    {
+        float barX = x;
+        float barY = y;
+        float barW = panelW - 48.f;
+        float barH = 22.f;
+        unsigned char barBg[4]   = { 24, 34, 50, 255 };
+        drawFilledRect(barX, barY, barW, barH, barBg, 1.f);
 
-    // ── characterization rows ───────────────────────────────────────
-    tx(x, y, "characterization", TextRender::SZ_MEDIUM, headingC);
-    y += lh(TextRender::SZ_MEDIUM) + 6.f;
+        // 4 segments: STABLE (green), TURBULENT (orange), CHAOTIC (red), MARGINAL (yellow strip on right)
+        unsigned char cStable[4] = { 130, 220, 150,  90 };
+        unsigned char cTurb[4]   = { 245, 175,  90,  90 };
+        unsigned char cChaos[4]  = { 248, 110, 110,  90 };
+        drawFilledRect(barX,             barY, barW * 0.50f, barH, cStable, 0.35f);
+        drawFilledRect(barX + barW*0.5f, barY, barW * 0.40f, barH, cTurb,   0.35f);
+        drawFilledRect(barX + barW*0.9f, barY, barW * 0.10f, barH, cChaos,  0.35f);
 
-    const float valRightX = panelX + panelW - 28.f;
-    auto row2 = [&](const char* label, const char* val) {
-        tx (x, y, label, TextRender::SZ_SMALL, dimC);
-        txR(valRightX, y, val, TextRender::SZ_SMALL, valueC);
-        y += lh(TextRender::SZ_SMALL) + 4.f;
-    };
+        // "You are here" marker — position by regime-distance estimate.
+        // Use a piecewise mapping that's the inverse of the
+        // regime.distance.axis path so this reads correctly.
+        float t = 0.f;
+        if (Kc < 0.35f) t = (Kc - 0.05f) / (0.35f - 0.05f) * 0.5f;
+        else            t = 0.5f + (Kc - 0.35f) / (0.70f - 0.35f) * 0.5f;
+        if (t < 0.f) t = 0.f; if (t > 1.f) t = 1.f;
+        unsigned char markerC[4] = { 255, 255, 255, 255 };
+        drawFilledRect(barX + barW * t - 3.f, barY - 4.f, 6.f, barH + 8.f, markerC, 1.f);
 
-    snprintf(buf, sizeof buf, "%.4f", rho);
-    row2("rho  spectral radius", buf);
-
-    if (halflife_frames > 9999.f) snprintf(buf, sizeof buf, "infinite");
-    else snprintf(buf, sizeof buf, "%.0f frames  /  %.2f s", halflife_frames, halflife_sec);
-    row2("memory half-life", buf);
-
-    snprintf(buf, sizeof buf, "%.4f", D);
-    row2("diffusion D", buf);
-
-    snprintf(buf, sizeof buf, "%.4f", Kc);
-    row2("coupling Kc", buf);
-
-    snprintf(buf, sizeof buf, "%.4f   (%.1f dB)", cur.noise, noise_db);
-    row2("noise floor", buf);
-
-    snprintf(buf, sizeof buf, "%.1f deg / sec", hue_dps);
-    row2("hue rotation", buf);
-
-    y += 14.f;
-
-    // ── Meta-controls hint ───────────────────────────────────────────
-    tx(x, y, "meta-controls", TextRender::SZ_MEDIUM, headingC);
-    y += lh(TextRender::SZ_MEDIUM) + 4.f;
-    tx(x, y, "dyn.halflife.axis        memory in seconds",
-       TextRender::SZ_SMALL, dimC);
-    y += lh(TextRender::SZ_SMALL);
-    tx(x, y, "regime.distance.axis    walk stable → chaotic",
-       TextRender::SZ_SMALL, dimC);
-    y += lh(TextRender::SZ_SMALL);
-    tx(x, y, "pad.regime.x / .y         radial compass",
-       TextRender::SZ_SMALL, dimC);
-    y += lh(TextRender::SZ_SMALL);
-    tx(x, y, "theater.failsafe          DIVERGENT >2s → recall STABLE",
-       TextRender::SZ_SMALL, dimC);
-    y += lh(TextRender::SZ_SMALL);
-    tx(x, y, "math.echo                 publish /cma/math/* @ 30 Hz",
-       TextRender::SZ_SMALL, dimC);
-    y += lh(TextRender::SZ_SMALL) + 12.f;
-
-    // ── Sparkline strip ──────────────────────────────────────────────
-    tx(x, y, "parameter history (last ~6 s)", TextRender::SZ_MEDIUM, headingC);
-    y += lh(TextRender::SZ_MEDIUM) + 8.f;
-
-    // Mathlab is now a pure analytical view. Parameter editing lives in
-    // the existing ui_panel.cpp (press H) — this panel shows recent
-    // history and the math characterization. The two views share the
-    // same backing parameters, so changes in one show up immediately
-    // in the other.
-    const float sparkX = x;
-    const float sparkW = panelW - 56.f;
-    const float rowH   = lh(TextRender::SZ_SMALL) + 10.f;
-
-    mathRowGeom_.clear();  // sliders gone — keep geometry empty
-
-    unsigned char miniLabel[4] = { 180, 195, 220, 255 };
-
-    for (int i = 0; i < N_MATH_ROWS; i++) {
-        if (y + rowH > panelY + panelH - lh(TextRender::SZ_SMALL) - 24.f) break;
-        const MathRow& r = MATH_ROWS[i];
-        float v = r.accessor(cur);
-
-        // Compact one-line readout: "label   value   ──── sparkline ────"
-        char rowBuf[80];
-        snprintf(rowBuf, sizeof rowBuf, "%s", r.label);
-        tx(sparkX, y, rowBuf, TextRender::SZ_SMALL, miniLabel);
-        snprintf(rowBuf, sizeof rowBuf, "%.4f", v);
-        txR(sparkX + 220.f, y, rowBuf, TextRender::SZ_SMALL, valueC);
-
-        // Sparkline takes the remaining width
-        drawSparkline(sparkX + 240.f, y + 2.f, sparkW - 240.f, rowH - 6.f,
-                      r.accessor, 0.f, 0.f, accent);
-        y += rowH;
+        // Tiny regime label inside the bar (right-aligned)
+        txR(barX + barW - 8.f, barY + 4.f, regime, TextRender::SZ_SMALL, regColor);
+        y += barH + 12.f;
     }
 
-    // Footer — points users to the editor
-    float footY = panelY + panelH - lh(TextRender::SZ_SMALL) - 16.f;
-    tx(panelX + 28.f, footY,
-       "Mathlab is analysis only.  Press H for the parameter editor.",
+    // Two-column row: "characterization metrics" + "live derived"
+    {
+        const float colW = (panelW - 56.f) * 0.5f;
+        float cx = x;
+        // Left column — math metrics
+        tx(cx, y, "ρ", TextRender::SZ_SMALL, dimC);
+        snprintf(buf, sizeof buf, "%.4f", rho);
+        txR(cx + colW - 4.f, y, buf, TextRender::SZ_SMALL, valueC);
+        // Right column — half-life
+        cx = x + colW + 24.f;
+        tx(cx, y, "half-life", TextRender::SZ_SMALL, dimC);
+        if (halflife_frames > 9999.f) snprintf(buf, sizeof buf, "∞");
+        else snprintf(buf, sizeof buf, "%.2f s", halflife_sec);
+        txR(cx + colW - 4.f, y, buf, TextRender::SZ_SMALL, valueC);
+        y += lh(TextRender::SZ_SMALL) + 2.f;
+
+        cx = x;
+        tx(cx, y, "K_c (coupling)", TextRender::SZ_SMALL, dimC);
+        snprintf(buf, sizeof buf, "%.3f", Kc);
+        txR(cx + colW - 4.f, y, buf, TextRender::SZ_SMALL, valueC);
+        cx = x + colW + 24.f;
+        tx(cx, y, "noise", TextRender::SZ_SMALL, dimC);
+        snprintf(buf, sizeof buf, "%.1f dB", noise_db);
+        txR(cx + colW - 4.f, y, buf, TextRender::SZ_SMALL, valueC);
+        y += lh(TextRender::SZ_SMALL) + 14.f;
+    }
+
+    // ── INTERACTIVE: walk-to-chaos slider ─────────────────────────────
+    tx(x, y, "walk to chaos", TextRender::SZ_MEDIUM, headingC);
+    tx(x + 220.f, y + 6.f,
+       "drag to set regime distance (0 = deep stable, 1 = deep chaotic)",
        TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_MEDIUM) + 4.f;
+    {
+        float sx = x, sy = y, sw = panelW - 48.f, sh = 28.f;
+        unsigned char trackBg[4]   = { 22, 30, 44, 255 };
+        unsigned char trackFill[4] = { 100, 200, 255, 255 };
+        unsigned char trackTick[4] = { 245, 175,  90, 255 };
+        unsigned char trackTick2[4]= { 248, 110, 110, 255 };
+        drawFilledRect(sx, sy, sw, sh, trackBg, 1.f);
+        // Threshold ticks
+        drawFilledRect(sx + sw * 0.50f - 1.f, sy - 4.f, 2.f, sh + 8.f, trackTick, 1.f);
+        drawFilledRect(sx + sw * 1.00f - 2.f, sy - 4.f, 2.f, sh + 8.f, trackTick2,1.f);
+        // Estimated current position (uses the same inverse-mapping as the regime bar)
+        float t = 0.f;
+        if (Kc < 0.35f) t = (Kc - 0.05f) / (0.35f - 0.05f) * 0.5f;
+        else            t = 0.5f + (Kc - 0.35f) / (0.70f - 0.35f) * 0.5f;
+        if (t < 0.f) t = 0.f; if (t > 1.f) t = 1.f;
+        drawFilledRect(sx, sy, sw * t, sh, trackFill, 0.7f);
+        unsigned char knob[4] = { 245, 250, 255, 255 };
+        drawFilledRect(sx + sw * t - 4.f, sy - 4.f, 8.f, sh + 8.f, knob, 1.f);
+        // Hit
+        mathHits_.push_back({ MHIT_SLIDER_DIST, sx, sy - 4.f, sw, sh + 8.f, 0 });
+        y += sh + 14.f;
+    }
+
+    // ── INTERACTIVE: half-life slider ────────────────────────────────
+    tx(x, y, "memory", TextRender::SZ_MEDIUM, headingC);
+    {
+        float bigHL = halflife_sec;
+        if (bigHL > 9999.f) snprintf(buf, sizeof buf, "%s", "∞");
+        else if (bigHL >= 1.f) snprintf(buf, sizeof buf, "%.2f s", bigHL);
+        else snprintf(buf, sizeof buf, "%.0f ms", bigHL * 1000.f);
+        txR(panelX + panelW - 28.f, y + 6.f, buf, TextRender::SZ_MEDIUM, valueC);
+    }
+    y += lh(TextRender::SZ_MEDIUM) + 4.f;
+    {
+        float sx = x, sy = y, sw = panelW - 48.f, sh = 22.f;
+        unsigned char trackBg[4]   = { 22, 30, 44, 255 };
+        unsigned char trackFill[4] = { 100, 200, 255, 255 };
+        drawFilledRect(sx, sy, sw, sh, trackBg, 1.f);
+        // Estimated position from current decay (inverse of log map)
+        float tHL = 0.f;
+        if (cur.decay > 0.f && cur.decay < 1.f) {
+            float h_sec = (std::log(0.5f) / std::log(cur.decay)) / 60.f;
+            // log map: 0.05..10  ->  0..1
+            tHL = std::log(h_sec / 0.05f) / std::log(200.f);
+            if (tHL < 0.f) tHL = 0.f; if (tHL > 1.f) tHL = 1.f;
+        }
+        drawFilledRect(sx, sy, sw * tHL, sh, trackFill, 0.7f);
+        unsigned char knob[4] = { 245, 250, 255, 255 };
+        drawFilledRect(sx + sw * tHL - 4.f, sy - 4.f, 8.f, sh + 8.f, knob, 1.f);
+        mathHits_.push_back({ MHIT_SLIDER_HALFLIFE, sx, sy - 4.f, sw, sh + 8.f, 0 });
+        y += sh + 14.f;
+    }
+
+    // ── INTERACTIVE: regime jump buttons + invert ─────────────────────
+    tx(x, y, "jump", TextRender::SZ_MEDIUM, headingC);
+    y += lh(TextRender::SZ_MEDIUM) + 4.f;
+    {
+        const char* names[4] = { "STABLE", "TURBULENT", "CHAOTIC", "MARGINAL" };
+        unsigned char colors[4][4] = {
+            { 130, 220, 150, 255 },
+            { 245, 175,  90, 255 },
+            { 248, 110, 110, 255 },
+            { 250, 200, 110, 255 },
+        };
+        float bw = (panelW - 48.f - 18.f) / 5.f;
+        float bh = 30.f;
+        for (int i = 0; i < 4; i++) {
+            float bx = x + i * (bw + 6.f);
+            unsigned char bg[4] = { colors[i][0], colors[i][1], colors[i][2], 255 };
+            drawFilledRect(bx, y, bw, bh, bg, 0.30f);
+            unsigned char fg[4] = { colors[i][0], colors[i][1], colors[i][2], 255 };
+            tx(bx + 8.f, y + 6.f, names[i], TextRender::SZ_SMALL, fg);
+            mathHits_.push_back({ MHIT_BUTTON_REGIME, bx, y, bw, bh, i });
+        }
+        // Invert button on the right
+        float bx = x + 4 * (bw + 6.f);
+        unsigned char fg[4] = { 200, 220, 245, 255 };
+        unsigned char bg[4] = { 40, 60, 90, 255 };
+        drawFilledRect(bx, y, bw, bh, bg, 0.6f);
+        tx(bx + 8.f, y + 6.f, "INVERT", TextRender::SZ_SMALL, fg);
+        mathHits_.push_back({ MHIT_BUTTON_INVERT, bx, y, bw, bh, 0 });
+        y += bh + 14.f;
+    }
+
+    // ── INTERACTIVE: regime compass pad ───────────────────────────────
+    tx(x, y, "compass", TextRender::SZ_MEDIUM, headingC);
+    tx(x + 140.f, y + 6.f,
+       "drag inside the pad to walk through regimes",
+       TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_MEDIUM) + 6.f;
+    {
+        float pw = 200.f, ph = 200.f;
+        float px = x;
+        float py = y;
+        // Pad background with 4 quadrant tints (cardinal regimes)
+        unsigned char qStable[4]  = { 130, 220, 150, 255 };
+        unsigned char qTurb[4]    = { 245, 175,  90, 255 };
+        unsigned char qChaos[4]   = { 248, 110, 110, 255 };
+        unsigned char qMarg[4]    = { 250, 200, 110, 255 };
+        // Quadrants: NE=Stable, NW=Turb, SW=Chaos, SE=Marginal (just a visual scheme)
+        drawFilledRect(px + pw*0.5f, py,          pw*0.5f, ph*0.5f, qStable, 0.30f);  // NE
+        drawFilledRect(px,           py,          pw*0.5f, ph*0.5f, qTurb,   0.30f);  // NW
+        drawFilledRect(px,           py + ph*0.5f, pw*0.5f, ph*0.5f, qChaos,  0.30f);  // SW
+        drawFilledRect(px + pw*0.5f, py + ph*0.5f, pw*0.5f, ph*0.5f, qMarg,   0.30f);  // SE
+        // Crosshair
+        unsigned char cross[4] = { 80, 100, 130, 255 };
+        drawFilledRect(px + pw*0.5f - 0.5f, py, 1.f, ph, cross, 0.7f);
+        drawFilledRect(px, py + ph*0.5f - 0.5f, pw, 1.f, cross, 0.7f);
+        // Cardinal labels
+        unsigned char labelC[4] = { 220, 230, 245, 255 };
+        tx(px + pw - 70.f, py + 8.f, "STABLE", TextRender::SZ_SMALL, labelC);
+        tx(px + 8.f,       py + 8.f, "TURB",   TextRender::SZ_SMALL, labelC);
+        tx(px + 8.f,       py + ph - 22.f, "CHAOS", TextRender::SZ_SMALL, labelC);
+        tx(px + pw - 70.f, py + ph - 22.f, "MARG",  TextRender::SZ_SMALL, labelC);
+        // Hit region
+        mathHits_.push_back({ MHIT_PAD_COMPASS, px, py, pw, ph, 0 });
+
+        // Right of pad: toggles + snapshots panel
+        float rx = px + pw + 24.f;
+        float ry = py;
+        float rh_btn = 32.f;
+        float rw_btn = panelW - 48.f - (pw + 24.f);
+        // failsafe button
+        {
+            extern bool g_failsafe_enabled;
+            bool on = g_failsafe_enabled;
+            unsigned char bgOn[4]  = { 130, 220, 150, 255 };
+            unsigned char bgOff[4] = {  40,  56,  80, 255 };
+            unsigned char fgOn[4]  = {  20,  40,  30, 255 };
+            unsigned char fgOff[4] = { 200, 220, 245, 255 };
+            drawFilledRect(rx, ry, rw_btn, rh_btn, on ? bgOn : bgOff, on ? 0.85f : 0.85f);
+            tx(rx + 10.f, ry + 8.f,
+               on ? "FAILSAFE  armed" : "FAILSAFE",
+               TextRender::SZ_SMALL, on ? fgOn : fgOff);
+            mathHits_.push_back({ MHIT_BUTTON_FAILSAFE, rx, ry, rw_btn, rh_btn, 0 });
+            ry += rh_btn + 8.f;
+        }
+        // math.echo button
+        {
+            extern bool g_math_echo_enabled;
+            bool on = g_math_echo_enabled;
+            unsigned char bgOn[4]  = { 100, 200, 255, 255 };
+            unsigned char bgOff[4] = {  40,  56,  80, 255 };
+            unsigned char fgOn[4]  = {  10,  20,  40, 255 };
+            unsigned char fgOff[4] = { 200, 220, 245, 255 };
+            drawFilledRect(rx, ry, rw_btn, rh_btn, on ? bgOn : bgOff, 0.85f);
+            tx(rx + 10.f, ry + 8.f,
+               on ? "MATH ECHO  on" : "MATH ECHO",
+               TextRender::SZ_SMALL, on ? fgOn : fgOff);
+            mathHits_.push_back({ MHIT_BUTTON_ECHO, rx, ry, rw_btn, rh_btn, 0 });
+            ry += rh_btn + 14.f;
+        }
+        // Snapshot quick buttons
+        tx(rx, ry, "snapshots", TextRender::SZ_SMALL, dimC);
+        ry += lh(TextRender::SZ_SMALL) + 4.f;
+        {
+            float sbw = (rw_btn - 18.f) / 4.f;
+            for (int i = 1; i <= 4; i++) {
+                float sbx = rx + (i - 1) * (sbw + 6.f);
+                unsigned char bg[4] = { 45, 60, 85, 255 };
+                drawFilledRect(sbx, ry, sbw, rh_btn, bg, 0.85f);
+                char b[8]; snprintf(b, sizeof b, "%d", i);
+                unsigned char fg[4] = { 220, 230, 245, 255 };
+                tx(sbx + sbw * 0.5f - 6.f, ry + 8.f, b, TextRender::SZ_SMALL, fg);
+                mathHits_.push_back({ MHIT_BUTTON_SNAP_SAVE, sbx, ry, sbw, rh_btn, i });
+            }
+            ry += rh_btn + 8.f;
+        }
+        // Recall STABLE
+        {
+            unsigned char bg[4] = { 30, 80, 50, 255 };
+            unsigned char fg[4] = { 200, 240, 215, 255 };
+            drawFilledRect(rx, ry, rw_btn, rh_btn, bg, 0.85f);
+            tx(rx + 10.f, ry + 8.f, "RECALL  slot 1", TextRender::SZ_SMALL, fg);
+            mathHits_.push_back({ MHIT_BUTTON_SNAP_RECALL_STABLE, rx, ry, rw_btn, rh_btn, 0 });
+            ry += rh_btn;
+        }
+        y = py + ph + 14.f;
+    }
+
+    // ── footer hint ──────────────────────────────────────────────────
+    tx(x, y,
+       "Press H for the parameter editor.  Math echo publishes /cma/math/* at 30 Hz.",
+       TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_SMALL) + 4.f;
+
+    // The interactive cockpit above is the whole panel — no more
+    // billboard sparkline strip.
+    (void)y;  // suppress unused-after-last-section warning
 }
