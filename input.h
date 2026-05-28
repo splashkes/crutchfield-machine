@@ -123,6 +123,20 @@ enum ActionId : int {
     ACT_MATH_ADJUST_DEC,
     ACT_MATH_ADJUST_INC,
 
+    // ── Math-derived meta-controls ─────────────────────────────────────
+    // These actions don't directly map to one parameter — they consume
+    // the math model (spectral radius, regime classifier, memory
+    // half-life) to control multiple parameters coherently.
+    ACT_DYN_HALFLIFE_AXIS,        // axis 0..1 → seconds (log mapped 0.05..10s)
+    ACT_DYN_HALFLIFE_BEATS_AXIS,  // axis 0..1 → beats (log mapped 0.125..16)
+    ACT_REGIME_DISTANCE_AXIS,     // 0 = deep STABLE, 1 = deep CHAOTIC
+    ACT_REGIME_SET,               // discrete: 0=STABLE, 1=TURBULENT, 2=CHAOTIC, 3=MARGINAL
+    ACT_REGIME_INVERT,            // discrete: cross nearest boundary
+    ACT_PAD_REGIME_X,             // radial compass: X axis (-1..+1)
+    ACT_PAD_REGIME_Y,             // radial compass: Y axis (-1..+1)
+    ACT_THEATER_FAILSAFE,         // toggle: auto-recover from DIVERGENT
+    ACT_MATH_ECHO_TOGGLE,         // toggle: outbound OSC of math metrics
+
     // Ableton Link
     ACT_LINK_TOGGLE,    // enable/disable Link network discovery
     ACT_LINK_TAP,       // local tap-tempo into Link (ignored if disabled)

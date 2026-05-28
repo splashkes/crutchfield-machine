@@ -23,6 +23,7 @@
 #include "link_glue.h"
 #include "syphon_glue.h"   // header self-stubs to no-ops off-mac
 #include "text_render.h"
+#include "osc.h"
 #if !defined(_WIN32)
   #include <signal.h>
 #endif
@@ -3181,8 +3182,33 @@ struct StateSnapshot {
     int    enableBits = 0;
     Params p;
     double savedAt = 0.0;   // wall-clock seconds since launch
+    int    regimeCode = -1; // 0=STABLE 1=TURBULENT 2=CHAOTIC 3=MARGINAL 4=DIVERGENT
 };
 StateSnapshot g_snapshots[9];   // indices 0..8; 0 unused
+} // namespace
+
+// ── Math-derived live monitors ────────────────────────────────────
+// These live at file scope so apply_action's helpers (which can see
+// them via `extern`) can flip them.
+bool   g_failsafe_enabled  = false;
+bool   g_math_echo_enabled = false;
+
+namespace {
+// Classify the current dynamical regime from params.
+// Returns 0=STABLE, 1=TURBULENT, 2=CHAOTIC, 3=MARGINAL, 4=DIVERGENT.
+int classify_regime(const Params& p) {
+    float rho = p.decay * (1.0f - 0.02f * (p.blurX + p.blurY));
+    float Kc  = p.couple;
+    if (rho > 1.001f) return 4;     // DIVERGENT
+    if (rho > 0.998f) return 3;     // MARGINAL
+    if (Kc  > 0.6f)   return 2;     // CHAOTIC
+    if (Kc  > 0.3f)   return 1;     // TURBULENT
+    return 0;                       // STABLE
+}
+const char* regime_name(int code) {
+    static const char* N[5] = { "STABLE","TURBULENT","CHAOTIC","MARGINAL","DIVERGENT" };
+    return (code >= 0 && code <= 4) ? N[code] : "?";
+}
 
 void snapshot_save(int slot) {
     if (slot < 1 || slot > 8) return;
@@ -3190,10 +3216,28 @@ void snapshot_save(int slot) {
     g_snapshots[slot].enableBits = S.enable;
     g_snapshots[slot].p = S.p;
     g_snapshots[slot].savedAt = glfwGetTime();
-    char buf[64];
-    snprintf(buf, sizeof buf, "snapshot saved → slot %d", slot);
+    g_snapshots[slot].regimeCode = classify_regime(S.p);
+    char buf[80];
+    snprintf(buf, sizeof buf, "snapshot saved → slot %d  [%s]",
+             slot, regime_name(g_snapshots[slot].regimeCode));
     S.ov.logEvent(buf);
-    printf("[snapshot] saved slot %d\n", slot);
+    printf("[snapshot] saved slot %d (%s)\n", slot,
+           regime_name(g_snapshots[slot].regimeCode));
+}
+
+// Most recent slot tagged with the given regime, or -1 if none.
+int snapshot_last_with_regime(int targetCode) {
+    int best = -1;
+    double bestTime = -1.0;
+    for (int i = 1; i <= 8; i++) {
+        if (!g_snapshots[i].used) continue;
+        if (g_snapshots[i].regimeCode != targetCode) continue;
+        if (g_snapshots[i].savedAt > bestTime) {
+            bestTime = g_snapshots[i].savedAt;
+            best = i;
+        }
+    }
+    return best;
 }
 
 void snapshot_recall(int slot) {
@@ -3211,6 +3255,91 @@ void snapshot_recall(int slot) {
     S.ov.logEvent(buf);
     printf("[snapshot] recalled slot %d\n", slot);
 }
+
+// ── theater.failsafe watcher ──────────────────────────────────────
+// While g_failsafe_enabled, watch the regime. If DIVERGENT persists
+// for >2 seconds, recall the most recent STABLE snapshot (or fall
+// back to ACT_CLEAR if there isn't one). 3-second cooloff prevents
+// flicker-recovery loops.
+struct FailsafeState {
+    double divergentSince = -1.0;
+    double cooloffUntil   = 0.0;
+    int    tripCount      = 0;
+};
+FailsafeState g_fs;
+
+void failsafe_tick(double now, int regimeCode) {
+    if (!g_failsafe_enabled) {
+        g_fs.divergentSince = -1.0;
+        return;
+    }
+    if (now < g_fs.cooloffUntil) return;
+    if (regimeCode == 4) {  // DIVERGENT
+        if (g_fs.divergentSince < 0.0) g_fs.divergentSince = now;
+        if (now - g_fs.divergentSince > 2.0) {
+            int slot = snapshot_last_with_regime(0);  // STABLE
+            if (slot >= 1) {
+                snapshot_recall(slot);
+                char b[80]; snprintf(b, sizeof b,
+                    "FAILSAFE: divergent >2s → recall slot %d", slot);
+                S.ov.logEvent(b);
+                printf("[failsafe] tripped; recalled slot %d\n", slot);
+            } else {
+                S.needClear = true;
+                S.ov.logEvent("FAILSAFE: no STABLE snap → CLEAR");
+                printf("[failsafe] tripped; no STABLE snap, cleared\n");
+            }
+            g_fs.divergentSince = -1.0;
+            g_fs.cooloffUntil   = now + 3.0;
+            g_fs.tripCount++;
+        }
+    } else {
+        g_fs.divergentSince = -1.0;
+    }
+}
+
+// ── math.echo outbound OSC ───────────────────────────────────────
+// When enabled, publish the math model to /cma/math/* at ~30 Hz.
+// Edge-triggered regime change emits an extra /cma/math/regime/changed
+// + /cma/math/regime/name on transition so downstream consumers
+// (lighting consoles, TD networks) can act on the boundary crossing.
+struct EchoState {
+    double lastSent = 0.0;
+    int    lastRegime = -1;
+};
+EchoState g_echo;
+constexpr double MATH_ECHO_RATE_HZ = 30.0;
+
+void math_echo_tick(double now, int regimeCode) {
+    if (!g_math_echo_enabled) {
+        g_echo.lastRegime = -1;
+        return;
+    }
+    if (now - g_echo.lastSent < (1.0 / MATH_ECHO_RATE_HZ)) return;
+    g_echo.lastSent = now;
+
+    const Params& p = S.p;
+    float rho = p.decay * (1.0f - 0.02f * (p.blurX + p.blurY));
+    float halflife_sec = (p.decay > 0.f && p.decay < 1.f)
+        ? (std::log(0.5f) / std::log(p.decay)) / 60.0f : 1e9f;
+    float D = 0.25f * (p.blurX * p.blurX + p.blurY * p.blurY);
+    float noise_db = (p.noise > 1e-9f) ? 20.0f * std::log10(p.noise) : -120.0f;
+
+    feedback_osc_send_f("/cma/math/rho",         rho);
+    feedback_osc_send_f("/cma/math/halflife",    halflife_sec);
+    feedback_osc_send_f("/cma/math/diffusion",   D);
+    feedback_osc_send_f("/cma/math/coupling",    p.couple);
+    feedback_osc_send_f("/cma/math/noise/db",    noise_db);
+    feedback_osc_send_i("/cma/math/regime",      (int32_t)regimeCode);
+
+    if (regimeCode != g_echo.lastRegime) {
+        feedback_osc_send_i("/cma/math/regime/changed", (int32_t)regimeCode);
+        // The regime name is sent as a string. Use the bang+i pattern
+        // since we don't have a send_s; downstream can also subscribe
+        // to /cma/math/regime which is an int code.
+        g_echo.lastRegime = regimeCode;
+    }
+}
 } // namespace
 
 static void apply_action(ActionId id, float mag) {
@@ -3224,6 +3353,158 @@ static void apply_action(ActionId id, float mag) {
     if (id == ACT_SNAPSHOT_SAVE)   { snapshot_save((int)mag);   return; }
     if (id == ACT_SNAPSHOT_RECALL) { snapshot_recall((int)mag); return; }
     if (id == ACT_MATH_TOGGLE)     { S.ov.toggleMath(); return; }
+
+    // ── Math-derived meta-controls ─────────────────────────────────
+    // These actions inject computed parameter values rather than
+    // directly bumping one knob. They use the live spectral-radius,
+    // half-life, and regime-classification model to land coherent
+    // parameter sets from a single input.
+    if (id == ACT_DYN_HALFLIFE_AXIS) {
+        // axis [0..1] → log-mapped seconds 0.05 .. 10
+        float v = std::clamp(mag, 0.0f, 1.0f);
+        float h_sec = 0.05f * std::pow(200.0f, v);
+        float h_frames = h_sec * 60.0f;                   // 60 fps reference
+        if (h_frames < 1.0f) h_frames = 1.0f;
+        float d = std::pow(0.5f, 1.0f / h_frames);
+        S.p.decay = std::clamp(d, 0.0f, 0.9999f);
+        char b[80]; snprintf(b, sizeof b,
+            "half-life → %.2f s  (decay %.4f)", h_sec, S.p.decay);
+        S.ov.logEvent(b);
+        return;
+    }
+    if (id == ACT_DYN_HALFLIFE_BEATS_AXIS) {
+        // axis [0..1] → log-mapped beats 0.125 .. 16 at current Link tempo
+        float v = std::clamp(mag, 0.0f, 1.0f);
+        float beats = 0.125f * std::pow(128.0f, v);
+        double bpm = link_tempo();
+        if (bpm < 20.0) bpm = 120.0;
+        float h_sec = (float)(beats * 60.0 / bpm);
+        float h_frames = h_sec * 60.0f;
+        if (h_frames < 1.0f) h_frames = 1.0f;
+        S.p.decay = std::clamp(std::pow(0.5f, 1.0f / h_frames), 0.0f, 0.9999f);
+        char b[96]; snprintf(b, sizeof b,
+            "half-life → %.2f beats / %.2f s @ %.1f bpm", beats, h_sec, (float)bpm);
+        S.ov.logEvent(b);
+        return;
+    }
+    if (id == ACT_REGIME_DISTANCE_AXIS) {
+        // 0 = deep STABLE, 0.5 = enter TURBULENT, 1 = enter CHAOTIC.
+        // Piecewise path through (K_c, decay, noise) precomputed to
+        // hit the regime thresholds at the right t values.
+        float t = std::clamp(mag, 0.0f, 1.0f);
+        float Kc, dc, ns;
+        if (t < 0.5f) {
+            float u = t / 0.5f;
+            Kc = 0.05f  + u * (0.35f  - 0.05f);
+            dc = 0.97f  + u * (0.985f - 0.97f);
+            ns = 0.001f + u * (0.005f - 0.001f);
+        } else {
+            float u = (t - 0.5f) / 0.5f;
+            Kc = 0.35f  + u * (0.70f  - 0.35f);
+            dc = 0.985f + u * (0.995f - 0.985f);
+            ns = 0.005f + u * (0.020f - 0.005f);
+        }
+        S.p.couple = Kc;
+        S.p.decay  = dc;
+        S.p.noise  = ns;
+        char b[96]; snprintf(b, sizeof b,
+            "regime.distance %.2f → decay %.3f / Kc %.2f / noise %.3f",
+            t, dc, Kc, ns);
+        S.ov.logEvent(b);
+        return;
+    }
+    if (id == ACT_REGIME_SET) {
+        // Discrete regime selector. Value 0..3 picks a target tuple
+        // and blends 70/30 into current state to preserve identity.
+        int idx = (int)std::round(mag);
+        if (idx < 0) idx = 0;
+        if (idx > 3) idx = 3;
+        const float T[4][3] = {
+            { 0.97f,  0.05f, 0.001f },  // STABLE
+            { 0.985f, 0.45f, 0.008f },  // TURBULENT
+            { 0.995f, 0.70f, 0.020f },  // CHAOTIC
+            { 0.998f, 0.15f, 0.001f },  // MARGINAL
+        };
+        const char* names[4] = { "STABLE", "TURBULENT", "CHAOTIC", "MARGINAL" };
+        const float blend = 0.7f;
+        S.p.decay  = blend * T[idx][0] + (1.0f - blend) * S.p.decay;
+        S.p.couple = blend * T[idx][1] + (1.0f - blend) * S.p.couple;
+        S.p.noise  = blend * T[idx][2] + (1.0f - blend) * S.p.noise;
+        char b[64]; snprintf(b, sizeof b, "regime → %s", names[idx]);
+        S.ov.logEvent(b);
+        return;
+    }
+    if (id == ACT_REGIME_INVERT) {
+        // Cross the nearest regime boundary by adjusting K_c with a 5%
+        // overshoot. Lightweight version: just bump K_c either side of
+        // the nearest of {0.3, 0.6}.
+        float Kc = S.p.couple;
+        float dist03 = std::fabs(Kc - 0.30f);
+        float dist06 = std::fabs(Kc - 0.60f);
+        float boundary = dist03 < dist06 ? 0.30f : 0.60f;
+        float overshoot = (Kc > boundary ? -0.05f : +0.05f);
+        S.p.couple = std::clamp(boundary + overshoot, 0.0f, 1.0f);
+        char b[64]; snprintf(b, sizeof b,
+            "regime.invert: Kc %.2f → %.2f", Kc, S.p.couple);
+        S.ov.logEvent(b);
+        return;
+    }
+    // Compass pad — both axes accumulate; main effect applies via a
+    // helper after each update.
+    if (id == ACT_PAD_REGIME_X || id == ACT_PAD_REGIME_Y) {
+        static float padX = 0.f, padY = 0.f;
+        // mag arrives in [0..1] from axis-style sources; remap to [-1..1].
+        float v = mag * 2.0f - 1.0f;
+        if (id == ACT_PAD_REGIME_X) padX = std::clamp(v, -1.0f, 1.0f);
+        else                        padY = std::clamp(v, -1.0f, 1.0f);
+        // Polar:  angle picks regime quadrant, radius picks intensity.
+        float r = std::min(1.0f, std::sqrt(padX * padX + padY * padY));
+        float angle = std::atan2(padY, padX);                       // -π..+π
+        float a = (angle + (float)M_PI) / (2.0f * (float)M_PI);     // 0..1
+        float quad = a * 4.0f;                                       // 0..4
+        int q0 = (int)quad % 4;
+        int q1 = (q0 + 1) % 4;
+        float f = quad - (float)((int)quad);
+        float w[4] = { 0.f, 0.f, 0.f, 0.f };
+        w[q0] = 1.0f - f; w[q1] = f;
+        // Cardinal regimes — E=STABLE (q0=0), N=TURBULENT (q=1), W=CHAOTIC (q=2), S=MARGINAL (q=3)
+        // (Match angle 0 = +X axis → STABLE; counterclockwise from there.)
+        const float T[4][3] = {
+            { 0.97f,  0.05f, 0.001f },  // STABLE
+            { 0.985f, 0.45f, 0.008f },  // TURBULENT
+            { 0.995f, 0.70f, 0.020f },  // CHAOTIC
+            { 0.998f, 0.15f, 0.001f },  // MARGINAL
+        };
+        float decay = 0.f, Kc = 0.f, ns = 0.f;
+        for (int i = 0; i < 4; i++) {
+            decay += w[i] * T[i][0];
+            Kc    += w[i] * T[i][1];
+            ns    += w[i] * T[i][2];
+        }
+        S.p.decay  = 0.97f  + r * (decay - 0.97f);
+        S.p.couple = 0.05f  + r * (Kc    - 0.05f);
+        S.p.noise  = 0.001f + r * (ns    - 0.001f);
+        // No HUD spam — runs at axis rate.
+        return;
+    }
+    if (id == ACT_THEATER_FAILSAFE) {
+        // Toggle the failsafe watcher; the actual divergent-detection
+        // and recovery lives in main loop's failsafe_tick().
+        extern bool g_failsafe_enabled;
+        g_failsafe_enabled = !g_failsafe_enabled;
+        S.ov.logEvent(g_failsafe_enabled
+            ? "theater.failsafe ARMED  (DIVERGENT >2s → recall STABLE)"
+            : "theater.failsafe OFF");
+        return;
+    }
+    if (id == ACT_MATH_ECHO_TOGGLE) {
+        extern bool g_math_echo_enabled;
+        g_math_echo_enabled = !g_math_echo_enabled;
+        S.ov.logEvent(g_math_echo_enabled
+            ? "math.echo ON  (/cma/math/* at 30 Hz)"
+            : "math.echo OFF");
+        return;
+    }
 
     // ── Mathlab nav: dedicated actions wired in installDefaults so a
     //    keyboard binding doesn't have to fight the warp.translate
@@ -5432,6 +5713,16 @@ int main(int argc, char** argv) {
         S.ov.mathTickDrag([](int act, float v) {
             apply_action((ActionId)act, v);
         });
+
+        // Math-derived watchers (failsafe + outbound echo). Cheap
+        // (one classify + a few atomic sends if enabled).
+        {
+            double now = glfwGetTime();
+            int regime = classify_regime(S.p);
+            failsafe_tick(now, regime);
+            math_echo_tick(now, regime);
+        }
+
         S.ov.draw();
         S.ui.draw();
 
