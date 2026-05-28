@@ -1,21 +1,28 @@
-# Launch Control XL → TouchDesigner → Crutchfield
+# Launch Control → TouchDesigner → Crutchfield
 
-Use TouchDesigner as a MIDI-to-OSC bridge for the Novation Launch
-Control XL (or any class-compliant MIDI controller). This adds
-smoothing, blending, scaling, and automation between the physical
-controller and Crutchfield.
+Use TouchDesigner as a MIDI-to-OSC bridge for any Novation Launch
+Control variant — the original LC (8 knobs + 16 pads), the LC XL
+(8 sliders + 24 knobs + 16 pads), or the LC Mini. This adds smoothing,
+blending, scaling, and automation between the physical controller and
+Crutchfield.
 
-If you don't need any of that, just plug the LC XL into the Mac and
-use `bindings.examples/launch_control_xl.ini` directly. This document
-is for when you want TD in the middle.
+If you don't need any of that, just plug the controller into the Mac
+and use the right bindings example for your hardware:
+
+| Device | Bindings file |
+| --- | --- |
+| LC v1 (original) | `bindings.examples/launch_control_v1.ini` |
+| LC XL | `bindings.examples/launch_control_xl.ini` |
+
+This document is for when you want TD in the middle.
 
 ## Network
 
 ```
-[ Launch Control XL ]
+[ Launch Control (any variant) ]
          │ USB MIDI
          ▼
-[ MIDI In CHOP ]                              ─ ch=9 (Factory Template 1)
+[ MIDI In CHOP ]                              ─ Factory Template 1 = ch 9
          │
          ▼
 [ Select CHOP ]   ← pick the CCs/notes you care about
@@ -32,18 +39,27 @@ is for when you want TD in the middle.
 
 ## Setup steps
 
-1. Plug LC XL into your Mac.
-2. **MIDI In CHOP**: set `Device` to `Launch Control XL`. Channels
-   appear as `c1cN` (channel 1 CCs) etc. Factory Template 1 sends on
-   channel 9 so you'll see `c9c13`, `c9c77`, `c9n41`, etc.
-3. **Select CHOP**: pick the source channels. For the slider bank:
-   `c9c77 c9c78 c9c79 c9c80 c9c81 c9c82 c9c83 c9c84`.
+1. Plug the Launch Control into your Mac.
+2. **MIDI In CHOP**: set `Device` to `Launch Control` (or `Launch
+   Control XL` for the XL). Channels appear as `c<channel>c<cc>` for
+   CCs and `c<channel>n<note>` for notes. Factory Template 1 sends on
+   channel 9 — so an LC v1 knob 1 appears as `c9c21`, a pad 1 as
+   `c9n9`. For the LC XL: slider 1 is `c9c77`, knob A1 is `c9c13`.
+3. **Select CHOP**: pick the source channels for the controls you want
+   to drive.
 4. **Rename CHOP**: name the channels to match OSC addresses you want
-   to send. Example mapping:
-   | LC XL source | TD channel name      | OSC address       |
-   | ------------ | -------------------- | ----------------- |
+   to send. Example for LC v1 (Factory Template 1):
+   | LC v1 source | TD channel name | OSC address |
+   | --- | --- | --- |
+   | `c9c21` (knob 1) | `cma/sat`        | `/cma/sat`        |
+   | `c9c25` (knob 5) | `cma/decay`      | `/cma/decay`      |
+   | `c9n9`  (top pad 1) | `cma/layer/warp` | `/cma/layer/warp` |
+   | `c9n41` (bot pad 1) | `cma/pattern/hbars` | `/cma/pattern/hbars` |
+
+   For the LC XL (Factory Template 1):
+   | LC XL source | TD channel name | OSC address |
+   | --- | --- | --- |
    | `c9c77` (slider 1) | `cma/decay`     | `/cma/decay`      |
-   | `c9c78` (slider 2) | `cma/external`  | `/cma/external`   |
    | `c9c13` (knob A1)  | `cma/sat`       | `/cma/sat`        |
    | `c9n41` (pad 1)    | `cma/layer/warp`| `/cma/layer/warp` |
 5. **Math CHOP** (optional): MIDI CC values arrive as 0..1 (or 0..127

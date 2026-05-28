@@ -153,20 +153,29 @@ sources before the value reaches the feedback engine.
 
 ---
 
-## Launch Control XL — direct MIDI
+## Launch Control — direct MIDI
 
-If you don't need TD in the middle, the LC XL just plugs into the Mac
-and the existing MIDI path picks it up. Ready-to-use bindings live at:
+If you don't need TD in the middle, the controller just plugs into the
+Mac and the existing MIDI path picks it up. Two ready-to-use bindings
+files for the two most common Launch Control variants:
 
-```
-bindings.examples/launch_control_xl.ini
-```
+| Device | File |
+| --- | --- |
+| Launch Control (original / v1, 2013–) | `bindings.examples/launch_control_v1.ini` |
+| Launch Control XL (8 sliders + 24 knobs + 16 pads) | `bindings.examples/launch_control_xl.ini` |
 
-Append the contents to your `bindings.ini` at
-`~/Library/Application Support/Crutchfield Machine/bindings.ini` and the
-controller is live on launch.
+Append the contents of the one matching your hardware to your
+`bindings.ini` at
+`~/Library/Application Support/Crutchfield Machine/bindings.ini` and
+the controller is live on launch.
 
-The example covers Factory Template 1 (the green-LED default):
+### LC v1 (original) — Factory Template 1
+- 8 knobs → color/tone/optics setpoints (CC 21–28, ch 9)
+- Top pad row → 8 layer toggles (notes 9–12, 25–28, ch 9)
+- Bottom pad row → 6 pattern selectors + 2 screenshot triggers (notes 41–44, 57–60, ch 9)
+- Side buttons → preset prev/next, fullscreen, clear (notes 114–117, ch 9)
+
+### LC XL — Factory Template 1
 - 8 sliders → decay, external, noise, couple setpoint, outfade
   (bipolar), fx wet, shape count, shape size
 - Top knob row → color/tone setpoints + zoom/theta as deltas
@@ -175,6 +184,17 @@ The example covers Factory Template 1 (the green-LED default):
 - Top pad row → 8 layer toggles
 - Bottom pad row → 8 pattern selectors
 - Right-side column → fullscreen, preset prev/next, screenshot
+
+### User Templates (any variant)
+If you already have a User Template configured from other plugin work,
+the CC/note numbers will be different and the device sends on channels
+1–8 instead of 9–16. Fastest path to a working map:
+
+```bash
+./feedback --midi-learn   # touch each control, note the printed cc/ch
+```
+
+Then copy the relevant example file and substitute your numbers.
 
 ---
 

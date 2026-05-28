@@ -56,6 +56,26 @@ struct OscState {
 #ifdef _WIN32
     bool wsaUp = false;
 #endif
+
+    // Destructor MUST detach or join the listener thread, otherwise
+    // std::thread terminates the process when the global g_osc unwinds
+    // at exit. We close the socket first to unblock the recvfrom in
+    // the listener, then join with a brief timeout-equivalent (the
+    // listener's loop checks `running` between recv calls).
+    ~OscState() {
+        running.store(false, std::memory_order_release);
+        if (sock != INVALID_SOCK) {
+            CLOSESOCK(sock);
+            sock = INVALID_SOCK;
+        }
+        if (thr.joinable()) {
+            // Best-effort: the listener should exit when recvfrom errors
+            // after the close, but if the OS hasn't woken it yet we just
+            // detach to avoid blocking process exit indefinitely.
+            try { thr.join(); }
+            catch (...) { try { thr.detach(); } catch (...) {} }
+        }
+    }
 };
 
 OscState g_osc;

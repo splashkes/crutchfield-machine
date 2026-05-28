@@ -42,10 +42,10 @@ LDFLAGS   = -static -static-libgcc -static-libstdc++
 LDLIBS    = -Wl,-Bstatic -lglfw3 -lglew32 -lz -lwinpthread \
             -Wl,-Bdynamic -lopengl32 -lgdi32 \
             -lmfplat -lmfreadwrite -lmf -lmfuuid -lole32 -loleaut32 \
-            -lwinmm \
+            -lwinmm -lws2_32 \
             -Wl,-Bstatic
 
-SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp ui_panel.cpp input.cpp music.cpp audio.cpp
+SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp ui_panel.cpp input.cpp music.cpp audio.cpp osc.cpp
 OBJS = $(SRCS:.cpp=.o)
 
 # Vendored QuickJS — compiled as C99, separate rule below.

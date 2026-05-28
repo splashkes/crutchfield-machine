@@ -21,12 +21,12 @@ set LIBDIRS=/LIBPATH:"%VCPKG_ROOT%\installed\x64-windows\lib"
 
 cl /std:c++17 /O2 /EHsc /nologo ^
    %INCLUDES% ^
-   main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp ^
+   main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp osc.cpp ^
    /Fe:feedback.exe ^
    /link %LIBDIRS% ^
          glfw3dll.lib glew32.lib opengl32.lib gdi32.lib ^
          mfplat.lib mfreadwrite.lib mf.lib mfuuid.lib ole32.lib oleaut32.lib ^
-         winmm.lib zlib.lib
+         winmm.lib zlib.lib ws2_32.lib
 
 REM Copy the GLFW and GLEW DLLs next to the exe so the app can launch.
 copy /Y "%VCPKG_ROOT%\installed\x64-windows\bin\glfw3.dll" . >nul
