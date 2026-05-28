@@ -301,7 +301,7 @@ void Overlay::draw() {
     else if (dt >= FADE_START) alpha = (float)(1.0 - (dt - FADE_START) / FADE_DUR);
 
     const bool hudVisible = (alpha > 0.001f) && !lines_.empty();
-    if (!hudVisible && !helpVisible_) return;
+    if (!hudVisible && !helpVisible_ && !mathVisible_) return;
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -327,6 +327,7 @@ void Overlay::draw() {
 
     // ---- Help panel (top-left, no dim) ----
     if (helpVisible_) drawHelpPanel();
+    if (mathVisible_) drawMathPanel();
 
     // ---- Bottom-right gamepad hint (only when help is closed) ----
     if (!helpVisible_ && showGamepadHint_ && activeSection_ >= 0
@@ -479,4 +480,259 @@ void Overlay::drawHelpSection(float x, float y, float w, float h) {
         drawTextLine(x, y + h - 12.0f * hintS, buf, dim, 1.0f, hintS);
     }
     (void)w;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Math dashboard — an analytical view of the running feedback system.
+// Renders a translucent panel on the right side of the screen showing:
+//   1. SYSTEM CHARACTERIZATION — dynamical-regime prediction derived
+//      from the current parameter set (decay, blur, couple, noise).
+//      Spectral radius estimate, memory half-life, diffusion strength,
+//      stability classification.
+//   2. PARAMETER READOUT — every continuous parameter with its current
+//      value, mathematical symbol, and brief interpretation.
+//   3. SPARKLINES — recent history (~4 seconds) of each parameter as a
+//      compact line graph.
+//
+// The panel is read-only; parameters are still edited via keyboard,
+// MIDI, OSC, or gamepad. This view explains what they MEAN.
+// ─────────────────────────────────────────────────────────────────────────
+
+void Overlay::mathPushFrame(const MathSample& s) {
+    if (mathRing_.size() < (size_t)MATH_RING_CAP) {
+        mathRing_.push_back(s);
+        mathRingHead_ = (int)mathRing_.size() - 1;
+    } else {
+        mathRingHead_ = (mathRingHead_ + 1) % MATH_RING_CAP;
+        mathRing_[mathRingHead_] = s;
+    }
+    if (mathRingCount_ < MATH_RING_CAP) mathRingCount_++;
+}
+
+void Overlay::drawSparkline(float x, float y, float w, float h,
+                            float (*accessor)(const MathSample&),
+                            float vmin, float vmax,
+                            unsigned char rgba[4]) {
+    if (mathRingCount_ < 2 || w <= 1.f || h <= 1.f) return;
+
+    // Auto-scale if vmin == vmax
+    bool autoscale = (vmin == vmax);
+    if (autoscale) {
+        vmin =  1e30f; vmax = -1e30f;
+        for (int i = 0; i < mathRingCount_; i++) {
+            float v = accessor(mathRing_[i]);
+            if (v < vmin) vmin = v;
+            if (v > vmax) vmax = v;
+        }
+        if (vmax - vmin < 1e-6f) { vmin -= 0.5f; vmax += 0.5f; }
+    }
+    float vrange = vmax - vmin;
+    if (vrange < 1e-9f) vrange = 1.f;
+
+    // Background fill
+    unsigned char bg[4] = {0,0,0,180};
+    drawFilledRect(x, y, w, h, bg, 0.6f);
+
+    // Line strip: read N samples evenly from the ring, oldest → newest.
+    // The ring is "linear" while mathRingCount_ < CAP, then circular.
+    int N = mathRingCount_;
+    int start = (mathRingCount_ == MATH_RING_CAP)
+                ? (mathRingHead_ + 1) % MATH_RING_CAP : 0;
+
+    struct V { float x, y, z; unsigned char c[4]; };
+    std::vector<V> verts;
+    verts.reserve((size_t)N * 2);
+    for (int i = 1; i < N; i++) {
+        int i0 = (start + i - 1) % MATH_RING_CAP;
+        int i1 = (start + i) % MATH_RING_CAP;
+        float v0 = accessor(mathRing_[i0]);
+        float v1 = accessor(mathRing_[i1]);
+        float x0 = x + ((float)(i - 1) / (float)(N - 1)) * w;
+        float x1 = x + ((float)(i)     / (float)(N - 1)) * w;
+        float y0 = y + h - ((v0 - vmin) / vrange) * h;
+        float y1 = y + h - ((v1 - vmin) / vrange) * h;
+        verts.push_back({ x0, y0, 0.f, {rgba[0],rgba[1],rgba[2],rgba[3]} });
+        verts.push_back({ x1, y1, 0.f, {rgba[0],rgba[1],rgba[2],rgba[3]} });
+    }
+    if (verts.empty()) return;
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(verts.size() * sizeof(V)),
+                 verts.data(), GL_STREAM_DRAW);
+    glUseProgram(prog_);
+    glUniform2f(locRes_, (float)winW_, (float)winH_);
+    glUniform1f(locAlpha_, 1.0f);
+    glLineWidth(1.5f);
+    glDrawArrays(GL_LINES, 0, (GLsizei)verts.size());
+}
+
+namespace {
+// Pretty-format a float in 1.4 chars budget.
+std::string fmt4(float v) {
+    char b[16];
+    if (std::fabs(v) >= 10.f)        snprintf(b, sizeof b, "%6.2f", v);
+    else if (std::fabs(v) >= 1.f)    snprintf(b, sizeof b, "%6.3f", v);
+    else                              snprintf(b, sizeof b, "%6.4f", v);
+    return b;
+}
+// Sample accessors for sparklines.
+float acc_decay(const Overlay::MathSample& s) { return s.decay;   }
+float acc_blurX(const Overlay::MathSample& s) { return s.blurX;   }
+float acc_blurY(const Overlay::MathSample& s) { return s.blurY;   }
+float acc_chroma(const Overlay::MathSample& s){ return s.chroma;  }
+float acc_gamma(const Overlay::MathSample& s) { return s.gamma;   }
+float acc_sat(const Overlay::MathSample& s)   { return s.satGain; }
+float acc_contrast(const Overlay::MathSample& s){return s.contrast;}
+float acc_noise(const Overlay::MathSample& s) { return s.noise;   }
+float acc_couple(const Overlay::MathSample& s){ return s.couple;  }
+float acc_external(const Overlay::MathSample& s){return s.external;}
+float acc_outfade(const Overlay::MathSample& s){return s.outFade; }
+float acc_zoom(const Overlay::MathSample& s)  { return s.zoom;    }
+float acc_theta(const Overlay::MathSample& s) { return s.theta;   }
+}
+
+void Overlay::drawMathPanel() {
+    if (mathRingCount_ == 0) return;
+    const MathSample& cur = mathRing_[mathRingHead_];
+
+    // ── Geometry ──────────────────────────────────────────────────────
+    const float panelW = std::min(560.f, (float)winW_ * 0.42f);
+    const float panelX = (float)winW_ - panelW - 20.f;
+    const float panelY = 20.f;
+    const float panelH = (float)winH_ - 40.f;
+
+    // Translucent dark background
+    unsigned char bg[4] = { 10, 14, 22, 220 };
+    drawFilledRect(panelX, panelY, panelW, panelH, bg, 0.85f);
+
+    // Accent stripe at the top
+    unsigned char accent[4] = { 80, 180, 250, 255 };
+    drawFilledRect(panelX, panelY, panelW, 2.f, accent, 1.f);
+
+    // ── Text styles ───────────────────────────────────────────────────
+    unsigned char titleC[4] = { 240, 244, 252, 255 };
+    unsigned char labelC[4] = { 160, 180, 210, 255 };
+    unsigned char valueC[4] = { 220, 230, 245, 255 };
+    unsigned char accentC[4]= { 100, 200, 255, 255 };
+    unsigned char dimC[4]   = { 110, 120, 140, 255 };
+    unsigned char warnC[4]  = { 245, 175,  90, 255 };
+    unsigned char dangerC[4]= { 245, 100, 100, 255 };
+    unsigned char okC[4]    = { 130, 220, 150, 255 };
+
+    float x = panelX + 18.f;
+    float y = panelY + 16.f;
+    const float lineH = 14.f;
+
+    drawTextLine(x, y, "MATHLAB", titleC, 1.0f, 1.3f);
+    drawTextLine(x + 92.f, y + 4.f,
+                 "M to close | feedback dynamics", dimC, 1.0f, 0.85f);
+    y += lineH * 2.0f;
+
+    // ── Section 1: SYSTEM CHARACTERIZATION ────────────────────────────
+    drawTextLine(x, y, "system characterization", accentC, 1.0f, 0.95f);
+    y += lineH * 1.2f;
+
+    // Math derivations
+    // Memory half-life: decay^k = 0.5  =>  k = log(0.5) / log(decay)
+    float halflife_frames = (cur.decay > 0.f && cur.decay < 1.f)
+        ? std::log(0.5f) / std::log(cur.decay) : 1e9f;
+    float halflife_sec    = halflife_frames / 60.f;
+    // Effective diffusion (Laplacian-ish): D ~ blur^2 / 2 per frame
+    float D = 0.5f * (cur.blurX * cur.blurX + cur.blurY * cur.blurY) * 0.5f;
+    // Spectral radius estimate: dominant eigenvalue of linearized system
+    // is ~ decay * (1 - dispersion_from_blur). Crude but trackable.
+    float rho = cur.decay * (1.f - 0.02f * (cur.blurX + cur.blurY));
+    // Noise floor in dB-ish
+    float noise_db = (cur.noise > 1e-9f) ? 20.f * std::log10(cur.noise) : -120.f;
+    // Coupling strength
+    float Kc = cur.couple;
+    // Hue rotation rate in deg/sec assuming 60fps
+    float hue_dps = cur.hueRate * 60.f * 360.f;
+
+    // Stability classification
+    const char* regime;
+    unsigned char* regColor = okC;
+    if (rho > 1.001f)        { regime = "DIVERGENT";  regColor = dangerC; }
+    else if (rho > 0.998f)   { regime = "MARGINAL";   regColor = warnC;   }
+    else if (Kc > 0.6f)      { regime = "CHAOTIC";    regColor = dangerC; }
+    else if (Kc > 0.3f)      { regime = "TURBULENT";  regColor = warnC;   }
+    else                     { regime = "STABLE";     regColor = okC;     }
+
+    char buf[160];
+
+    snprintf(buf, sizeof buf, "  regime:");
+    drawTextLine(x, y, buf, labelC, 1.0f, 0.90f);
+    drawTextLine(x + 60.f, y, regime, regColor, 1.0f, 0.95f);
+    y += lineH;
+
+    snprintf(buf, sizeof buf, "  rho (spectral radius)  : %s", fmt4(rho).c_str());
+    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+
+    snprintf(buf, sizeof buf, "  memory half-life       : %.1f frames  (%.2f s @ 60fps)",
+             halflife_frames, halflife_sec);
+    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+
+    snprintf(buf, sizeof buf, "  diffusion D            : %s  (blur^2 / 2)",
+             fmt4(D).c_str());
+    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+
+    snprintf(buf, sizeof buf, "  coupling K_c           : %s", fmt4(Kc).c_str());
+    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+
+    snprintf(buf, sizeof buf, "  noise floor            : %s  (%.1f dB)",
+             fmt4(cur.noise).c_str(), noise_db);
+    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+
+    snprintf(buf, sizeof buf, "  hue rotation           : %.2f deg/s", hue_dps);
+    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+
+    y += lineH * 0.6f;
+
+    // ── Section 2: PARAMETER READOUT WITH SPARKLINES ──────────────────
+    drawTextLine(x, y, "parameters", accentC, 1.0f, 0.95f);
+    y += lineH * 1.2f;
+
+    struct Row {
+        const char* label;
+        const char* symbol;
+        const char* meaning;
+        float (*accessor)(const MathSample&);
+        float vmin, vmax;
+    };
+    Row rows[] = {
+        { "decay",     "lambda",  "memory term, 1.0 = perfect recall", acc_decay,    0.f, 0.f },
+        { "blur X",    "sigma_x", "horizontal diffusion px",            acc_blurX,    0.f, 0.f },
+        { "blur Y",    "sigma_y", "vertical diffusion px",              acc_blurY,    0.f, 0.f },
+        { "chroma",    "chi",     "wavelength dispersion",              acc_chroma,   0.f, 0.f },
+        { "gamma",     "gamma",   "nonlinear response, 1 = linear",     acc_gamma,    0.f, 0.f },
+        { "sat",       "S",       "saturation gain",                    acc_sat,      0.f, 0.f },
+        { "contrast",  "c",       "contrast gain about 0.5",            acc_contrast, 0.f, 0.f },
+        { "noise",     "epsilon", "stochastic forcing",                 acc_noise,    0.f, 0.f },
+        { "couple",    "K_c",     "cross-field coupling",               acc_couple,   0.f, 0.f },
+        { "external",  "E",       "camera input amount",                acc_external, 0.f, 0.f },
+        { "out fade",  "F",       "output mix, bipolar",                acc_outfade,  0.f, 0.f },
+        { "zoom",      "Z",       "warp scale (multiplicative)",        acc_zoom,     0.f, 0.f },
+        { "theta",     "theta",   "warp rotation (rad/frame)",          acc_theta,    0.f, 0.f },
+    };
+
+    // Two columns: text on the left, sparkline on the right.
+    const float colTextW   = 280.f;
+    const float colSparkW  = panelW - colTextW - 36.f;
+    const float colSparkX  = x + colTextW;
+    const float rowH       = 22.f;
+
+    for (const Row& r : rows) {
+        if (y + rowH > panelY + panelH - 14.f) break;
+        float v = r.accessor(cur);
+        snprintf(buf, sizeof buf, "  %-9s %-7s = %s",
+                 r.label, r.symbol, fmt4(v).c_str());
+        drawTextLine(x, y, buf, valueC, 1.0f, 0.85f);
+        snprintf(buf, sizeof buf, "      %s", r.meaning);
+        drawTextLine(x, y + 10.f, buf, dimC, 1.0f, 0.72f);
+
+        // Sparkline (right column)
+        drawSparkline(colSparkX, y + 1.f, colSparkW, rowH - 4.f,
+                      r.accessor, r.vmin, r.vmax, accentC);
+        y += rowH;
+    }
 }

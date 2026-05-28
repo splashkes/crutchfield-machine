@@ -67,6 +67,24 @@ public:
 
     bool helpVisible() const { return helpVisible_; }
 
+    // ── Math dashboard ────────────────────────────────────────────────
+    // An elegant, semi-transparent panel that exposes the mathematical
+    // characterization of the running feedback system: spectral radius,
+    // memory half-life, diffusion coefficient, coupling strength, noise
+    // floor — and predicts stability/chaos regime. Plus sparklines for
+    // every continuous parameter over the last few seconds.
+    //
+    // The host calls mathPushFrame() once per frame with the current
+    // Params snapshot; the overlay maintains its own ring buffer.
+    struct MathSample {
+        float decay, blurX, blurY, chroma, gamma, satGain, contrast,
+              hueRate, noise, couple, external, sphereReverb, outFade;
+        float zoom, theta;
+    };
+    void toggleMath() { mathVisible_ = !mathVisible_; }
+    bool mathVisible() const { return mathVisible_; }
+    void mathPushFrame(const MathSample& s);
+
 private:
     enum View { VIEW_MENU, VIEW_SECTION };
 
@@ -109,6 +127,22 @@ private:
     void drawHelpPanel();
     void drawHelpMenu(float x, float y, float w, float h);
     void drawHelpSection(float x, float y, float w, float h);
+
+    // Math dashboard
+    bool mathVisible_ = false;
+    std::vector<MathSample> mathRing_;     // ring buffer; ~240 samples = 4s @ 60fps
+    int                     mathRingHead_ = 0;
+    int                     mathRingCount_ = 0;
+    static constexpr int    MATH_RING_CAP = 360;
+    void drawMathPanel();
+    // Render a small sparkline of one scalar from the math ring.
+    // x,y,w,h are pixel rects; value_accessor returns one float per
+    // MathSample. min/max define the y-axis range; pass min=max=NaN
+    // (the function will use auto-scale).
+    void drawSparkline(float x, float y, float w, float h,
+                       float (*accessor)(const MathSample&),
+                       float vmin, float vmax,
+                       unsigned char rgba[4]);
 
     // Helper: split body text into lines for scroll handling.
     static std::vector<std::string> splitLines(const std::string& s);

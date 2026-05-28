@@ -3188,6 +3188,7 @@ static void apply_action(ActionId id, float mag) {
     // State snapshots — mag carries the slot number.
     if (id == ACT_SNAPSHOT_SAVE)   { snapshot_save((int)mag);   return; }
     if (id == ACT_SNAPSHOT_RECALL) { snapshot_recall((int)mag); return; }
+    if (id == ACT_MATH_TOGGLE)     { S.ov.toggleMath(); return; }
     auto& p = S.p;
 
     // Warn when a parameter action fires but its layer is off. We still
@@ -5254,6 +5255,28 @@ int main(int argc, char** argv) {
 
         // Help provider is pulled per-frame from inside Overlay::draw, so
         // values shown in a section stay live. Nothing to push here.
+        //
+        // Push a math-dashboard sample once per frame so its sparklines
+        // and characterization always reflect live state.
+        {
+            Overlay::MathSample ms {};
+            ms.decay        = S.p.decay;
+            ms.blurX        = S.p.blurX;
+            ms.blurY        = S.p.blurY;
+            ms.chroma       = S.p.chroma;
+            ms.gamma        = S.p.gamma;
+            ms.satGain      = S.p.satGain;
+            ms.contrast     = S.p.contrast;
+            ms.hueRate      = S.p.hueRate;
+            ms.noise        = S.p.noise;
+            ms.couple       = S.p.couple;
+            ms.external     = S.p.external;
+            ms.sphereReverb = S.p.sphereReverb;
+            ms.outFade      = S.p.outFade;
+            ms.zoom         = S.p.zoom;
+            ms.theta        = S.p.theta;
+            S.ov.mathPushFrame(ms);
+        }
         S.ov.draw();
         S.ui.draw();
 

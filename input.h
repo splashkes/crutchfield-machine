@@ -114,6 +114,7 @@ enum ActionId : int {
     // are floor'd.
     ACT_SNAPSHOT_SAVE,
     ACT_SNAPSHOT_RECALL,
+    ACT_MATH_TOGGLE,    // toggle the Mathlab dashboard overlay
 
     // ── V-4 effect slots (C4+) ───────────────────────────────────────
     ACT_VFX1_CYCLE_FWD, ACT_VFX1_CYCLE_BACK, ACT_VFX1_OFF,

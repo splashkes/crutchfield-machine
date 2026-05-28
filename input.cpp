@@ -242,6 +242,7 @@ static const ActionInfo ACTIONS[] = {
     { ACT_QUIT,             "app.quit",           AK_DISCRETE, "App", "quit" },
 { ACT_SNAPSHOT_SAVE,    "snapshot.save",      AK_STEP,     "App", "save state to slot (value=slot 1..8)" },
 { ACT_SNAPSHOT_RECALL,  "snapshot.recall",    AK_STEP,     "App", "recall state from slot (value=slot 1..8)" },
+{ ACT_MATH_TOGGLE,      "app.math",           AK_DISCRETE, "App", "toggle math dashboard (M)" },
 
     // V-4 slots (bindings wired in C4+)
     { ACT_VFX1_CYCLE_FWD, "vfx1.next",      AK_DISCRETE, "VFX-1", "slot 1: next effect" },
@@ -703,6 +704,7 @@ void Input::installDefaults() {
     K(in, ACT_CLEAR,             GLFW_KEY_C);
     K(in, ACT_PAUSE,             GLFW_KEY_P);                      // plain P
     K(in, ACT_HELP,              GLFW_KEY_H);
+    K(in, ACT_MATH_TOGGLE,       GLFW_KEY_M);
     K(in, ACT_RELOAD_SHADERS,    GLFW_KEY_BACKSLASH);
     K(in, ACT_FULLSCREEN,        GLFW_KEY_F11);
     K(in, ACT_REC_TOGGLE,        GLFW_KEY_GRAVE_ACCENT);
