@@ -93,6 +93,9 @@ struct Cfg {
     bool linkOn    = false;          // enable Ableton Link discovery on start
     std::string syphonName;          // "" disables; otherwise Syphon server name
     bool musicOn   = false;          // start silent; --music turns on the metronome
+    std::string camMatch;            // "" = first available; substring match against
+                                     // device name / model / uniqueID (macOS only).
+                                     // e.g. "phone" picks Continuity Camera.
 };
 
 static std::string g_program_name = "feedback";
@@ -150,6 +153,9 @@ static void print_cli_help() {
       "  --music             start playing the bundled metronome on launch\n"
       "                        (off by default; Ctrl+Alt+Space toggles at runtime)\n"
       "  --no-music          alias for the default — explicitly stay silent\n"
+      "  --camera NAME       pick capture device by substring of name/model/uniqueID\n"
+      "                        (macOS only; e.g. \"phone\" → Continuity Camera)\n"
+      "  --list-cameras      enumerate every camera AVFoundation can see and exit\n"
       "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
@@ -227,6 +233,13 @@ static Cfg parse_cli(int argc, char** argv) {
             }
             if (c.oscEchoHost.empty()) c.oscEchoHost = "127.0.0.1";
             if (c.oscEchoPort <= 0)    c.oscEchoPort = 7701;
+        }
+        else if (eq("--camera")) {
+            if (i+1 < argc && argv[i+1][0] != '-') c.camMatch = next();
+        }
+        else if (eq("--list-cameras")) {
+            Camera::listDevices();
+            exit(0);
         }
         else if (eq("--list-actions")) {
             for (int ai = 0; ai < action_info_count(); ai++) {
@@ -5462,8 +5475,11 @@ int main(int argc, char** argv) {
     for (const std::string& h : S.bootHints) S.ov.logEvent(h);
     S.bootHints.clear();
 
-    // Camera setup (optional).
-    if (S.cam.open(640, 480)) {
+    // Camera setup (optional). On macOS the optional --camera substring
+    // routes the user past the FaceTime HD default. e.g. --camera phone
+    // picks the iPhone Continuity Camera; --camera obs picks OBS Virtual.
+    const char* camMatch = g_cfg.camMatch.empty() ? nullptr : g_cfg.camMatch.c_str();
+    if (S.cam.open(640, 480, camMatch)) {
         S.camBuf.resize(S.cam.width() * S.cam.height() * 3);
         glGenTextures(1, &S.camTex);
         glBindTexture(GL_TEXTURE_2D, S.camTex);
