@@ -90,7 +90,7 @@ struct Cfg {
     bool logUsage  = false;          // stream every action fire to a session CSV
     bool linkOn    = false;          // enable Ableton Link discovery on start
     std::string syphonName;          // "" disables; otherwise Syphon server name
-    bool musicOn   = true;           // play the bundled metronome/preset on start
+    bool musicOn   = false;          // start silent; --music turns on the metronome
 };
 
 static std::string g_program_name = "feedback";
@@ -145,9 +145,9 @@ static void print_cli_help() {
       "  --link              enable Ableton Link on start (network tempo sync)\n"
       "  --syphon [NAME]     publish the render texture as a Syphon source on macOS\n"
       "                        (default name: \"Crutchfield Machine\")\n"
-      "  --no-music          don't auto-play the bundled metronome on startup\n"
-      "  --music on|off      explicit music engine state on startup\n"
-      "                        (Ctrl+Alt+Space toggles at runtime regardless)\n"
+      "  --music             start playing the bundled metronome on launch\n"
+      "                        (off by default; Ctrl+Alt+Space toggles at runtime)\n"
+      "  --no-music          alias for the default — explicitly stay silent\n"
       "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
@@ -198,8 +198,14 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--link"))         { c.linkOn = true; }
         else if (eq("--no-music"))     { c.musicOn = false; }
         else if (eq("--music")) {
-            std::string v = next();
-            c.musicOn = (v == "on" || v == "true" || v == "1" || v == "yes");
+            // `--music` alone toggles the engine on. `--music on|off|...`
+            // takes an explicit value if the next token isn't another flag.
+            if (i+1 < argc && argv[i+1][0] != '-') {
+                std::string v = next();
+                c.musicOn = (v == "on" || v == "true" || v == "1" || v == "yes");
+            } else {
+                c.musicOn = true;
+            }
         }
         else if (eq("--syphon")) {
             // Optional name follows
@@ -666,6 +672,11 @@ static GLuint build_blit_hires_program() {
 struct State {
     int  winW = 1280, winH = 720;      // current window / display size
     int  simW = 1280, simH = 720;      // simulation resolution (FBO size)
+
+    // Strings queued during boot to surface in the HUD on the first
+    // frame (after Overlay::init has run). Used by music off-by-default
+    // and other "first run, what's happening?" hints.
+    std::vector<std::string> bootHints;
 
     // Up to 4 feedback fields. Each is a ping-pong pair.
     // Fields beyond `activeFields` are unused (not created).
@@ -4796,6 +4807,14 @@ int main(int argc, char** argv) {
         // are loaded regardless so Ctrl+Alt+Space (or OSC music.playpause)
         // can start playback later without touching presets.
         Music::setPlaying(g_cfg.musicOn);
+        if (!g_cfg.musicOn) {
+            printf("[music] silent on launch — Ctrl+Alt+Space to start the bundled metronome,\n"
+                   "       Ctrl+Alt+N / Ctrl+Alt+P to cycle presets, or pass --music to auto-play.\n");
+            // Defer the HUD hint to after S.ov.init() runs. Stash it in a
+            // queued event slot consumed in the first frame of the main
+            // loop. See the boot-banner block near the render loop start.
+            S.bootHints.push_back("music: silent — Ctrl+Alt+Space to start metronome");
+        }
     }
 
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
@@ -5068,6 +5087,11 @@ int main(int argc, char** argv) {
     S.winW = fbw; S.winH = fbh;
     S.ov.resize(fbw, fbh);
     S.ui.resize(winw, winh);
+
+    // Drain boot hints into the HUD so first-time users see what's going
+    // on. Each logEvent persists in the rolling log for ~5 seconds.
+    for (const std::string& h : S.bootHints) S.ov.logEvent(h);
+    S.bootHints.clear();
 
     // Camera setup (optional).
     if (S.cam.open(640, 480)) {

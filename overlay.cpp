@@ -595,61 +595,67 @@ void Overlay::drawMathPanel() {
     if (mathRingCount_ == 0) return;
     const MathSample& cur = mathRing_[mathRingHead_];
 
+    // Text scales — based on the matching HUD pipeline (TEXT_SCALE 2.4).
+    // Multiply against base stb_easy_font glyph (~8 px logical) to get
+    // ~16-19 px text at scale 2.0-2.4, which is the readable floor on a
+    // typical display + actually readable on Retina.
+    const float TS_TITLE = 2.4f;   // panel title
+    const float TS_H1    = 2.0f;   // section heading
+    const float TS_BODY  = 1.7f;   // body rows
+    const float TS_NOTE  = 1.4f;   // legend / hints
+
     // ── Geometry ──────────────────────────────────────────────────────
-    const float panelW = std::min(560.f, (float)winW_ * 0.42f);
-    const float panelX = (float)winW_ - panelW - 20.f;
-    const float panelY = 20.f;
-    const float panelH = (float)winH_ - 40.f;
+    // Width sized for the longest line at TS_BODY scale.
+    const float panelW = std::min(820.f, (float)winW_ * 0.50f);
+    const float panelX = (float)winW_ - panelW - 24.f;
+    const float panelY = 24.f;
+    const float panelH = std::min((float)winH_ - 48.f, 980.f);
 
-    // Translucent dark background
-    unsigned char bg[4] = { 10, 14, 22, 220 };
-    drawFilledRect(panelX, panelY, panelW, panelH, bg, 0.85f);
+    // Background with a heavier dim than before so light feedback
+    // doesn't fight the text.
+    unsigned char bg[4] = { 8, 12, 20, 235 };
+    drawFilledRect(panelX, panelY, panelW, panelH, bg, 0.92f);
 
-    // Accent stripe at the top
+    // Accent stripe top
     unsigned char accent[4] = { 80, 180, 250, 255 };
-    drawFilledRect(panelX, panelY, panelW, 2.f, accent, 1.f);
+    drawFilledRect(panelX, panelY, panelW, 4.f, accent, 1.f);
+
+    // Soft top-right corner badge so the panel is identifiable even
+    // when section labels scroll off.
+    drawFilledRect(panelX + panelW - 56.f, panelY + 12.f, 44.f, 6.f, accent, 0.6f);
 
     // ── Text styles ───────────────────────────────────────────────────
-    unsigned char titleC[4] = { 240, 244, 252, 255 };
-    unsigned char labelC[4] = { 160, 180, 210, 255 };
-    unsigned char valueC[4] = { 220, 230, 245, 255 };
-    unsigned char accentC[4]= { 100, 200, 255, 255 };
-    unsigned char dimC[4]   = { 110, 120, 140, 255 };
-    unsigned char warnC[4]  = { 245, 175,  90, 255 };
-    unsigned char dangerC[4]= { 245, 100, 100, 255 };
-    unsigned char okC[4]    = { 130, 220, 150, 255 };
+    unsigned char titleC[4]  = { 240, 244, 252, 255 };
+    unsigned char headingC[4]= { 100, 200, 255, 255 };
+    unsigned char valueC[4]  = { 230, 236, 248, 255 };
+    unsigned char dimC[4]    = { 130, 145, 175, 255 };
+    unsigned char warnC[4]   = { 250, 180,  90, 255 };
+    unsigned char dangerC[4] = { 248, 110, 110, 255 };
+    unsigned char okC[4]     = { 130, 220, 150, 255 };
 
-    float x = panelX + 18.f;
-    float y = panelY + 16.f;
-    const float lineH = 14.f;
+    // Rough line-height table (px per line at given scale).
+    auto lineHFor = [](float scale) { return 14.f * scale; };
 
-    drawTextLine(x, y, "MATHLAB", titleC, 1.0f, 1.3f);
-    drawTextLine(x + 92.f, y + 4.f,
-                 "M to close | feedback dynamics", dimC, 1.0f, 0.85f);
-    y += lineH * 2.0f;
+    float x = panelX + 24.f;
+    float y = panelY + 24.f;
 
-    // ── Section 1: SYSTEM CHARACTERIZATION ────────────────────────────
-    drawTextLine(x, y, "system characterization", accentC, 1.0f, 0.95f);
-    y += lineH * 1.2f;
+    // Title block.
+    drawTextLine(x, y, "MATHLAB", titleC, 1.0f, TS_TITLE);
+    drawTextLine(x, y + lineHFor(TS_TITLE) + 2.f,
+                 "feedback dynamics  |  press M to close",
+                 dimC, 1.0f, TS_NOTE);
+    y += lineHFor(TS_TITLE) + lineHFor(TS_NOTE) + 14.f;
 
-    // Math derivations
-    // Memory half-life: decay^k = 0.5  =>  k = log(0.5) / log(decay)
+    // ── Math derivations ──────────────────────────────────────────────
     float halflife_frames = (cur.decay > 0.f && cur.decay < 1.f)
         ? std::log(0.5f) / std::log(cur.decay) : 1e9f;
     float halflife_sec    = halflife_frames / 60.f;
-    // Effective diffusion (Laplacian-ish): D ~ blur^2 / 2 per frame
-    float D = 0.5f * (cur.blurX * cur.blurX + cur.blurY * cur.blurY) * 0.5f;
-    // Spectral radius estimate: dominant eigenvalue of linearized system
-    // is ~ decay * (1 - dispersion_from_blur). Crude but trackable.
+    float D   = 0.5f * (cur.blurX * cur.blurX + cur.blurY * cur.blurY) * 0.5f;
     float rho = cur.decay * (1.f - 0.02f * (cur.blurX + cur.blurY));
-    // Noise floor in dB-ish
     float noise_db = (cur.noise > 1e-9f) ? 20.f * std::log10(cur.noise) : -120.f;
-    // Coupling strength
-    float Kc = cur.couple;
-    // Hue rotation rate in deg/sec assuming 60fps
+    float Kc  = cur.couple;
     float hue_dps = cur.hueRate * 60.f * 360.f;
 
-    // Stability classification
     const char* regime;
     unsigned char* regColor = okC;
     if (rho > 1.001f)        { regime = "DIVERGENT";  regColor = dangerC; }
@@ -660,79 +666,88 @@ void Overlay::drawMathPanel() {
 
     char buf[160];
 
-    snprintf(buf, sizeof buf, "  regime:");
-    drawTextLine(x, y, buf, labelC, 1.0f, 0.90f);
-    drawTextLine(x + 60.f, y, regime, regColor, 1.0f, 0.95f);
-    y += lineH;
+    // ── REGIME — the headline, drawn BIG ──────────────────────────────
+    drawTextLine(x, y, "REGIME", dimC, 1.0f, TS_NOTE);
+    y += lineHFor(TS_NOTE) + 2.f;
+    drawTextLine(x, y, regime, regColor, 1.0f, TS_TITLE);
+    y += lineHFor(TS_TITLE) + 18.f;
 
-    snprintf(buf, sizeof buf, "  rho (spectral radius)  : %s", fmt4(rho).c_str());
-    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+    // ── Numeric readouts ──────────────────────────────────────────────
+    drawTextLine(x, y, "characterization", headingC, 1.0f, TS_H1);
+    y += lineHFor(TS_H1) + 6.f;
 
-    snprintf(buf, sizeof buf, "  memory half-life       : %.1f frames  (%.2f s @ 60fps)",
-             halflife_frames, halflife_sec);
-    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+    auto row2 = [&](const char* label, const char* val) {
+        // Label left-justified, value right-aligned at a fixed column.
+        // Compute pixel widths by approximating stb_easy_font_width at scale.
+        drawTextLine(x, y, label, dimC, 1.0f, TS_BODY);
+        // Crude right-align: place value at x + 0.55 * panelW.
+        drawTextLine(x + 0.42f * panelW, y, val, valueC, 1.0f, TS_BODY);
+        y += lineHFor(TS_BODY) + 4.f;
+    };
 
-    snprintf(buf, sizeof buf, "  diffusion D            : %s  (blur^2 / 2)",
-             fmt4(D).c_str());
-    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+    snprintf(buf, sizeof buf, "%.4f", rho);
+    row2("rho  (spectral radius)", buf);
 
-    snprintf(buf, sizeof buf, "  coupling K_c           : %s", fmt4(Kc).c_str());
-    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+    if (halflife_frames > 9999.f) {
+        snprintf(buf, sizeof buf, "infinite");
+    } else {
+        snprintf(buf, sizeof buf, "%.0f frames  /  %.2f s", halflife_frames, halflife_sec);
+    }
+    row2("memory half-life", buf);
 
-    snprintf(buf, sizeof buf, "  noise floor            : %s  (%.1f dB)",
-             fmt4(cur.noise).c_str(), noise_db);
-    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+    snprintf(buf, sizeof buf, "%.4f", D);
+    row2("diffusion  D", buf);
 
-    snprintf(buf, sizeof buf, "  hue rotation           : %.2f deg/s", hue_dps);
-    drawTextLine(x, y, buf, valueC, 1.0f, 0.85f); y += lineH;
+    snprintf(buf, sizeof buf, "%.4f", Kc);
+    row2("coupling  K_c", buf);
 
-    y += lineH * 0.6f;
+    snprintf(buf, sizeof buf, "%.4f   (%.1f dB)", cur.noise, noise_db);
+    row2("noise floor", buf);
 
-    // ── Section 2: PARAMETER READOUT WITH SPARKLINES ──────────────────
-    drawTextLine(x, y, "parameters", accentC, 1.0f, 0.95f);
-    y += lineH * 1.2f;
+    snprintf(buf, sizeof buf, "%.1f deg / sec", hue_dps);
+    row2("hue rotation", buf);
+
+    y += 14.f;
+
+    // ── Section 2: parameter sparklines ───────────────────────────────
+    drawTextLine(x, y, "parameters (last ~6 s)", headingC, 1.0f, TS_H1);
+    y += lineHFor(TS_H1) + 8.f;
 
     struct Row {
         const char* label;
-        const char* symbol;
-        const char* meaning;
         float (*accessor)(const MathSample&);
         float vmin, vmax;
     };
+    // Curated short list — the params most worth watching as sparklines.
     Row rows[] = {
-        { "decay",     "lambda",  "memory term, 1.0 = perfect recall", acc_decay,    0.f, 0.f },
-        { "blur X",    "sigma_x", "horizontal diffusion px",            acc_blurX,    0.f, 0.f },
-        { "blur Y",    "sigma_y", "vertical diffusion px",              acc_blurY,    0.f, 0.f },
-        { "chroma",    "chi",     "wavelength dispersion",              acc_chroma,   0.f, 0.f },
-        { "gamma",     "gamma",   "nonlinear response, 1 = linear",     acc_gamma,    0.f, 0.f },
-        { "sat",       "S",       "saturation gain",                    acc_sat,      0.f, 0.f },
-        { "contrast",  "c",       "contrast gain about 0.5",            acc_contrast, 0.f, 0.f },
-        { "noise",     "epsilon", "stochastic forcing",                 acc_noise,    0.f, 0.f },
-        { "couple",    "K_c",     "cross-field coupling",               acc_couple,   0.f, 0.f },
-        { "external",  "E",       "camera input amount",                acc_external, 0.f, 0.f },
-        { "out fade",  "F",       "output mix, bipolar",                acc_outfade,  0.f, 0.f },
-        { "zoom",      "Z",       "warp scale (multiplicative)",        acc_zoom,     0.f, 0.f },
-        { "theta",     "theta",   "warp rotation (rad/frame)",          acc_theta,    0.f, 0.f },
+        { "decay",     acc_decay,    0.f, 0.f },
+        { "blur X",    acc_blurX,    0.f, 0.f },
+        { "blur Y",    acc_blurY,    0.f, 0.f },
+        { "sat",       acc_sat,      0.f, 0.f },
+        { "noise",     acc_noise,    0.f, 0.f },
+        { "couple",    acc_couple,   0.f, 0.f },
+        { "out fade",  acc_outfade,  0.f, 0.f },
+        { "zoom",      acc_zoom,     0.f, 0.f },
     };
 
-    // Two columns: text on the left, sparkline on the right.
-    const float colTextW   = 280.f;
-    const float colSparkW  = panelW - colTextW - 36.f;
-    const float colSparkX  = x + colTextW;
-    const float rowH       = 22.f;
+    // Each row: label (left), current value, sparkline (right).
+    const float labelW   = 0.18f * panelW;
+    const float valueW   = 0.18f * panelW;
+    const float sparkX   = x + labelW + valueW;
+    const float sparkW   = panelW - (sparkX - panelX) - 28.f;
+    const float rowH     = lineHFor(TS_BODY) + 14.f;
 
     for (const Row& r : rows) {
-        if (y + rowH > panelY + panelH - 14.f) break;
+        if (y + rowH > panelY + panelH - 12.f) break;
         float v = r.accessor(cur);
-        snprintf(buf, sizeof buf, "  %-9s %-7s = %s",
-                 r.label, r.symbol, fmt4(v).c_str());
-        drawTextLine(x, y, buf, valueC, 1.0f, 0.85f);
-        snprintf(buf, sizeof buf, "      %s", r.meaning);
-        drawTextLine(x, y + 10.f, buf, dimC, 1.0f, 0.72f);
 
-        // Sparkline (right column)
-        drawSparkline(colSparkX, y + 1.f, colSparkW, rowH - 4.f,
-                      r.accessor, r.vmin, r.vmax, accentC);
+        drawTextLine(x, y + 2.f, r.label, dimC, 1.0f, TS_BODY);
+        snprintf(buf, sizeof buf, "%.4f", v);
+        drawTextLine(x + labelW, y + 2.f, buf, valueC, 1.0f, TS_BODY);
+
+        // Sparkline to the right of the value
+        drawSparkline(sparkX, y + 3.f, sparkW, rowH - 8.f,
+                      r.accessor, r.vmin, r.vmax, accent);
         y += rowH;
     }
 }
