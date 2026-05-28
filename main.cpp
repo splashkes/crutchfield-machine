@@ -21,6 +21,9 @@
 #endif
 
 #include "link_glue.h"
+#ifdef __APPLE__
+  #include "syphon_glue.h"
+#endif
 #if !defined(_WIN32)
   #include <signal.h>
 #endif
@@ -88,6 +91,7 @@ struct Cfg {
     int  oscEchoPort = 0;            // 0 = echo disabled
     bool logUsage  = false;          // stream every action fire to a session CSV
     bool linkOn    = false;          // enable Ableton Link discovery on start
+    std::string syphonName;          // "" disables; otherwise Syphon server name
 };
 
 static std::string g_program_name = "feedback";
@@ -140,6 +144,8 @@ static void print_cli_help() {
       "  --osc-echo HOST:PORT  emit /cma/echo/<action> for every dispatched action\n"
       "                        (e.g. --osc-echo 127.0.0.1:7701)\n"
       "  --link              enable Ableton Link on start (network tempo sync)\n"
+      "  --syphon [NAME]     publish the render texture as a Syphon source on macOS\n"
+      "                        (default name: \"Crutchfield Machine\")\n"
       "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
@@ -188,6 +194,11 @@ static Cfg parse_cli(int argc, char** argv) {
         }
         else if (eq("--osc-learn"))    { c.oscLearn = true; if (c.oscPort == 0) c.oscPort = 7700; }
         else if (eq("--link"))         { c.linkOn = true; }
+        else if (eq("--syphon")) {
+            // Optional name follows
+            if (i+1 < argc && argv[i+1][0] != '-') c.syphonName = next();
+            else c.syphonName = "Crutchfield Machine";
+        }
         else if (eq("--osc-echo")) {
             const char* spec = next();
             // Parse HOST:PORT or just :PORT or PORT
@@ -4856,6 +4867,14 @@ int main(int argc, char** argv) {
         link_set_enabled(1);
         printf("[link] discovery enabled\n");
     }
+
+#ifdef __APPLE__
+    // Initialize Syphon if requested. GL context must be current — it
+    // is at this point (glfwMakeContextCurrent ran earlier).
+    if (!g_cfg.syphonName.empty()) {
+        syphon_init(g_cfg.syphonName.c_str());
+    }
+#endif
     g_input.setMidiLearn(g_cfg.midiLearn);
     // OSC config: CLI overrides bindings.ini. If the user passed --osc-listen
     // we set port + learn here; bindings.ini may still set learn=on later.
@@ -5315,6 +5334,16 @@ int main(int argc, char** argv) {
         }
         S.ov.draw();
         S.ui.draw();
+
+#ifdef __APPLE__
+        // Publish current render texture as Syphon if enabled. We use
+        // the latest simulation FBO texture (not the on-screen image,
+        // so overlays/HUD don't leak into the published stream — same
+        // policy as the screen recorder).
+        if (syphon_running()) {
+            syphon_publish(GL_TEXTURE_2D, latest.tex, S.simW, S.simH);
+        }
+#endif
 
         glfwSwapBuffers(win);
         draw_ui_windows();

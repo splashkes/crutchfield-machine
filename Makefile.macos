@@ -30,15 +30,18 @@ QJSFLAGS = -O3 -std=c99 -DCONFIG_VERSION="\"2025-04-26\"" \
            -Wno-sign-compare -Wno-unused-parameter -Wno-implicit-fallthrough \
            -Wno-array-bounds -Wno-format-truncation
 OBJCXXFLAGS ?= $(CXXFLAGS) -fobjc-arc
-LDFLAGS  ?= -arch $(ARCH) -L$(BREW_PREFIX)/lib
+LDFLAGS  ?= -arch $(ARCH) -L$(BREW_PREFIX)/lib \
+            -F vendor/syphon/build/Release
 LDLIBS   ?= -lglfw -lGLEW -lz \
             -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo \
             -framework Foundation -framework AVFoundation -framework CoreMedia \
-            -framework CoreMIDI
+            -framework CoreMIDI -framework Syphon \
+            -Xlinker -rpath -Xlinker @executable_path/Frameworks \
+            -Xlinker -rpath -Xlinker $(CURDIR)/vendor/syphon/build/Release
 
 SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm \
        recorder.cpp overlay.cpp ui_panel.cpp music.cpp audio.cpp osc.cpp \
-       link_glue.cpp
+       link_glue.cpp syphon_glue.mm
 OBJS = $(SRCS:.cpp=.o)
 OBJS := $(OBJS:.mm=.o)
 QJS_SRCS = vendor/quickjs/quickjs.c vendor/quickjs/libregexp.c \
@@ -66,6 +69,10 @@ vendor/quickjs/%.o: vendor/quickjs/%.c
 # link_glue.cpp gets a heavier flag set because it pulls in Link + ASIO.
 link_glue.o: link_glue.cpp link_glue.h
 	$(CXX) $(LINK_CXXFLAGS) -c -o $@ $<
+
+# Syphon glue is Objective-C++. -F points clang at the framework.
+syphon_glue.o: syphon_glue.mm syphon_glue.h
+	$(CXX) $(OBJCXXFLAGS) -F vendor/syphon/build/Release -c -o $@ $<
 
 dist: $(BIN)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)
