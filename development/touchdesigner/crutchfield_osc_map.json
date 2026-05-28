@@ -1,0 +1,60 @@
+{
+  "$comment": "Canonical OSC address map. Pair with bindings.examples/crutchfield_touchdesigner.ini. Each entry: address sent by TD, action name on Crutchfield side, kind (axis=float 0..1, trigger=any value >0.5 = press), suggested min/max for TD UI sliders.",
+  "host": "127.0.0.1",
+  "port": 7700,
+  "channels": [
+    { "address": "/cma/decay",            "action": "dyn.decay.axis",       "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/external",         "action": "dyn.external.axis",    "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/noise",            "action": "dyn.noise.axis",       "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/couple",           "action": "dyn.couple.setAxis",   "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/outfade",          "action": "outfade.axis",         "kind": "axis", "min": -1.0, "max": 1.0, "flag": "bipolar" },
+    { "address": "/cma/fx/wet",           "action": "fx.wet.axis",          "kind": "axis", "min": 0.0, "max": 1.0 },
+
+    { "address": "/cma/sat",              "action": "color.sat.setAxis",    "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/hue",              "action": "color.hue.setAxis",    "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/gamma",            "action": "color.gamma.setAxis",  "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/contrast",         "action": "color.contrast.setAxis","kind": "axis", "min": 0.0, "max": 1.0 },
+
+    { "address": "/cma/blur/x",           "action": "optics.blurX.setAxis", "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/blur/y",           "action": "optics.blurY.setAxis", "kind": "axis", "min": 0.0, "max": 1.0 },
+
+    { "address": "/cma/zoom",             "action": "warp.zoom.axis",       "kind": "axis", "min": -1.0, "max": 1.0, "flag": "bipolar" },
+    { "address": "/cma/theta",            "action": "warp.theta.axis",      "kind": "axis", "min": -1.0, "max": 1.0, "flag": "bipolar" },
+    { "address": "/cma/trans/x",          "action": "warp.transX.setAxis",  "kind": "axis", "min": -1.0, "max": 1.0, "flag": "bipolar" },
+    { "address": "/cma/trans/y",          "action": "warp.transY.setAxis",  "kind": "axis", "min": -1.0, "max": 1.0, "flag": "bipolar" },
+
+    { "address": "/cma/shape/count",      "action": "shape.count.axis",     "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/shape/size",       "action": "shape.size.axis",      "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/shape/rot",        "action": "shape.rot.axis",       "kind": "axis", "min": 0.0, "max": 1.0 },
+    { "address": "/cma/pattern/amount",   "action": "pattern.amount.axis",  "kind": "axis", "min": 0.0, "max": 1.0 },
+
+    { "address": "/cma/layer/warp",       "action": "layer.warp",           "kind": "trigger" },
+    { "address": "/cma/layer/optics",     "action": "layer.optics",         "kind": "trigger" },
+    { "address": "/cma/layer/color",      "action": "layer.color",          "kind": "trigger" },
+    { "address": "/cma/layer/decay",      "action": "layer.decay",          "kind": "trigger" },
+    { "address": "/cma/layer/noise",      "action": "layer.noise",          "kind": "trigger" },
+    { "address": "/cma/layer/couple",     "action": "layer.couple",         "kind": "trigger" },
+    { "address": "/cma/layer/external",   "action": "layer.external",       "kind": "trigger" },
+    { "address": "/cma/layer/inject",     "action": "layer.inject",         "kind": "trigger" },
+    { "address": "/cma/layer/physics",    "action": "layer.physics",        "kind": "trigger" },
+    { "address": "/cma/layer/thermal",    "action": "layer.thermal",        "kind": "trigger" },
+
+    { "address": "/cma/pattern/hbars",    "action": "pattern.hbars",        "kind": "trigger" },
+    { "address": "/cma/pattern/vbars",    "action": "pattern.vbars",        "kind": "trigger" },
+    { "address": "/cma/pattern/dot",      "action": "pattern.dot",          "kind": "trigger" },
+    { "address": "/cma/pattern/checker",  "action": "pattern.checker",      "kind": "trigger" },
+    { "address": "/cma/pattern/rings",    "action": "pattern.rings",        "kind": "trigger" },
+    { "address": "/cma/pattern/spiral",   "action": "pattern.spiral",       "kind": "trigger" },
+    { "address": "/cma/pattern/polka",    "action": "pattern.polka",        "kind": "trigger" },
+    { "address": "/cma/pattern/starburst","action": "pattern.starburst",    "kind": "trigger" },
+    { "address": "/cma/inject/hold",      "action": "inject.hold",          "kind": "trigger" },
+
+    { "address": "/cma/preset/next",      "action": "preset.next",          "kind": "trigger" },
+    { "address": "/cma/preset/prev",      "action": "preset.prev",          "kind": "trigger" },
+    { "address": "/cma/shot",             "action": "app.screenshot",       "kind": "trigger" },
+    { "address": "/cma/shot/hires",       "action": "app.screenshot.hires", "kind": "trigger" },
+    { "address": "/cma/fullscreen",       "action": "app.fullscreen",       "kind": "trigger" },
+    { "address": "/cma/clear",            "action": "app.clear",            "kind": "trigger" },
+    { "address": "/cma/pause",            "action": "app.pause",            "kind": "trigger" }
+  ]
+}
