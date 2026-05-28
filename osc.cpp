@@ -25,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifdef _WIN32
   #include <winsock2.h>
@@ -53,6 +54,13 @@ struct OscState {
     std::mutex mu;
     std::deque<FeedbackOscMsg> q;
     std::mutex stateMu;
+    // Echo (send) state. echoSock is a separate UDP socket so the
+    // listener thread can keep blocking in recvfrom on `sock` without
+    // affecting outbound. echoAddr is the resolved destination.
+    socket_t echoSock = INVALID_SOCK;
+    sockaddr_in echoAddr {};
+    bool echoReady = false;
+    std::mutex echoMu;     // guards echoSock + echoAddr + echoReady
 #ifdef _WIN32
     bool wsaUp = false;
 #endif
@@ -67,6 +75,10 @@ struct OscState {
         if (sock != INVALID_SOCK) {
             CLOSESOCK(sock);
             sock = INVALID_SOCK;
+        }
+        if (echoSock != INVALID_SOCK) {
+            CLOSESOCK(echoSock);
+            echoSock = INVALID_SOCK;
         }
         if (thr.joinable()) {
             // Best-effort: the listener should exit when recvfrom errors
@@ -331,4 +343,111 @@ extern "C" int feedback_osc_port(void) {
 extern "C" int feedback_osc_connected(void) {
     std::lock_guard<std::mutex> lk(g_osc.stateMu);
     return (g_osc.sock != INVALID_SOCK) ? 1 : 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Echo (send) side
+// ─────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Pad a buffer to a multiple of 4 by appending zero bytes.
+void pad4_bytes(std::vector<uint8_t>& buf) {
+    size_t pad = (4 - (buf.size() & 3)) & 3;
+    buf.insert(buf.end(), pad, 0);
+}
+
+// Build an OSC message: address + type-tag + payload bytes.
+std::vector<uint8_t> build_msg(const char* address, const char* type_tag,
+                               const uint8_t* payload, size_t payload_len) {
+    std::vector<uint8_t> buf;
+    size_t alen = std::strlen(address) + 1;       // include null
+    buf.insert(buf.end(), (const uint8_t*)address,
+                          (const uint8_t*)address + alen);
+    pad4_bytes(buf);
+    size_t tlen = std::strlen(type_tag) + 1;
+    buf.insert(buf.end(), (const uint8_t*)type_tag,
+                          (const uint8_t*)type_tag + tlen);
+    pad4_bytes(buf);
+    if (payload && payload_len) {
+        buf.insert(buf.end(), payload, payload + payload_len);
+    }
+    return buf;
+}
+
+// Big-endian 32-bit pack.
+void pack_be32(uint32_t v, uint8_t out[4]) {
+    out[0] = (uint8_t)(v >> 24);
+    out[1] = (uint8_t)(v >> 16);
+    out[2] = (uint8_t)(v >> 8);
+    out[3] = (uint8_t)(v & 0xFF);
+}
+
+bool send_buf(const std::vector<uint8_t>& buf) {
+    std::lock_guard<std::mutex> lk(g_osc.echoMu);
+    if (!g_osc.echoReady || g_osc.echoSock == INVALID_SOCK) return false;
+    ssize_t n = sendto(g_osc.echoSock,
+                       (const char*)buf.data(), (int)buf.size(), 0,
+                       (const sockaddr*)&g_osc.echoAddr, sizeof(g_osc.echoAddr));
+    return n == (ssize_t)buf.size();
+}
+
+} // namespace
+
+extern "C" int feedback_osc_set_echo(const char* host_or_null, int port) {
+    std::lock_guard<std::mutex> lk(g_osc.echoMu);
+    // Tear down prior config.
+    if (g_osc.echoSock != INVALID_SOCK) {
+        CLOSESOCK(g_osc.echoSock);
+        g_osc.echoSock = INVALID_SOCK;
+    }
+    g_osc.echoReady = false;
+    if (!host_or_null || !*host_or_null || port <= 0 || port >= 65536) return 0;
+
+#ifdef _WIN32
+    if (!g_osc.wsaUp) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 0;
+        g_osc.wsaUp = true;
+    }
+#endif
+
+    socket_t s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s == INVALID_SOCK) return 0;
+    sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host_or_null, &addr.sin_addr) != 1) {
+        CLOSESOCK(s);
+        return 0;
+    }
+    g_osc.echoSock = s;
+    g_osc.echoAddr = addr;
+    g_osc.echoReady = true;
+    std::fprintf(stdout, "[osc] echo target %s:%d\n", host_or_null, port);
+    return 1;
+}
+
+extern "C" int feedback_osc_send_f(const char* address, float value) {
+    if (!address || address[0] != '/') return 0;
+    uint8_t pl[4];
+    uint32_t raw;
+    std::memcpy(&raw, &value, sizeof raw);
+    pack_be32(raw, pl);
+    auto buf = build_msg(address, ",f", pl, 4);
+    return send_buf(buf) ? 1 : 0;
+}
+
+extern "C" int feedback_osc_send_i(const char* address, int32_t value) {
+    if (!address || address[0] != '/') return 0;
+    uint8_t pl[4];
+    pack_be32((uint32_t)value, pl);
+    auto buf = build_msg(address, ",i", pl, 4);
+    return send_buf(buf) ? 1 : 0;
+}
+
+extern "C" int feedback_osc_send_bang(const char* address) {
+    if (!address || address[0] != '/') return 0;
+    auto buf = build_msg(address, ",T", nullptr, 0);
+    return send_buf(buf) ? 1 : 0;
 }

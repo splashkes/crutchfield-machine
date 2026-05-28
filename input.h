@@ -368,6 +368,19 @@ public:
     int  oscPort() const { return oscPort_; }
     bool oscLearn() const { return oscLearn_; }
 
+    // OSC echo (outbound) configuration. If host is non-empty and port>0,
+    // every action dispatch by ANY source emits an OSC message at
+    // /cma/echo/<action.name> for downstream listeners (TD UI mirror,
+    // multi-instance sync). Calls feedback_osc_set_echo() lazily.
+    void setOscEcho(const std::string& host, int port) {
+        oscEchoHost_ = host; oscEchoPort_ = port; oscEchoApplied_ = false;
+    }
+    const std::string& oscEchoHost() const { return oscEchoHost_; }
+    int  oscEchoPort() const { return oscEchoPort_; }
+    // Called internally on every dispatched action. Public so an
+    // external policy (e.g. only echo certain actions) can call it.
+    void echoActionDispatch(ActionId id, float value);
+
     // Hot reload: tracks the last loaded bindings file. tryReload()
     // checks its mtime against a remembered value and, if newer,
     // clears bindings, re-installs defaults, and re-runs loadIni.
@@ -399,6 +412,11 @@ private:
     int64_t     bindingsMtime_ = 0; // last-known mtime in seconds (0 = never loaded)
     float       reloadAccum_   = 0.0f; // accumulator: throttle stat() to 1 Hz
     bool        reloadRequested_ = false; // set by SIGHUP handler
+
+    // OSC echo (outbound)
+    std::string oscEchoHost_;       // e.g. "127.0.0.1"
+    int         oscEchoPort_   = 0; // 0 = disabled
+    bool        oscEchoApplied_ = false; // lazy bind to feedback_osc_set_echo
 };
 
 // Global instance; defined in input.cpp.

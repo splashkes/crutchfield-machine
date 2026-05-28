@@ -51,6 +51,19 @@ int  feedback_osc_port(void);
 // Returns 1 if the socket is open and the thread is running, else 0.
 int  feedback_osc_connected(void);
 
+// Configure outbound OSC echo. Pass host_or_null = NULL or port = 0 to
+// disable. Single sink. Subsequent calls replace the previous config.
+// Returns 1 on success (resolved + ready to send), 0 on failure.
+int  feedback_osc_set_echo(const char* host_or_null, int port);
+
+// Send one OSC message to the currently-configured echo sink. Returns
+// 1 on success, 0 if echo is not configured or send failed. Safe to
+// call from any thread. value_type: 'f' (float), 'i' (int), 'T' (true,
+// no payload), 'F' (false, no payload).
+int  feedback_osc_send_f(const char* address, float value);
+int  feedback_osc_send_i(const char* address, int32_t value);
+int  feedback_osc_send_bang(const char* address);  // type tag ",T"
+
 #ifdef __cplusplus
 }
 #endif

@@ -1236,6 +1236,21 @@ bool Input::loadIni(const std::string& path) {
                 oscLearn_ = (lo == "1" || lo == "yes" || lo == "true" || lo == "on");
                 continue;
             }
+            if (k == "echo") {
+                // echo = host:port  or  echo = :port  or  echo = port
+                std::string host;
+                int port = 0;
+                size_t colon = v.rfind(':');
+                if (colon != std::string::npos) {
+                    host = v.substr(0, colon);
+                    port = std::atoi(v.c_str() + colon + 1);
+                } else {
+                    port = std::atoi(v.c_str());
+                }
+                if (host.empty()) host = "127.0.0.1";
+                if (port > 0 && port < 65536) setOscEcho(host, port);
+                continue;
+            }
         }
 
         const ActionInfo* info = action_info_by_name(k.c_str());
@@ -2281,6 +2296,31 @@ void Input::pollOsc(float /*dt*/) {
 // to a process restart without losing the GL context or simulation
 // state.
 // ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// OSC echo — emits /cma/echo/<action.name> <value> for every dispatched
+// action, regardless of the source that triggered it. Useful for:
+//   - TouchDesigner UI panels that mirror Crutchfield's current state
+//   - Multi-instance sync (a master Crutchfield driving N followers)
+//   - Show-control state recall / sequencer feedback
+//
+// Single-sink design: one host:port destination. Set via setOscEcho()
+// from CLI or bindings.ini. The downstream listener subscribes to
+// /cma/echo/* and reads action.name + value pairs.
+// ─────────────────────────────────────────────────────────────────────────
+void Input::echoActionDispatch(ActionId id, float value) {
+    if (oscEchoPort_ <= 0 || oscEchoHost_.empty()) return;
+    if (!oscEchoApplied_) {
+        oscEchoApplied_ =
+            feedback_osc_set_echo(oscEchoHost_.c_str(), oscEchoPort_) != 0;
+        if (!oscEchoApplied_) return;
+    }
+    const ActionInfo* info = action_info(id);
+    if (!info || !info->name) return;
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "/cma/echo/%s", info->name);
+    feedback_osc_send_f(buf, value);
+}
+
 void Input::rememberBindingsPath(const std::string& path) {
     bindingsPath_ = path;
     struct stat st {};

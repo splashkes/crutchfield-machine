@@ -82,6 +82,8 @@ struct Cfg {
     bool midiLearn = false;          // print incoming MIDI messages
     int  oscPort   = 0;              // 0 = OSC disabled; >0 = bind UDP port
     bool oscLearn  = false;          // print incoming OSC addresses/args
+    std::string oscEchoHost;         // "" = default 127.0.0.1
+    int  oscEchoPort = 0;            // 0 = echo disabled
     bool logUsage  = false;          // stream every action fire to a session CSV
 };
 
@@ -132,6 +134,8 @@ static void print_cli_help() {
       "  --midi-learn        print incoming MIDI notes/CCs for controller mapping\n"
       "  --osc-listen [PORT] open UDP OSC listener (default port 7700)\n"
       "  --osc-learn         print incoming OSC addresses+args (mapping mode)\n"
+      "  --osc-echo HOST:PORT  emit /cma/echo/<action> for every dispatched action\n"
+      "                        (e.g. --osc-echo 127.0.0.1:7701)\n"
       "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
@@ -179,6 +183,20 @@ static Cfg parse_cli(int argc, char** argv) {
             c.oscPort = (p > 0 && p < 65536) ? p : 7700;
         }
         else if (eq("--osc-learn"))    { c.oscLearn = true; if (c.oscPort == 0) c.oscPort = 7700; }
+        else if (eq("--osc-echo")) {
+            const char* spec = next();
+            // Parse HOST:PORT or just :PORT or PORT
+            std::string s = spec;
+            size_t colon = s.rfind(':');
+            if (colon != std::string::npos) {
+                c.oscEchoHost = s.substr(0, colon);
+                c.oscEchoPort = atoi(s.c_str() + colon + 1);
+            } else {
+                c.oscEchoPort = atoi(s.c_str());
+            }
+            if (c.oscEchoHost.empty()) c.oscEchoHost = "127.0.0.1";
+            if (c.oscEchoPort <= 0)    c.oscEchoPort = 7701;
+        }
         else if (eq("--list-actions")) {
             for (int ai = 0; ai < action_info_count(); ai++) {
                 const ActionInfo* a = action_info_by_index(ai);
@@ -4756,7 +4774,17 @@ int main(int argc, char** argv) {
     // we set port + learn here; bindings.ini may still set learn=on later.
     if (g_cfg.oscPort  > 0)   g_input.setOscPort(g_cfg.oscPort);
     if (g_cfg.oscLearn)       g_input.setOscLearn(true);
-    g_input.setHandler(apply_action);
+    if (g_cfg.oscEchoPort > 0)
+        g_input.setOscEcho(g_cfg.oscEchoHost.empty()
+                           ? std::string("127.0.0.1") : g_cfg.oscEchoHost,
+                           g_cfg.oscEchoPort);
+    // Wrap apply_action with OSC echo so every dispatched action is
+    // emitted as /cma/echo/<action.name>. Cheap when echo isn't
+    // configured (one branch in echoActionDispatch).
+    g_input.setHandler([](ActionId id, float mag) {
+        apply_action(id, mag);
+        g_input.echoActionDispatch(id, mag);
+    });
 
 #if !defined(_WIN32)
     // SIGHUP triggers a bindings.ini reload. Async-signal-safe: just
