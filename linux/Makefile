@@ -21,7 +21,7 @@ LDFLAGS   ?=
 #   Compress:   z (EXR writer)
 #   miniaudio:  dl (dlopen for PulseAudio / JACK), m (libm), rt (clock_gettime on older glibc)
 #   ALSA:       asound (miniaudio's default Linux backend)
-LDLIBS    ?= -lglfw -lGLEW -lGL -lpthread -lz -ldl -lm -lrt -lasound
+LDLIBS    ?= -lglfw -lGLEW -lGL -lpthread -lz -ldl -lm -lrt -lasound -latomic
 
 BUILD_DIR := build
 GEN_DIR   := $(BUILD_DIR)/generated
@@ -39,10 +39,23 @@ OBJS := $(BUILD_DIR)/main.o \
         $(BUILD_DIR)/input.o \
         $(BUILD_DIR)/recorder.o \
         $(BUILD_DIR)/overlay.o \
+        $(BUILD_DIR)/ui_panel.o \
         $(BUILD_DIR)/camera_v4l2.o \
         $(BUILD_DIR)/audio.o \
         $(BUILD_DIR)/music.o \
-        $(BUILD_DIR)/osc.o
+        $(BUILD_DIR)/osc.o \
+        $(BUILD_DIR)/link_glue.o
+
+# Ableton Link compile flags. link_glue.cpp falls back to a stub if
+# vendor/link isn't reachable (e.g. submodules not initialized), so
+# these flags are best-effort: if the headers are missing the stub
+# build path takes over.
+LINK_CXXFLAGS := $(CXXFLAGS) \
+                 -I$(ROOT)/vendor/link/include \
+                 -I$(ROOT)/vendor/link/modules/asio-standalone/asio/include \
+                 -DLINK_PLATFORM_LINUX=1 -DLINK_PLATFORM_UNIX=1 \
+                 -DASIO_STANDALONE -DASIO_DISABLE_THREADS=0 \
+                 -Wno-unused-parameter -Wno-unused-variable
 
 QJS_OBJS := $(QJS_DIR)/quickjs.o \
             $(QJS_DIR)/libregexp.o \
@@ -82,8 +95,15 @@ $(BUILD_DIR)/audio.o: $(ROOT)/audio.cpp | $(BUILD_DIR)
 $(BUILD_DIR)/music.o: $(ROOT)/music.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+$(BUILD_DIR)/ui_panel.o: $(ROOT)/ui_panel.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 $(BUILD_DIR)/osc.o: $(ROOT)/osc.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+# Ableton Link bridge. Heavier flag set + an extra include path.
+$(BUILD_DIR)/link_glue.o: $(ROOT)/link_glue.cpp $(ROOT)/link_glue.h | $(BUILD_DIR)
+	$(CXX) $(LINK_CXXFLAGS) -c -o $@ $<
 
 $(QJS_DIR)/%.o: $(ROOT)/vendor/quickjs/%.c | $(QJS_DIR)
 	$(CC) $(QJSFLAGS) -I$(ROOT)/vendor/quickjs -c -o $@ $<

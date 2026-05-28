@@ -21,9 +21,7 @@
 #endif
 
 #include "link_glue.h"
-#ifdef __APPLE__
-  #include "syphon_glue.h"
-#endif
+#include "syphon_glue.h"   // header self-stubs to no-ops off-mac
 #if !defined(_WIN32)
   #include <signal.h>
 #endif
@@ -4868,13 +4866,12 @@ int main(int argc, char** argv) {
         printf("[link] discovery enabled\n");
     }
 
-#ifdef __APPLE__
-    // Initialize Syphon if requested. GL context must be current — it
-    // is at this point (glfwMakeContextCurrent ran earlier).
+    // Initialize Syphon if requested. macOS-only; off-mac syphon_init
+    // is a stub that returns 0 and does nothing. GL context must be
+    // current at this point (glfwMakeContextCurrent ran earlier).
     if (!g_cfg.syphonName.empty()) {
         syphon_init(g_cfg.syphonName.c_str());
     }
-#endif
     g_input.setMidiLearn(g_cfg.midiLearn);
     // OSC config: CLI overrides bindings.ini. If the user passed --osc-listen
     // we set port + learn here; bindings.ini may still set learn=on later.
@@ -5335,15 +5332,13 @@ int main(int argc, char** argv) {
         S.ov.draw();
         S.ui.draw();
 
-#ifdef __APPLE__
         // Publish current render texture as Syphon if enabled. We use
         // the latest simulation FBO texture (not the on-screen image,
         // so overlays/HUD don't leak into the published stream — same
-        // policy as the screen recorder).
+        // policy as the screen recorder). syphon_running is 0 off-mac.
         if (syphon_running()) {
             syphon_publish(GL_TEXTURE_2D, latest.tex, S.simW, S.simH);
         }
-#endif
 
         glfwSwapBuffers(win);
         draw_ui_windows();

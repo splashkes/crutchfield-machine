@@ -9,8 +9,45 @@
 //   LINK_PLATFORM_MACOSX or LINK_PLATFORM_LINUX or LINK_PLATFORM_WINDOWS
 //   LINK_PLATFORM_UNIX (for posix variants)
 // Plus -Ivendor/link/include -Ivendor/link/modules/asio-standalone/asio/include.
+//
+// If vendor/link isn't present (e.g. fresh clone without submodule
+// init), this file compiles as a no-op stub so the rest of the project
+// still builds. Every link.* binding silently does nothing in that case.
 
 #include "link_glue.h"
+
+#if !defined(__has_include)
+  // GCC < 5 / MSVC: assume Link is not present.
+  #define LINK_GLUE_HAS_LINK 0
+#elif __has_include(<ableton/Link.hpp>)
+  #define LINK_GLUE_HAS_LINK 1
+#else
+  #define LINK_GLUE_HAS_LINK 0
+#endif
+
+#include <cstdio>
+
+#if !LINK_GLUE_HAS_LINK
+
+// ── Stub implementation ─────────────────────────────────────────────
+// Compiled when <ableton/Link.hpp> isn't reachable. Every entry point
+// is a safe no-op. The host can still call link_init() etc; nothing
+// happens but nothing crashes.
+
+extern "C" void   link_init(double)              { /* no-op */ }
+extern "C" void   link_shutdown(void)            { /* no-op */ }
+extern "C" void   link_set_enabled(int)          { /* no-op */ }
+extern "C" int    link_enabled(void)             { return 0; }
+extern "C" int    link_num_peers(void)           { return 0; }
+extern "C" double link_tempo(void)               { return 120.0; }
+extern "C" void   link_set_tempo(double)         { /* no-op */ }
+extern "C" double link_beat_phase(double)        { return 0.0; }
+extern "C" int    link_did_beat(double)          { return 0; }
+extern "C" void   link_reset_beat_edges(void)    { /* no-op */ }
+extern "C" int    link_is_playing(void)          { return 0; }
+extern "C" void   link_set_playing(int)          { /* no-op */ }
+
+#else  // LINK_GLUE_HAS_LINK
 
 #include <ableton/Link.hpp>
 #include <atomic>
@@ -35,11 +72,6 @@ struct LinkState {
 };
 
 LinkState g_link;
-
-double now_seconds() {
-    using namespace std::chrono;
-    return duration<double>(steady_clock::now().time_since_epoch()).count();
-}
 
 } // namespace
 
@@ -132,3 +164,5 @@ extern "C" void link_set_playing(int on) {
     state.setIsPlaying(on != 0, g_link.link->clock().micros());
     g_link.link->commitAppSessionState(state);
 }
+
+#endif  // LINK_GLUE_HAS_LINK

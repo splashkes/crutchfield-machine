@@ -1407,9 +1407,23 @@ bool Input::loadIni(const std::string& path) {
                 }
                 steps.push_back({ info->id, vv });
             }
+            // Only log the registration on first definition (or when the
+            // step count changes) to avoid spam on every hot-reload.
+            bool isNew = true;
+            size_t prevSteps = 0;
+            for (size_t i = 0; i < macroNames_.size(); i++) {
+                if (macroNames_[i] == k) {
+                    isNew = false;
+                    prevSteps = macroSteps_[i].size();
+                    break;
+                }
+            }
+            size_t newSteps = steps.size();
             registerMacro(k, std::move(steps));
-            std::fprintf(stdout, "[macros] registered '%s' (%zu steps)\n",
-                         k.c_str(), macroSteps_.back().size());
+            if (isNew || prevSteps != newSteps) {
+                std::fprintf(stdout, "[macros] registered '%s' (%zu steps)\n",
+                             k.c_str(), newSteps);
+            }
             continue;
         }
 
@@ -2829,6 +2843,10 @@ bool Input::saveIni(const std::string& path) const {
                     std::fprintf(f, "%-24s = osc:%s", ACTIONS[i].name, b.oscAddress.c_str());
                 } else if (src == SRC_OSC_TRIG) {
                     std::fprintf(f, "%-24s = osct:%s", ACTIONS[i].name, b.oscAddress.c_str());
+                } else if (src == SRC_AUDIO) {
+                    std::fprintf(f, "%-24s = audio:%s", ACTIONS[i].name, b.oscAddress.c_str());
+                } else if (src == SRC_LINK) {
+                    std::fprintf(f, "%-24s = link:%s", ACTIONS[i].name, b.oscAddress.c_str());
                 }
                 if ((src == SRC_MIDI_CC || src == SRC_MIDI_CC14 || src == SRC_MIDI_NOTE)
                     && b.modmask != 0) {
@@ -2920,6 +2938,41 @@ bool Input::saveIni(const std::string& path) const {
 
     dump_section("osc", SRC_OSC_F,    /*emitHeader=*/false);
     dump_section("osc", SRC_OSC_TRIG, /*emitHeader=*/false);
+
+    // ── Built-in source bindings ──────────────────────────────────────
+    // audio: and link: bindings live in their own sections so they can
+    // be edited or removed independently of the OSC ingestion config.
+    // Both source types tolerate any [section] header at parse time
+    // (the keyPart prefix decides), but persisted writes use dedicated
+    // [audio] and [link] sections for clarity.
+
+    // [audio] — built-in audio reactivity bindings.
+    {
+        bool hasAny = false;
+        for (const Binding& b : bindings_) if (b.source == SRC_AUDIO) { hasAny = true; break; }
+        if (hasAny) {
+            std::fprintf(f,
+"\n[audio]\n"
+"# Built-in audio analyzer. Channels: rms peak low mid high\n"
+"# (no top-level config keys; bindings only)\n"
+"\n");
+            dump_section("audio", SRC_AUDIO, /*emitHeader=*/false);
+        }
+    }
+
+    // [link] — Ableton Link bindings.
+    {
+        bool hasAny = false;
+        for (const Binding& b : bindings_) if (b.source == SRC_LINK) { hasAny = true; break; }
+        if (hasAny) {
+            std::fprintf(f,
+"\n[link]\n"
+"# Ableton Link bridge. Channels: phase beat bpm peers\n"
+"# Enable from CLI with --link or via the link.toggle action.\n"
+"\n");
+            dump_section("link", SRC_LINK, /*emitHeader=*/false);
+        }
+    }
 
     std::fclose(f);
     return true;

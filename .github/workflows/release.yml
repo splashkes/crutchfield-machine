@@ -18,8 +18,8 @@ jobs:
 
       - name: build + dist
         run: |
-          make -f Makefile.macos -j
-          make -f Makefile.macos dist
+          make -f Makefile.macos SYPHON=0 -j
+          make -f Makefile.macos SYPHON=0 dist
 
       - name: release
         uses: softprops/action-gh-release@v2

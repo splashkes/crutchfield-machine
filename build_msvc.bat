@@ -19,14 +19,21 @@ set VCPKG_ROOT=C:\vcpkg
 set INCLUDES=/I "%VCPKG_ROOT%\installed\x64-windows\include"
 set LIBDIRS=/LIBPATH:"%VCPKG_ROOT%\installed\x64-windows\lib"
 
+REM Ableton Link bridge: include vendor/link and asio-standalone, set
+REM platform define + ASIO standalone. If vendor/link\include\ableton
+REM\Link.hpp isn't present (e.g. no submodule init), link_glue.cpp
+REM compiles a stub via __has_include and Link silently no-ops.
+set LINK_INC=/I "vendor\link\include" /I "vendor\link\modules\asio-standalone\asio\include"
+set LINK_DEF=/D LINK_PLATFORM_WINDOWS=1 /D ASIO_STANDALONE /D ASIO_DISABLE_THREADS=0 /D _WIN32_WINNT=0x0601
+
 cl /std:c++17 /O2 /EHsc /nologo ^
-   %INCLUDES% ^
-   main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp osc.cpp ^
+   %INCLUDES% %LINK_INC% %LINK_DEF% ^
+   main.cpp camera.cpp recorder.cpp overlay.cpp input.cpp osc.cpp link_glue.cpp ^
    /Fe:feedback.exe ^
    /link %LIBDIRS% ^
          glfw3dll.lib glew32.lib opengl32.lib gdi32.lib ^
          mfplat.lib mfreadwrite.lib mf.lib mfuuid.lib ole32.lib oleaut32.lib ^
-         winmm.lib zlib.lib ws2_32.lib
+         winmm.lib zlib.lib ws2_32.lib iphlpapi.lib
 
 REM Copy the GLFW and GLEW DLLs next to the exe so the app can launch.
 copy /Y "%VCPKG_ROOT%\installed\x64-windows\bin\glfw3.dll" . >nul

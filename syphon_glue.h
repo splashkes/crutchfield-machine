@@ -4,12 +4,24 @@
 // that any Syphon-aware app on the same Mac can subscribe to (Resolume,
 // MadMapper, VDMX, TouchDesigner, OBS via the Syphon plugin, etc.).
 //
-// Requires Syphon.framework built and accessible at link time.
-// See vendor/syphon/build/Release/Syphon.framework.
+// macOS-only. On other platforms the header defines empty inline stubs
+// so call sites in main.cpp don't need #ifdefs everywhere — they can
+// just call syphon_publish() and it's a no-op off-mac.
 
 #pragma once
 
 #include <stdint.h>
+
+// Stub the entire interface when:
+//   - we're not on macOS (no Syphon there)
+//   - OR the build opted out (-DCRUTCHFIELD_NO_SYPHON), typically because
+//     vendor/syphon isn't available at link time
+#if !defined(__APPLE__) || defined(CRUTCHFIELD_NO_SYPHON)
+static inline int  syphon_init(const char*) { return 0; }
+static inline void syphon_shutdown(void)    {}
+static inline void syphon_publish(uint32_t, uint32_t, int, int) {}
+static inline int  syphon_running(void)     { return 0; }
+#else
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,3 +51,5 @@ int  syphon_running(void);
 #ifdef __cplusplus
 }
 #endif
+
+#endif  // !__APPLE__ || CRUTCHFIELD_NO_SYPHON

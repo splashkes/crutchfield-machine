@@ -21,12 +21,20 @@ jobs:
     runs-on: macos-14   # M-series runners
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: init Link submodules (asio-standalone)
+        run: |
+          if [ -d vendor/link ]; then \
+            cd vendor/link && git submodule update --init --recursive || true; \
+          fi
 
       - name: install deps
         run: brew install glfw glew pkg-config
 
-      - name: build
-        run: make -f Makefile.macos -j
+      - name: build (Syphon off — framework not pre-built in CI)
+        run: make -f Makefile.macos SYPHON=0 -j
 
       - name: --list-actions sanity
         run: |
@@ -38,7 +46,7 @@ jobs:
         run: ./feedback --help | grep -E "osc-listen|midi-learn|list-actions"
 
       - name: package dist
-        run: make -f Makefile.macos dist
+        run: make -f Makefile.macos SYPHON=0 dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -54,6 +62,14 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: init Link submodules
+        run: |
+          if [ -d vendor/link ]; then \
+            cd vendor/link && git submodule update --init --recursive || true; \
+          fi
 
       - name: install deps
         run: |
@@ -89,6 +105,14 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: init Link submodules
+        run: |
+          if [ -d vendor/link ]; then \
+            cd vendor/link && git submodule update --init --recursive || true; \
+          fi
 
       - uses: msys2/setup-msys2@v2
         with:
