@@ -518,20 +518,24 @@ struct MathRow {
     float (*accessor)(const Overlay::MathSample&);
     int   actionDec;   // ActionId to fire on Left arrow (decrement)
     int   actionInc;   // ActionId to fire on Right arrow (increment)
+    int   actionSet;   // ActionId for direct-set (mouse drag). 0 = no direct set.
+    float vmin, vmax;  // slider range. The setAxis actions all expect 0..1.
+                       // For display range (knob position) we use 0..1 too;
+                       // the engine clamps internally if needed.
 };
 const MathRow MATH_ROWS[] = {
-    { "decay",     acc_decay,     ACT_DECAY_DN,    ACT_DECAY_UP    },
-    { "blur X",    acc_blurX,     ACT_BLURX_DN,    ACT_BLURX_UP    },
-    { "blur Y",    acc_blurY,     ACT_BLURY_DN,    ACT_BLURY_UP    },
-    { "sat",       acc_sat,       ACT_SAT_DN,      ACT_SAT_UP      },
-    { "noise",     acc_noise,     ACT_NOISE_DN,    ACT_NOISE_UP    },
-    { "couple",    acc_couple,    ACT_COUPLE_DN,   ACT_COUPLE_UP   },
-    { "external",  acc_external,  ACT_EXTERNAL_DN, ACT_EXTERNAL_UP },
-    { "zoom",      acc_zoom,      ACT_ZOOM_DN,     ACT_ZOOM_UP     },
-    { "theta",     acc_theta,     ACT_THETA_DN,    ACT_THETA_UP    },
-    { "chroma",    acc_chroma,    ACT_CHROMA_DN,   ACT_CHROMA_UP   },
-    { "gamma",     acc_gamma,     ACT_GAMMA_DN,    ACT_GAMMA_UP    },
-    { "contrast",  acc_contrast,  ACT_CONTRAST_DN, ACT_CONTRAST_UP },
+    { "decay",     acc_decay,     ACT_DECAY_DN,    ACT_DECAY_UP,    ACT_DECAY_AXIS,        0.f, 1.f },
+    { "blur X",    acc_blurX,     ACT_BLURX_DN,    ACT_BLURX_UP,    ACT_BLURX_SET_AXIS,    0.f, 1.f },
+    { "blur Y",    acc_blurY,     ACT_BLURY_DN,    ACT_BLURY_UP,    ACT_BLURY_SET_AXIS,    0.f, 1.f },
+    { "sat",       acc_sat,       ACT_SAT_DN,      ACT_SAT_UP,      ACT_SAT_SET_AXIS,      0.f, 1.f },
+    { "noise",     acc_noise,     ACT_NOISE_DN,    ACT_NOISE_UP,    ACT_NOISE_AXIS,        0.f, 1.f },
+    { "couple",    acc_couple,    ACT_COUPLE_DN,   ACT_COUPLE_UP,   ACT_COUPLE_SET_AXIS,   0.f, 1.f },
+    { "external",  acc_external,  ACT_EXTERNAL_DN, ACT_EXTERNAL_UP, ACT_EXTERNAL_AXIS,     0.f, 1.f },
+    { "zoom",      acc_zoom,      ACT_ZOOM_DN,     ACT_ZOOM_UP,     ACT_ZOOM_AXIS,         0.f, 1.f },
+    { "theta",     acc_theta,     ACT_THETA_DN,    ACT_THETA_UP,    ACT_THETA_AXIS,        0.f, 1.f },
+    { "chroma",    acc_chroma,    ACT_CHROMA_DN,   ACT_CHROMA_UP,   0,                     0.f, 1.f },
+    { "gamma",     acc_gamma,     ACT_GAMMA_DN,    ACT_GAMMA_UP,    ACT_GAMMA_SET_AXIS,    0.f, 1.f },
+    { "contrast",  acc_contrast,  ACT_CONTRAST_DN, ACT_CONTRAST_UP, ACT_CONTRAST_SET_AXIS, 0.f, 1.f },
 };
 constexpr int N_MATH_ROWS = (int)(sizeof(MATH_ROWS) / sizeof(MATH_ROWS[0]));
 } // namespace
@@ -555,6 +559,78 @@ void Overlay::mathSelectPrev() {
     if (!mathVisible_) return;
     if (mathSelectedRow_ < 0) mathSelectedRow_ = 0;
     else mathSelectedRow_ = (mathSelectedRow_ - 1 + N_MATH_ROWS) % N_MATH_ROWS;
+}
+
+// ── Mouse drag editing ───────────────────────────────────────────────
+// Hit test a (mx, my) in window pixel coords against the cached row
+// geometry. Returns the row index hit, or -1.
+static int math_hit_row(const std::vector<Overlay::RowGeom>& rows,
+                        double mx, double my) {
+    for (size_t i = 0; i < rows.size(); i++) {
+        const Overlay::RowGeom& r = rows[i];
+        if (r.w <= 0.f || r.h <= 0.f) continue;
+        if (mx >= r.x && mx <= r.x + r.w &&
+            my >= r.y && my <= r.y + r.h) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+bool Overlay::mathMouseDown(double mx, double my) {
+    if (!mathVisible_) return false;
+    int row = math_hit_row(mathRowGeom_, mx, my);
+    if (row < 0) return false;
+    mathSelectedRow_ = row;
+    mathDragging_ = true;
+    mathDragRow_  = row;
+    mathDragX_    = mx;
+    // Queue an immediate setAxis fire for this initial click position
+    // so a single click on a value sets it (no drag required).
+    mathDragPending_ = true;
+    // Compute the slider position from mx using the row geometry.
+    // The slider band starts after labelW + valueW from the row's x.
+    // We approximate by clamping mx to the row's middle 60% horizontal
+    // range — same fraction as the slider's pixel position in
+    // drawMathPanel. This couples loosely to layout but is robust.
+    const RowGeom& g = mathRowGeom_[row];
+    float sliderL = g.x + g.w * 0.34f;   // matches sliderX in draw
+    float sliderR = g.x + g.w * 0.84f;   // matches sliderX + sliderW
+    float t = (float)((mx - sliderL) / (sliderR - sliderL));
+    if (t < 0.f) t = 0.f;
+    if (t > 1.f) t = 1.f;
+    mathDragValue_ = t;
+    return true;
+}
+
+bool Overlay::mathMouseDrag(double mx, double my) {
+    (void)my;
+    if (!mathVisible_ || !mathDragging_ || mathDragRow_ < 0) return false;
+    if (mathDragRow_ >= (int)mathRowGeom_.size()) return false;
+    const RowGeom& g = mathRowGeom_[mathDragRow_];
+    float sliderL = g.x + g.w * 0.34f;
+    float sliderR = g.x + g.w * 0.84f;
+    float t = (float)((mx - sliderL) / (sliderR - sliderL));
+    if (t < 0.f) t = 0.f;
+    if (t > 1.f) t = 1.f;
+    mathDragValue_   = t;
+    mathDragPending_ = true;
+    return true;
+}
+
+void Overlay::mathMouseUp() {
+    mathDragging_ = false;
+    mathDragRow_  = -1;
+}
+
+void Overlay::mathTickDrag(const std::function<void(int, float)>& dispatch) {
+    if (!mathDragPending_ || mathDragRow_ < 0) return;
+    if (mathDragRow_ >= N_MATH_ROWS) { mathDragPending_ = false; return; }
+    int act = MATH_ROWS[mathDragRow_].actionSet;
+    mathDragPending_ = false;
+    if (!act) return;   // no direct-set action for this row (e.g. chroma)
+    // setAxis actions take a 0..1 value; we already clamped mathDragValue_.
+    dispatch(act, mathDragValue_);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -796,41 +872,89 @@ void Overlay::drawMathPanel() {
        TextRender::SZ_SMALL, dimC);
     y += lh(TextRender::SZ_MEDIUM) + 10.f;
 
-    const float labelW = 140.f;
-    const float valueW = 110.f;
-    const float sparkX = x + labelW + valueW + 14.f;
-    const float sparkW = (panelX + panelW - 28.f) - sparkX;
-    const float rowH   = lh(TextRender::SZ_MEDIUM) + 12.f;
-    const float hlPadX = 10.f;
+    // Layout: [ label  |  value text  |  ──── slider ────  |  spark ]
+    const float labelW   = 110.f;
+    const float valueW   = 90.f;
+    const float sparkW   = 110.f;
+    const float rowH     = lh(TextRender::SZ_MEDIUM) + 14.f;
+    const float hlPadX   = 10.f;
+    const float sliderX  = x + labelW + valueW;
+    const float sparkRX  = panelX + panelW - 24.f;        // right edge of spark
+    const float sparkLX  = sparkRX - sparkW;
+    const float sliderW  = sparkLX - sliderX - 18.f;
+    const float trackH   = 8.f;
 
-    unsigned char selBg[4]    = { 32, 72, 110, 230 };
-    unsigned char selLabel[4] = { 255, 255, 255, 255 };
-    unsigned char selValue[4] = { 255, 255, 255, 255 };
-    unsigned char selSpark[4] = { 170, 230, 255, 255 };
+    unsigned char selBg[4]      = { 32, 72, 110, 230 };
+    unsigned char selLabel[4]   = { 255, 255, 255, 255 };
+    unsigned char selValue[4]   = { 255, 255, 255, 255 };
+    unsigned char trackBg[4]    = { 28, 36, 52, 255 };
+    unsigned char trackFill[4]  = { 100, 200, 255, 255 };
+    unsigned char trackKnob[4]  = { 240, 248, 255, 255 };
+    unsigned char trackFillS[4] = { 160, 220, 255, 255 };
+
+    mathRowGeom_.clear();
+    mathRowGeom_.reserve(N_MATH_ROWS);
 
     for (int i = 0; i < N_MATH_ROWS; i++) {
-        if (y + rowH > panelY + panelH - lh(TextRender::SZ_SMALL) - 24.f) break;
+        if (y + rowH > panelY + panelH - lh(TextRender::SZ_SMALL) - 24.f) {
+            mathRowGeom_.push_back({0,0,0,0});  // off-screen marker
+            continue;
+        }
         const MathRow& r = MATH_ROWS[i];
         float v = r.accessor(cur);
+        // Map v to slider's [0..1] position using its declared range.
+        float vrange = r.vmax - r.vmin;
+        if (vrange < 1e-6f) vrange = 1.f;
+        float pos = (v - r.vmin) / vrange;
+        if (pos < 0.f) pos = 0.f;
+        if (pos > 1.f) pos = 1.f;
 
         bool isSel = (i == mathSelectedRow_);
         unsigned char* lblC = isSel ? selLabel : dimC;
         unsigned char* valC = isSel ? selValue : valueC;
-        unsigned char* spkC = isSel ? selSpark : accent;
 
         if (isSel) {
             drawFilledRect(panelX + hlPadX, y - 4.f,
                            panelW - 2.f * hlPadX, rowH,
-                           selBg, 0.7f);
+                           selBg, 0.65f);
         }
 
+        // Label + value
         float labelX = x + (isSel ? 14.f : 0.f);
         tx(labelX, y, r.label, TextRender::SZ_MEDIUM, lblC);
         snprintf(buf, sizeof buf, "%.4f", v);
-        txR(sparkX - 14.f, y, buf, TextRender::SZ_MEDIUM, valC);
+        txR(sliderX - 12.f, y, buf, TextRender::SZ_MEDIUM, valC);
 
-        drawSparkline(sparkX, y + 4.f, sparkW, rowH - 12.f,
+        // Slider track
+        float trackY = y + (rowH - 4.f) * 0.5f - trackH * 0.5f - 4.f;
+        drawFilledRect(sliderX, trackY, sliderW, trackH, trackBg, 1.f);
+        // Fill up to current position
+        unsigned char* fillC = isSel ? trackFillS : trackFill;
+        drawFilledRect(sliderX, trackY, sliderW * pos, trackH, fillC, 1.f);
+        // Knob
+        float knobX = sliderX + sliderW * pos - 5.f;
+        drawFilledRect(knobX, trackY - 4.f, 10.f, trackH + 8.f, trackKnob, 1.f);
+
+        // Sparkline — small
+        unsigned char* spkC = isSel ? trackFillS : accent;
+        drawSparkline(sparkLX, y + 6.f, sparkW, rowH - 16.f,
                       r.accessor, 0.f, 0.f, spkC);
+
+        // Record geometry for hit-testing in mouse paths. We accept
+        // clicks anywhere across the row so the user doesn't have to
+        // hit the slim track precisely.
+        RowGeom g {};
+        g.x = panelX + hlPadX;
+        g.y = y - 4.f;
+        g.w = panelW - 2.f * hlPadX;
+        g.h = rowH;
+        // But the slider HIT region is just the track area — we store
+        // it separately by mapping the row's geometry. To keep the
+        // struct simple, we keep g as the row bounding box and let
+        // hit-test detect "click in slider band" vs "click anywhere
+        // else in the row -> just select".
+        mathRowGeom_.push_back(g);
+
         y += rowH;
     }
 

@@ -4187,6 +4187,14 @@ static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
     double x = 0.0, y = 0.0;
     glfwGetCursorPos(win, &x, &y);
     if (S.ui.mouseButton(button, action, x, y)) return;
+    // Mathlab takes mouse first when the panel is open.
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (action == GLFW_PRESS) {
+            if (S.ov.mathMouseDown(x, y)) return;
+        } else if (action == GLFW_RELEASE) {
+            S.ov.mathMouseUp();
+        }
+    }
     if (button != GLFW_MOUSE_BUTTON_LEFT) return;
     if (action == GLFW_PRESS) {
         S.mouseDrag = true;
@@ -4198,6 +4206,7 @@ static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
 
 static void cursor_pos_cb(GLFWwindow*, double x, double y) {
     if (S.ui.cursor(x, y)) return;
+    if (S.ov.mathMouseDrag(x, y)) return;
     if (!S.mouseDrag) return;
     double dx = x - S.mouseLastX;
     double dy = y - S.mouseLastY;
@@ -5419,6 +5428,10 @@ int main(int argc, char** argv) {
             ms.theta        = S.p.theta;
             S.ov.mathPushFrame(ms);
         }
+        // Drain any pending Mathlab slider drag value into apply_action.
+        S.ov.mathTickDrag([](int act, float v) {
+            apply_action((ActionId)act, v);
+        });
         S.ov.draw();
         S.ui.draw();
 

@@ -100,6 +100,20 @@ public:
     int   mathSelectedActionDec() const;             // returns int ActionId
     int   mathSelectedActionInc() const;
 
+    // Mouse drag editing. When the user clicks-and-drags inside the
+    // Mathlab panel's slider area, the host calls these to translate
+    // pixel coords into "fire setAxis for the active row at value V".
+    // Returns true if the panel handled the event (so the host should
+    // not also dispatch a view-rotate or other downstream interaction).
+    bool  mathMouseDown(double mx, double my);
+    bool  mathMouseDrag(double mx, double my);
+    void  mathMouseUp();
+
+    // Called each frame; pulls the host's apply_action via the supplied
+    // dispatch callback so a drag fires the setAxis action with the
+    // mapped value. The dispatcher signature matches Input::Handler.
+    void  mathTickDrag(const std::function<void(int actionId, float value)>& dispatch);
+
 private:
     enum View { VIEW_MENU, VIEW_SECTION };
 
@@ -146,6 +160,18 @@ private:
     // Math dashboard
     bool mathVisible_ = false;
     int  mathSelectedRow_ = -1;            // -1 until first open
+    // Mouse drag bookkeeping. The geometry block for each row is
+    // computed once per frame in drawMathPanel and stashed here so the
+    // mouse path can hit-test without re-running the whole layout.
+  public:
+    struct RowGeom { float x, y, w, h; };  // slider hit area in panel coords
+  private:
+    std::vector<RowGeom> mathRowGeom_;
+    bool   mathDragging_ = false;
+    int    mathDragRow_  = -1;
+    double mathDragX_    = 0.0;
+    bool   mathDragPending_ = false;       // a value awaits dispatch this frame
+    float  mathDragValue_   = 0.f;
     std::vector<MathSample> mathRing_;     // ring buffer; ~240 samples = 4s @ 60fps
     int                     mathRingHead_ = 0;
     int                     mathRingCount_ = 0;
