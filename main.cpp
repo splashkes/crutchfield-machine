@@ -22,6 +22,7 @@
 
 #include "link_glue.h"
 #include "syphon_glue.h"   // header self-stubs to no-ops off-mac
+#include "text_render.h"
 #if !defined(_WIN32)
   #include <signal.h>
 #endif
@@ -3224,10 +3225,30 @@ static void apply_action(ActionId id, float mag) {
     if (id == ACT_SNAPSHOT_RECALL) { snapshot_recall((int)mag); return; }
     if (id == ACT_MATH_TOGGLE)     { S.ov.toggleMath(); return; }
 
-    // ── Mathlab nav: while the panel is visible, the four arrow keys
-    //    drive cursor + value adjust instead of warp translate. M/Esc
-    //    closes the panel and returns the arrows to translate.
+    // ── Mathlab nav: dedicated actions wired in installDefaults so a
+    //    keyboard binding doesn't have to fight the warp.translate
+    //    bindings. We also intercept translate keys as a fallback so
+    //    users who already mapped arrows to translate still get math
+    //    nav while the panel is visible.
+    if (id == ACT_MATH_CURSOR_UP) { if (S.ov.mathVisible()) S.ov.mathSelectPrev(); return; }
+    if (id == ACT_MATH_CURSOR_DN) { if (S.ov.mathVisible()) S.ov.mathSelectNext(); return; }
+    if (id == ACT_MATH_ADJUST_DEC) {
+        if (S.ov.mathVisible()) {
+            int act = S.ov.mathSelectedActionDec();
+            if (act) apply_action((ActionId)act, mag);
+        }
+        return;
+    }
+    if (id == ACT_MATH_ADJUST_INC) {
+        if (S.ov.mathVisible()) {
+            int act = S.ov.mathSelectedActionInc();
+            if (act) apply_action((ActionId)act, mag);
+        }
+        return;
+    }
     if (S.ov.mathVisible()) {
+        // Fallback: hijack translate arrows so arrow keys "just work"
+        // for nav while the panel is open.
         if (id == ACT_TRANS_UP)    { S.ov.mathSelectPrev(); return; }
         if (id == ACT_TRANS_DN)    { S.ov.mathSelectNext(); return; }
         if (id == ACT_TRANS_LEFT) {
@@ -4156,6 +4177,7 @@ static void size_cb(GLFWwindow* win, int w, int h) {
     // is unrelated, so we don't need to stop recording.
     S.winW = w; S.winH = h;
     S.ov.resize(w, h);
+    TextRender::resize(w, h);
     int ww = w, wh = h;
     glfwGetWindowSize(win, &ww, &wh);
     S.ui.resize(ww, wh);
@@ -5105,6 +5127,20 @@ int main(int argc, char** argv) {
     S.winW = fbw; S.winH = fbh;
     S.ov.resize(fbw, fbh);
     S.ui.resize(winw, winh);
+
+    // Initialize the TTF renderer for polished UI text (Mathlab uses it).
+    // If the font file is missing the renderer no-ops and overlay falls
+    // back to stb_easy_font for everything.
+    {
+        std::string fontPath = g_shader_base.empty()
+            ? std::string("fonts/Inter-Regular.ttf")
+            : (g_shader_base + "fonts/Inter-Regular.ttf");
+        if (!TextRender::init(fontPath)) {
+            printf("[text] using stb_easy_font fallback (no Inter at %s)\n",
+                   fontPath.c_str());
+        }
+        TextRender::resize(fbw, fbh);
+    }
 
     // Drain boot hints into the HUD so first-time users see what's going
     // on. Each logEvent persists in the rolling log for ~5 seconds.

@@ -2,6 +2,7 @@
 
 #include "overlay.h"
 #include "stb_easy_font.h"
+#include "text_render.h"
 
 #include <GLFW/glfw3.h>
 #include <cstdio>
@@ -669,58 +670,69 @@ void Overlay::drawMathPanel() {
     if (mathRingCount_ == 0) return;
     const MathSample& cur = mathRing_[mathRingHead_];
 
-    // Text scales — based on the matching HUD pipeline (TEXT_SCALE 2.4).
-    // Multiply against base stb_easy_font glyph (~8 px logical) to get
-    // ~16-19 px text at scale 2.0-2.4, which is the readable floor on a
-    // typical display + actually readable on Retina.
-    const float TS_TITLE = 2.4f;   // panel title
-    const float TS_H1    = 2.0f;   // section heading
-    const float TS_BODY  = 1.7f;   // body rows
-    const float TS_NOTE  = 1.4f;   // legend / hints
+    const bool useTTF = TextRender::ready();
+
+    // Text drawer that picks TTF if available, otherwise falls back to
+    // stb_easy_font with a comparable scale.
+    auto tx = [&](float x, float y, const char* text, TextRender::Size sz,
+                  unsigned char rgba[4], float alpha = 1.f) {
+        if (useTTF) {
+            TextRender::draw(x, y, text, sz, rgba, alpha);
+        } else {
+            float scale = (sz == TextRender::SZ_LARGE)  ? 2.4f
+                        : (sz == TextRender::SZ_MEDIUM) ? 1.7f : 1.3f;
+            drawTextLine(x, y, std::string(text), rgba, alpha, scale);
+        }
+    };
+    auto txR = [&](float xRight, float y, const char* text, TextRender::Size sz,
+                   unsigned char rgba[4], float alpha = 1.f) {
+        if (useTTF) {
+            TextRender::drawRight(xRight, y, text, sz, rgba, alpha);
+        } else {
+            // Crude right-align: skip computing width, just left-align at xRight-160
+            float scale = (sz == TextRender::SZ_LARGE)  ? 2.4f
+                        : (sz == TextRender::SZ_MEDIUM) ? 1.7f : 1.3f;
+            drawTextLine(xRight - 160.f, y, std::string(text), rgba, alpha, scale);
+        }
+    };
+    auto lh = [&](TextRender::Size sz) {
+        if (useTTF) return TextRender::lineHeight(sz);
+        return (sz == TextRender::SZ_LARGE) ? 36.f
+             : (sz == TextRender::SZ_MEDIUM) ? 26.f : 18.f;
+    };
 
     // ── Geometry ──────────────────────────────────────────────────────
-    // Width sized for the longest line at TS_BODY scale.
-    const float panelW = std::min(820.f, (float)winW_ * 0.50f);
+    const float panelW = std::min(880.f, (float)winW_ * 0.50f);
     const float panelX = (float)winW_ - panelW - 24.f;
     const float panelY = 24.f;
-    const float panelH = std::min((float)winH_ - 48.f, 980.f);
+    const float panelH = std::min((float)winH_ - 48.f, 1080.f);
 
-    // Background with a heavier dim than before so light feedback
-    // doesn't fight the text.
-    unsigned char bg[4] = { 8, 12, 20, 235 };
-    drawFilledRect(panelX, panelY, panelW, panelH, bg, 0.92f);
-
-    // Accent stripe top
-    unsigned char accent[4] = { 80, 180, 250, 255 };
-    drawFilledRect(panelX, panelY, panelW, 4.f, accent, 1.f);
-
-    // Soft top-right corner badge so the panel is identifiable even
-    // when section labels scroll off.
-    drawFilledRect(panelX + panelW - 56.f, panelY + 12.f, 44.f, 6.f, accent, 0.6f);
-
-    // ── Text styles ───────────────────────────────────────────────────
+    unsigned char bg[4]      = { 8, 12, 20, 240 };
+    unsigned char accent[4]  = { 80, 180, 250, 255 };
     unsigned char titleC[4]  = { 240, 244, 252, 255 };
     unsigned char headingC[4]= { 100, 200, 255, 255 };
     unsigned char valueC[4]  = { 230, 236, 248, 255 };
-    unsigned char dimC[4]    = { 130, 145, 175, 255 };
+    unsigned char dimC[4]    = { 140, 158, 188, 255 };
     unsigned char warnC[4]   = { 250, 180,  90, 255 };
     unsigned char dangerC[4] = { 248, 110, 110, 255 };
     unsigned char okC[4]     = { 130, 220, 150, 255 };
 
-    // Rough line-height table (px per line at given scale).
-    auto lineHFor = [](float scale) { return 14.f * scale; };
+    // Background + accents
+    drawFilledRect(panelX, panelY, panelW, panelH, bg, 0.94f);
+    drawFilledRect(panelX, panelY, panelW, 4.f, accent, 1.f);
+    drawFilledRect(panelX + panelW - 56.f, panelY + 14.f, 44.f, 4.f, accent, 0.6f);
 
-    float x = panelX + 24.f;
-    float y = panelY + 24.f;
+    float x = panelX + 28.f;
+    float y = panelY + 26.f;
 
-    // Title block.
-    drawTextLine(x, y, "MATHLAB", titleC, 1.0f, TS_TITLE);
-    drawTextLine(x, y + lineHFor(TS_TITLE) + 2.f,
-                 "feedback dynamics  |  press M to close",
-                 dimC, 1.0f, TS_NOTE);
-    y += lineHFor(TS_TITLE) + lineHFor(TS_NOTE) + 14.f;
+    // Title
+    tx(x, y, "MATHLAB", TextRender::SZ_LARGE, titleC);
+    y += lh(TextRender::SZ_LARGE);
+    tx(x, y, "feedback dynamics  ·  M to close",
+       TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_SMALL) + 18.f;
 
-    // ── Math derivations ──────────────────────────────────────────────
+    // ── Derived quantities ───────────────────────────────────────────
     float halflife_frames = (cur.decay > 0.f && cur.decay < 1.f)
         ? std::log(0.5f) / std::log(cur.decay) : 1e9f;
     float halflife_sec    = halflife_frames / 60.f;
@@ -740,40 +752,35 @@ void Overlay::drawMathPanel() {
 
     char buf[160];
 
-    // ── REGIME — the headline, drawn BIG ──────────────────────────────
-    drawTextLine(x, y, "REGIME", dimC, 1.0f, TS_NOTE);
-    y += lineHFor(TS_NOTE) + 2.f;
-    drawTextLine(x, y, regime, regColor, 1.0f, TS_TITLE);
-    y += lineHFor(TS_TITLE) + 18.f;
+    // REGIME headline
+    tx(x, y, "REGIME", TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_SMALL);
+    tx(x, y, regime, TextRender::SZ_LARGE, regColor);
+    y += lh(TextRender::SZ_LARGE) + 18.f;
 
-    // ── Numeric readouts ──────────────────────────────────────────────
-    drawTextLine(x, y, "characterization", headingC, 1.0f, TS_H1);
-    y += lineHFor(TS_H1) + 6.f;
+    // ── characterization rows ───────────────────────────────────────
+    tx(x, y, "characterization", TextRender::SZ_MEDIUM, headingC);
+    y += lh(TextRender::SZ_MEDIUM) + 6.f;
 
+    const float valRightX = panelX + panelW - 28.f;
     auto row2 = [&](const char* label, const char* val) {
-        // Label left-justified, value right-aligned at a fixed column.
-        // Compute pixel widths by approximating stb_easy_font_width at scale.
-        drawTextLine(x, y, label, dimC, 1.0f, TS_BODY);
-        // Crude right-align: place value at x + 0.55 * panelW.
-        drawTextLine(x + 0.42f * panelW, y, val, valueC, 1.0f, TS_BODY);
-        y += lineHFor(TS_BODY) + 4.f;
+        tx (x, y, label, TextRender::SZ_SMALL, dimC);
+        txR(valRightX, y, val, TextRender::SZ_SMALL, valueC);
+        y += lh(TextRender::SZ_SMALL) + 4.f;
     };
 
     snprintf(buf, sizeof buf, "%.4f", rho);
-    row2("rho  (spectral radius)", buf);
+    row2("rho  spectral radius", buf);
 
-    if (halflife_frames > 9999.f) {
-        snprintf(buf, sizeof buf, "infinite");
-    } else {
-        snprintf(buf, sizeof buf, "%.0f frames  /  %.2f s", halflife_frames, halflife_sec);
-    }
+    if (halflife_frames > 9999.f) snprintf(buf, sizeof buf, "infinite");
+    else snprintf(buf, sizeof buf, "%.0f frames  /  %.2f s", halflife_frames, halflife_sec);
     row2("memory half-life", buf);
 
     snprintf(buf, sizeof buf, "%.4f", D);
-    row2("diffusion  D", buf);
+    row2("diffusion D", buf);
 
     snprintf(buf, sizeof buf, "%.4f", Kc);
-    row2("coupling  K_c", buf);
+    row2("coupling Kc", buf);
 
     snprintf(buf, sizeof buf, "%.4f   (%.1f dB)", cur.noise, noise_db);
     row2("noise floor", buf);
@@ -783,26 +790,26 @@ void Overlay::drawMathPanel() {
 
     y += 14.f;
 
-    // ── Section 2: parameter editor with sparklines ───────────────────
-    drawTextLine(x, y, "parameters  (↑↓ select · ←→ adjust)",
-                 headingC, 1.0f, TS_H1);
-    y += lineHFor(TS_H1) + 8.f;
+    // ── Parameter editor ─────────────────────────────────────────────
+    tx(x, y, "parameters", TextRender::SZ_MEDIUM, headingC);
+    tx(x + 200.f, y + 4.f, "up/down select  ·  left/right adjust",
+       TextRender::SZ_SMALL, dimC);
+    y += lh(TextRender::SZ_MEDIUM) + 10.f;
 
-    // Each row: highlight bar (if selected) + label + value + sparkline.
-    const float labelW   = 0.18f * panelW;
-    const float valueW   = 0.18f * panelW;
-    const float sparkX   = x + labelW + valueW;
-    const float sparkW   = panelW - (sparkX - panelX) - 28.f;
-    const float rowH     = lineHFor(TS_BODY) + 14.f;
-    const float hlPadX   = 8.f;
+    const float labelW = 140.f;
+    const float valueW = 110.f;
+    const float sparkX = x + labelW + valueW + 14.f;
+    const float sparkW = (panelX + panelW - 28.f) - sparkX;
+    const float rowH   = lh(TextRender::SZ_MEDIUM) + 12.f;
+    const float hlPadX = 10.f;
 
-    unsigned char selBg[4]    = { 30, 60, 95, 220 };
+    unsigned char selBg[4]    = { 32, 72, 110, 230 };
     unsigned char selLabel[4] = { 255, 255, 255, 255 };
     unsigned char selValue[4] = { 255, 255, 255, 255 };
     unsigned char selSpark[4] = { 170, 230, 255, 255 };
 
     for (int i = 0; i < N_MATH_ROWS; i++) {
-        if (y + rowH > panelY + panelH - 12.f) break;
+        if (y + rowH > panelY + panelH - lh(TextRender::SZ_SMALL) - 24.f) break;
         const MathRow& r = MATH_ROWS[i];
         float v = r.accessor(cur);
 
@@ -812,28 +819,24 @@ void Overlay::drawMathPanel() {
         unsigned char* spkC = isSel ? selSpark : accent;
 
         if (isSel) {
-            // Highlight bar spanning the full row width.
-            drawFilledRect(panelX + hlPadX, y - 2.f,
-                           panelW - 2.f * hlPadX, rowH - 2.f,
-                           selBg, 0.65f);
-            // Arrow glyphs on either side as a hint.
-            drawTextLine(panelX + hlPadX + 6.f, y + 2.f, "<", lblC, 1.0f, TS_BODY);
-            drawTextLine(panelX + panelW - hlPadX - 18.f, y + 2.f, ">", lblC, 1.0f, TS_BODY);
+            drawFilledRect(panelX + hlPadX, y - 4.f,
+                           panelW - 2.f * hlPadX, rowH,
+                           selBg, 0.7f);
         }
 
-        drawTextLine(x + (isSel ? 18.f : 0.f), y + 2.f,
-                     r.label, lblC, 1.0f, TS_BODY);
+        float labelX = x + (isSel ? 14.f : 0.f);
+        tx(labelX, y, r.label, TextRender::SZ_MEDIUM, lblC);
         snprintf(buf, sizeof buf, "%.4f", v);
-        drawTextLine(x + labelW, y + 2.f, buf, valC, 1.0f, TS_BODY);
+        txR(sparkX - 14.f, y, buf, TextRender::SZ_MEDIUM, valC);
 
-        drawSparkline(sparkX, y + 3.f, sparkW, rowH - 8.f,
+        drawSparkline(sparkX, y + 4.f, sparkW, rowH - 12.f,
                       r.accessor, 0.f, 0.f, spkC);
         y += rowH;
     }
 
-    // Footer help bar.
-    float footY = panelY + panelH - lineHFor(TS_NOTE) - 12.f;
-    drawTextLine(panelX + 24.f, footY,
-                 "shift+arrow = coarse 20x  ·  M closes",
-                 dimC, 1.0f, TS_NOTE);
+    // Footer
+    float footY = panelY + panelH - lh(TextRender::SZ_SMALL) - 12.f;
+    tx(panelX + 28.f, footY,
+       "shift+arrow = 20x coarse step  ·  M closes",
+       TextRender::SZ_SMALL, dimC);
 }

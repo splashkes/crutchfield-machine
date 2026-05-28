@@ -115,6 +115,13 @@ enum ActionId : int {
     ACT_SNAPSHOT_SAVE,
     ACT_SNAPSHOT_RECALL,
     ACT_MATH_TOGGLE,    // toggle the Mathlab dashboard overlay
+    // Mathlab nav — fire from keyboard arrows / mouse / OSC. The host's
+    // apply_action wires these to Overlay::mathSelectPrev/Next and the
+    // currently-selected row's decrement/increment actions.
+    ACT_MATH_CURSOR_UP,
+    ACT_MATH_CURSOR_DN,
+    ACT_MATH_ADJUST_DEC,
+    ACT_MATH_ADJUST_INC,
 
     // Ableton Link
     ACT_LINK_TOGGLE,    // enable/disable Link network discovery

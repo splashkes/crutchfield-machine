@@ -56,7 +56,7 @@ LDLIBS   ?= -lglfw -lGLEW -lz \
 
 SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm \
        recorder.cpp overlay.cpp ui_panel.cpp music.cpp audio.cpp osc.cpp \
-       link_glue.cpp
+       link_glue.cpp text_render.cpp
 ifeq ($(SYPHON),1)
 SRCS += syphon_glue.mm
 endif
