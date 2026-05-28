@@ -27,7 +27,8 @@ In-depth docs for everything added on the `osc-control` branch: OSC control, MID
 | Audio reactivity (built-in) | [features/AUDIO_REACTIVITY.md](features/AUDIO_REACTIVITY.md) |
 | Ableton Link | [features/ABLETON_LINK.md](features/ABLETON_LINK.md) |
 | Syphon output | [features/SYPHON.md](features/SYPHON.md) |
-| Mathlab dashboard | [features/MATHLAB.md](features/MATHLAB.md) |
+| Mathlab dashboard (analytical view) | [features/MATHLAB.md](features/MATHLAB.md) |
+| **Math-derived meta-controls** (halflife, regime.distance, compass, failsafe, math.echo) | [features/META_CONTROLS.md](features/META_CONTROLS.md) |
 
 ## What's new in `osc-control`
 

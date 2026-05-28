@@ -48,7 +48,8 @@ export default defineConfig({
             { text: 'Audio reactivity',    link: '/docs/features/AUDIO_REACTIVITY' },
             { text: 'Ableton Link',        link: '/docs/features/ABLETON_LINK' },
             { text: 'Syphon output',       link: '/docs/features/SYPHON' },
-            { text: 'Mathlab dashboard',   link: '/docs/features/MATHLAB' }
+            { text: 'Mathlab (analytical view)', link: '/docs/features/MATHLAB' },
+            { text: 'Meta-controls',       link: '/docs/features/META_CONTROLS' }
           ]
         },
         {

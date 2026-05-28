@@ -1,6 +1,15 @@
-# Mathlab dashboard — the dynamical-system view
+# Mathlab dashboard — the dynamical-system analytical view
 
-Press **M** (or bind `app.math` to any input) to toggle a translucent panel on the right side of the screen that shows the feedback engine as a discrete-time dynamical system. Designed for parameter exploration and intuition-building, not control — every parameter is still edited via the normal input paths.
+Press **M** (or bind `app.math` to any input) to toggle a translucent panel on the right side of the screen that shows the feedback engine as a discrete-time dynamical system.
+
+**Mathlab is analysis only.** It shows the math, the regime classifier, and recent parameter history as sparklines. It does NOT edit parameters directly — that's the parameter editor's job (press H or Tab to open it).
+
+Why split: the parameter editor in `ui_panel.cpp` is already a complete editor with sliders, mouse-drag, value display, mouse hit-test, and YAML-driven layout. Building a parallel editor inside Mathlab was duplicative. Mathlab's unique value is the analytical layer; the editor stays where it was.
+
+What you can do with the math layer directly:
+- **READ** the system characterization (this doc, here)
+- **WATCH** parameter history in sparklines (this doc, here)
+- **CONTROL** dynamical quantities via meta-control actions (see [META_CONTROLS.md](META_CONTROLS.md))
 
 ## What it shows
 
