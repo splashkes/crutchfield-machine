@@ -4620,37 +4620,24 @@ static void cursor_pos_cb(GLFWwindow* win, double x, double y) {
     if (S.viewRotX >  limit) S.viewRotX =  limit;
 }
 
-// ── one feedback step for a single field ──────────────────────────────────
-static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
-    glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
-    glViewport(0, 0, dst.w, dst.h);
-    glUseProgram(progFeedback);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, src.tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, otherSrc.tex);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : src.tex);
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][0].tex);
-    glActiveTexture(GL_TEXTURE4);
-    glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][1].tex);
-
+// ── shared feedback-shader uniform binding ────────────────────────────────
+// Single source of truth for the parameter side of the feedback shader call.
+// Both render paths (planar render_field and volumetric render_volume_field)
+// push the same per-frame Params; the only differences are texture binding,
+// viewport, and whether we draw once or loop over volume slices. Extracted
+// to one place so adding a new uniform doesn't require remembering to edit
+// two near-identical 60-line blocks.
+static void bind_feedback_params(int fieldId) {
     #define U1f(n, v)  glUniform1f (glGetUniformLocation(progFeedback, n), (v))
     #define U1i(n, v)  glUniform1i (glGetUniformLocation(progFeedback, n), (v))
     #define U1ui(n, v) glUniform1ui(glGetUniformLocation(progFeedback, n), (v))
-    #define U2f(n, x, y) glUniform2f(glGetUniformLocation(progFeedback, n), (x), (y))
 
     U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
     U1i("uPrevVol", 3); U1i("uOtherVol", 4);
-    U2f("uRes", (float)dst.w, (float)dst.h);
     U1f("uTime", (float)glfwGetTime());
     U1ui("uFrame", S.frame);
     U1i("uEnable", S.enable);
     U1i("uFieldId", fieldId);
-    U1f("uVolumeSlice", 0.0f);
-    U1f("uVolumeSize", (float)S.volumeSize);
 
     auto& p = S.p;
     U1f("uZoom", p.zoom); U1f("uTheta", p.theta);
@@ -4722,108 +4709,61 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
         if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
     }
     U1f("uOutFade", effOutFade);
-
     // BPM strobe-lock uniforms for vfx_slot.glsl.
     U1f("uBpmPhase", p.beatPhase);
     U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
 
+    #undef U1f
+    #undef U1i
+    #undef U1ui
+}
+
+// ── one feedback step for a single field ──────────────────────────────────
+static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
+    glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
+    glViewport(0, 0, dst.w, dst.h);
+    glUseProgram(progFeedback);
+
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, src.tex);
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, otherSrc.tex);
+    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : src.tex);
+    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][0].tex);
+    glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][1].tex);
+
+    bind_feedback_params(fieldId);
+    glUniform2f(glGetUniformLocation(progFeedback, "uRes"), (float)dst.w, (float)dst.h);
+    glUniform1f(glGetUniformLocation(progFeedback, "uVolumeSlice"), 0.0f);
+    glUniform1f(glGetUniformLocation(progFeedback, "uVolumeSize"), (float)S.volumeSize);
+
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
+// ── one feedback step for a single volumetric field ───────────────────────
+// Same shader, called per Z slice. The flatFallback is bound on the 2D
+// sampler ports because the shader still references them even in volume
+// mode; the volumetric path reads from the 3D samplers.
 static void render_volume_field(int fieldId, VolumeFBO& src, VolumeFBO& dst,
                                 VolumeFBO& otherSrc, FBO& flatFallback) {
     glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
     glViewport(0, 0, dst.size, dst.size);
     glUseProgram(progFeedback);
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : flatFallback.tex);
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_3D, src.tex);
-    glActiveTexture(GL_TEXTURE4);
-    glBindTexture(GL_TEXTURE_3D, otherSrc.tex);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
+    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : flatFallback.tex);
+    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_3D, src.tex);
+    glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_3D, otherSrc.tex);
 
-    U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
-    U1i("uPrevVol", 3); U1i("uOtherVol", 4);
-    U2f("uRes", (float)dst.size, (float)dst.size);
-    U1f("uTime", (float)glfwGetTime());
-    U1ui("uFrame", S.frame);
-    U1i("uEnable", S.enable);
-    U1i("uFieldId", fieldId);
-    U1f("uVolumeSize", (float)dst.size);
+    bind_feedback_params(fieldId);
+    glUniform2f(glGetUniformLocation(progFeedback, "uRes"),
+                (float)dst.size, (float)dst.size);
+    glUniform1f(glGetUniformLocation(progFeedback, "uVolumeSize"), (float)dst.size);
 
-    auto& p = S.p;
-    U1f("uZoom", p.zoom); U1f("uTheta", p.theta);
-    U1f("uPivotX", p.pivotX); U1f("uPivotY", p.pivotY);
-    U1f("uTransX", p.transX); U1f("uTransY", p.transY);
-    U1f("uChroma", p.chroma);
-    U1f("uBlurX", p.blurX); U1f("uBlurY", p.blurY); U1f("uBlurAngle", p.blurAngle);
-    U1i("uBlurQuality", S.blurQ);
-    U1i("uCAQuality",   S.caQ);
-    U1f("uGamma", p.gamma);
-    U1f("uHueRate", p.hueRate + p.hueBeatKick); U1f("uSatGain", p.satGain);
-    U1f("uContrast", p.contrast);
-    float effOutFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + p.flashDecay));
-    float effDecay   = (p.decayDipTimer > 0.0f) ? 0.90f : p.decay;
-    U1f("uDecay", effDecay);
-    U1f("uBorderSize", p.borderSize);
-    U1f("uBorderSoftness", p.borderSoftness);
-    U1f("uBorderDecay", p.borderDecay);
-    U1f("uNoise", p.noise);
-    U1i("uNoiseQuality", S.noiseQ);
-    U1f("uMusKick",  S.musKick);
-    U1f("uMusSnare", S.musSnare);
-    U1f("uMusHat",   S.musHat);
-    U1f("uMusBass",  S.musBass);
-    U1f("uMusOther", S.musOther);
-    U1i("uPixelateStyle", S.pixelateStyle);
-    U1i("uPixelateBleedIdx", S.pixelateBleedIdx);
-    U1i("uPixelateBurnSeed", S.pixelateBurnSeed);
-    U1i("uInvert",      p.invert);
-    U1i("uInvertPeriod",p.invertPeriod);
-    U1f("uSensorGamma", p.sensorGamma);
-    U1f("uSatKnee",     p.satKnee);
-    U1f("uColorCross",  p.colorCross);
-    U1f("uThermAmp",    p.thermAmp);
-    U1f("uThermScale",  p.thermScale);
-    U1f("uThermSpeed",  p.thermSpeed);
-    U1f("uThermRise",   p.thermRise);
-    U1f("uThermSwirl",  p.thermSwirl);
-    U1f("uCouple", p.couple);
-    U1f("uExternal", p.external);
-    U1f("uFxWet", p.fxWet);
-    U1f("uSourceWet", p.sourceWet);
-    U1i("uSphereMode", p.sphereMode);
-    U1f("uSphereReverb", p.sphereReverb);
-    U1f("uInject", p.inject);
-    U1i("uPattern", p.pattern);
-    U1f("uPatternInject", p.patternInject);
-    U1f("uShapeInject", p.shapeInject);
-    U1i("uShapeKind", p.shapeKind);
-    U1i("uShapeCount", p.shapeCount);
-    U1f("uShapeSize", p.shapeSize);
-    U1f("uShapeAngle", p.shapeAngle);
-
-    {
-        GLint lEff = glGetUniformLocation(progFeedback, "uVfxEffect");
-        GLint lPar = glGetUniformLocation(progFeedback, "uVfxParam");
-        GLint lSrc = glGetUniformLocation(progFeedback, "uVfxBSource");
-        if (lEff >= 0) glUniform1iv(lEff, 2, p.vfxSlot);
-        if (lPar >= 0) glUniform1fv(lPar, 2, p.vfxParam);
-        if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
-    }
-    U1f("uOutFade", effOutFade);
-    U1f("uBpmPhase", p.beatPhase);
-    U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
-
+    GLint locSlice = glGetUniformLocation(progFeedback, "uVolumeSlice");
     for (int z = 0; z < dst.size; z++) {
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                   dst.tex, 0, z);
-        U1f("uVolumeSlice", (float)z);
+        glUniform1f(locSlice, (float)z);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
