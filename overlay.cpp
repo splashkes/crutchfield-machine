@@ -3,6 +3,7 @@
 #include "overlay.h"
 #include "stb_easy_font.h"
 #include "text_render.h"
+#include "dynamics.h"
 
 #include <GLFW/glfw3.h>
 #include <cstdio>
@@ -854,22 +855,27 @@ void Overlay::drawMathPanel() {
     y += lh(TextRender::SZ_LARGE) + 8.f;
 
     // ── Derived quantities ───────────────────────────────────────────
-    float halflife_frames = (cur.decay > 0.f && cur.decay < 1.f)
-        ? std::log(0.5f) / std::log(cur.decay) : 1e9f;
+    // Pure math lives in dynamics.h. Both this display and the snapshot
+    // tagger in main.cpp::classify_regime call into the same functions
+    // so the regime label here always matches what FAILSAFE recalls.
+    float halflife_frames = dyn::compute_halflife_frames(cur.decay);
     float halflife_sec    = halflife_frames / 60.f;
-    float D   = 0.5f * (cur.blurX * cur.blurX + cur.blurY * cur.blurY) * 0.5f;
-    float rho = cur.decay * (1.f - 0.02f * (cur.blurX + cur.blurY));
+    float D   = dyn::compute_diffusion(cur.blurX, cur.blurY);
+    float rho = dyn::compute_rho(cur.decay, cur.blurX, cur.blurY);
     float noise_db = (cur.noise > 1e-9f) ? 20.f * std::log10(cur.noise) : -120.f;
     float Kc  = cur.couple;
     float hue_dps = cur.hueRate * 60.f * 360.f;
 
-    const char* regime;
+    int regimeCode = dyn::classify_regime(rho, Kc);
+    const char* regime = dyn::regime_name(regimeCode);
     unsigned char* regColor = okC;
-    if (rho > 1.001f)        { regime = "DIVERGENT";  regColor = dangerC; }
-    else if (rho > 0.998f)   { regime = "MARGINAL";   regColor = warnC;   }
-    else if (Kc > 0.6f)      { regime = "CHAOTIC";    regColor = dangerC; }
-    else if (Kc > 0.3f)      { regime = "TURBULENT";  regColor = warnC;   }
-    else                     { regime = "STABLE";     regColor = okC;     }
+    switch (regimeCode) {
+        case dyn::DIVERGENT: regColor = dangerC; break;
+        case dyn::CHAOTIC:   regColor = dangerC; break;
+        case dyn::MARGINAL:  regColor = warnC;   break;
+        case dyn::TURBULENT: regColor = warnC;   break;
+        case dyn::STABLE:    regColor = okC;     break;
+    }
 
     char buf[160];
 

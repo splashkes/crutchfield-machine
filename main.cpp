@@ -53,6 +53,7 @@
 #include "camera.h"
 #include "recorder.h"
 #include "mp4_recorder.h"
+#include "dynamics.h"
 #include "overlay.h"
 #include "ui_panel.h"
 #include "input.h"
@@ -3220,21 +3221,15 @@ bool   g_failsafe_enabled  = false;
 bool   g_math_echo_enabled = false;
 
 namespace {
-// Classify the current dynamical regime from params.
-// Returns 0=STABLE, 1=TURBULENT, 2=CHAOTIC, 3=MARGINAL, 4=DIVERGENT.
+// Thin Params adapter over the shared dyn:: math. The pure functions live
+// in dynamics.h; the cockpit display calls them too, so the two surfaces
+// stay in sync. Keep this signature for callers that pass Params; the
+// underlying thresholds and ρ formula belong in dynamics.h.
 int classify_regime(const Params& p) {
-    float rho = p.decay * (1.0f - 0.02f * (p.blurX + p.blurY));
-    float Kc  = p.couple;
-    if (rho > 1.001f) return 4;     // DIVERGENT
-    if (rho > 0.998f) return 3;     // MARGINAL
-    if (Kc  > 0.6f)   return 2;     // CHAOTIC
-    if (Kc  > 0.3f)   return 1;     // TURBULENT
-    return 0;                       // STABLE
+    float rho = dyn::compute_rho(p.decay, p.blurX, p.blurY);
+    return dyn::classify_regime(rho, p.couple);
 }
-const char* regime_name(int code) {
-    static const char* N[5] = { "STABLE","TURBULENT","CHAOTIC","MARGINAL","DIVERGENT" };
-    return (code >= 0 && code <= 4) ? N[code] : "?";
-}
+const char* regime_name(int code) { return dyn::regime_name(code); }
 
 void snapshot_save(int slot) {
     if (slot < 1 || slot > 8) return;

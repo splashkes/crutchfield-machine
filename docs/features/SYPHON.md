@@ -25,9 +25,9 @@ In your Syphon client app:
 
 ## What gets published
 
-The simulation FBO texture at sim resolution. NOT the on-screen image — overlays, HUD, and the help/math panels are drawn AFTER the publish point, so they only land on the local screen.
+The simulation FBO texture at sim resolution, not the on-screen composite. The DYNAMICS panel, HUD, and help overlays are drawn into the default framebuffer (the window), not into the sim FBO. The publisher then hands the sim FBO texture to Syphon — overlays never touch it.
 
-This matches the screen recorder's policy: clean stream out, control surfaces stay local. If you want the HUD in the published stream, swap the publish order in `main.cpp` (move `syphon_publish` to after `S.ov.draw()`).
+This matches the recorder policy: clean stream out, control surfaces stay local. Order in `main.cpp` is `S.ov.draw()` → `S.ui.draw()` → `syphon_publish()` → `glfwSwapBuffers()`, but the overlays render into the window not the sim FBO so the publish sees a clean image regardless. If you want the HUD in the published stream you'd need to redirect the overlay shaders to render into the sim FBO before the publish call, not just reorder.
 
 ## Configuration
 
