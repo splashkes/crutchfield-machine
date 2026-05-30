@@ -47,18 +47,51 @@ inline float compute_diffusion(float blurX, float blurY) {
     return 0.5f * (blurX * blurX + blurY * blurY) * 0.5f;
 }
 
+// L (paper symbol). The iterated map's storage parameter, expressed in
+// the same units as 'decay' for now since the engine doesn't separate
+// monitor phosphor from photoconductor leakage. Provided here as a name
+// match for paper readers; the cockpit displays both engine and paper
+// forms side by side.
+inline float compute_L(float decay) { return decay; }
+
+// Symmetry-lock index. The rotation matrix R(φ) in the iterated map
+// drives spatial structures toward k-fold symmetry where k ≈ 2π/|φ|.
+// Paper shows the 9-fold "symmetry locking" at φ = 40° as the canonical
+// example. Returns the nearest integer fold; 0 when φ is too small to
+// resolve (no rotation → no lock).
+inline int compute_fold_symmetry(float theta) {
+    constexpr float TAU = 6.28318530717959f;
+    float a = std::fabs(theta);
+    if (a < 1e-4f) return 0;
+    int n = (int)std::round(TAU / a);
+    return (n >= 2 && n <= 200) ? n : 0;
+}
+
+// Logarithmic-spiral pitch angle. When zoom ≠ 1 AND θ ≠ 0, points
+// circulate outward (or inward) on a log spiral whose pitch is
+// atan(ln(b) / φ). Returns radians; 0 when there is no spiral
+// (zoom == 1 or θ == 0).
+inline float compute_spiral_pitch(float zoom, float theta) {
+    if (zoom <= 0.0f || zoom == 1.0f) return 0.0f;
+    if (std::fabs(theta) < 1e-4f)     return 0.0f;
+    return std::atan(std::log(zoom) / theta);
+}
+
 // Classify the loop. Thresholds picked to match the cockpit's regime
 // bar and the snapshot-tagger; keep them aligned with the table in
 // docs/features/DYNAMICS.md if you change them.
 //
-//   STABLE     ρ < 0.998 AND K_c < 0.3
+//   STABLE     ρ < 0.99  AND K_c < 0.3
 //   TURBULENT  K_c >= 0.3
 //   CHAOTIC    K_c >= 0.6
-//   MARGINAL   ρ >= 0.998
+//   MARGINAL   ρ >= 0.99  (paper's noise-modulated edge of stability;
+//                          0.99 not 0.998 because the ρ proxy carries
+//                          a blur-penalty term that caps reachable ρ
+//                          near 0.95 at default blur)
 //   DIVERGENT  ρ > 1.001
 inline int classify_regime(float rho, float Kc) {
     if (rho > 1.001f) return DIVERGENT;
-    if (rho > 0.998f) return MARGINAL;
+    if (rho > 0.99f)  return MARGINAL;
     if (Kc  > 0.6f)   return CHAOTIC;
     if (Kc  > 0.3f)   return TURBULENT;
     return STABLE;

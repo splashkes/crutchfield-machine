@@ -37,10 +37,10 @@ The engine uses operator-friendly names with paper-faithful subtitles.
 
 | Engine label | Paper term | Trigger | Colour |
 | --- | --- | --- | --- |
-| STABLE | fixed point | ρ < 0.998 AND K_c < 0.3 | green |
+| STABLE | fixed point | ρ < 0.99 AND K_c < 0.3 | green |
 | TURBULENT | limit cycle / quasi-attractor | K_c ≥ 0.3 | orange |
 | CHAOTIC | chaotic attractor | K_c ≥ 0.6 | red |
-| MARGINAL | bifurcation edge | ρ ≥ 0.998 | orange |
+| MARGINAL | bifurcation edge (noise-modulated) | ρ ≥ 0.99 | orange |
 | DIVERGENT | attractor at infinity | ρ > 1.001 | red |
 
 Refer to Crutchfield Table II for the full taxonomy. Three behaviour types named in the paper that the current classifier does not yet expose · logarithmic spirals (zoom ≠ 1 + theta ≠ 0), pinwheels (luminance inversion + specific theta), dislocations (broken stripe symmetry · requires image-domain analysis). These are tracked as follow-up issues.

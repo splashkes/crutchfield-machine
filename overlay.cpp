@@ -913,30 +913,50 @@ void Overlay::drawMathPanel() {
         y += barH + 12.f;
     }
 
-    // Two-column row: "characterization metrics" + "live derived"
+    // Two-column readout · paper symbol on the left of each pair, engine
+    // value on the right. Lines:
+    //   ρ (spectral radius)   |   L (paper symbol, = decay)
+    //   half-life seconds     |   K_c (coupling)
+    //   noise dB              |   n-fold symmetry (lock from |θ|)
+    //   diffusion D           |   spiral pitch deg (from b, φ)
     {
         const float colW = (panelW - 56.f) * 0.5f;
-        float cx = x;
-        // Left column — math metrics
-        tx(cx, y, "ρ", TextRender::SZ_SMALL, dimC);
-        snprintf(buf, sizeof buf, "%.4f", rho);
-        txR(cx + colW - 4.f, y, buf, TextRender::SZ_SMALL, valueC);
-        // Right column — half-life
-        cx = x + colW + 24.f;
-        tx(cx, y, "half-life", TextRender::SZ_SMALL, dimC);
-        if (halflife_frames > 9999.f) snprintf(buf, sizeof buf, "∞");
-        else snprintf(buf, sizeof buf, "%.2f s", halflife_sec);
-        txR(cx + colW - 4.f, y, buf, TextRender::SZ_SMALL, valueC);
+        auto kv = [&](float lx, float ly, const char* k, const char* v) {
+            tx(lx, ly, k, TextRender::SZ_SMALL, dimC);
+            txR(lx + colW - 4.f, ly, v, TextRender::SZ_SMALL, valueC);
+        };
+        char vbuf[32];
+
+        snprintf(vbuf, sizeof vbuf, "%.4f", rho);
+        kv(x, y, "ρ (spectral)", vbuf);
+        snprintf(vbuf, sizeof vbuf, "%.4f", dyn::compute_L(cur.decay));
+        kv(x + colW + 24.f, y, "L (decay)", vbuf);
         y += lh(TextRender::SZ_SMALL) + 2.f;
 
-        cx = x;
-        tx(cx, y, "K_c (coupling)", TextRender::SZ_SMALL, dimC);
-        snprintf(buf, sizeof buf, "%.3f", Kc);
-        txR(cx + colW - 4.f, y, buf, TextRender::SZ_SMALL, valueC);
-        cx = x + colW + 24.f;
-        tx(cx, y, "noise", TextRender::SZ_SMALL, dimC);
-        snprintf(buf, sizeof buf, "%.1f dB", noise_db);
-        txR(cx + colW - 4.f, y, buf, TextRender::SZ_SMALL, valueC);
+        if (halflife_frames > 9999.f) snprintf(vbuf, sizeof vbuf, "∞");
+        else snprintf(vbuf, sizeof vbuf, "%.2f s", halflife_sec);
+        kv(x, y, "half-life", vbuf);
+        snprintf(vbuf, sizeof vbuf, "%.3f", Kc);
+        kv(x + colW + 24.f, y, "K_c (coupling)", vbuf);
+        y += lh(TextRender::SZ_SMALL) + 2.f;
+
+        snprintf(vbuf, sizeof vbuf, "%.1f dB", noise_db);
+        kv(x, y, "noise", vbuf);
+        int nfold = dyn::compute_fold_symmetry(cur.theta);
+        if (nfold > 0) snprintf(vbuf, sizeof vbuf, "%d-fold", nfold);
+        else           snprintf(vbuf, sizeof vbuf, "—");
+        kv(x + colW + 24.f, y, "symmetry", vbuf);
+        y += lh(TextRender::SZ_SMALL) + 2.f;
+
+        snprintf(vbuf, sizeof vbuf, "%.4f", D);
+        kv(x, y, "diffusion D", vbuf);
+        float pitch = dyn::compute_spiral_pitch(cur.zoom, cur.theta);
+        if (pitch != 0.0f) {
+            snprintf(vbuf, sizeof vbuf, "%+.1f°", pitch * 57.2958f);
+        } else {
+            snprintf(vbuf, sizeof vbuf, "—");
+        }
+        kv(x + colW + 24.f, y, "spiral pitch", vbuf);
         y += lh(TextRender::SZ_SMALL) + 14.f;
     }
 

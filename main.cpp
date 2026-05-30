@@ -3449,22 +3449,33 @@ static void apply_action(ActionId id, float mag) {
         return;
     }
     if (id == ACT_REGIME_SET) {
-        // Discrete regime selector. Value 0..3 picks a target tuple
-        // and blends 70/30 into current state to preserve identity.
+        // Discrete regime selector. Picks a target tuple and blends most
+        // of the way there in one press so the classifier actually lands
+        // in the named regime · the previous 70/30 blend left CHAOTIC at
+        // couple ≈ 0.49 (TURBULENT range) when starting from couple = 0.
+        //
+        // MARGINAL target uses elevated noise AND drives blur to zero so
+        // the ρ proxy can clear the 0.998 gate · ρ = decay × (1 − 0.02 ×
+        // (σx + σy)), so default blur (1.0 + 1.0) penalises ρ by 4%,
+        // which puts MARGINAL out of reach unless blur is also lowered.
+        // This honours the paper's noise-modulated marginal regime.
         int idx = (int)std::round(mag);
         if (idx < 0) idx = 0;
         if (idx > 3) idx = 3;
-        const float T[4][3] = {
-            { 0.97f,  0.05f, 0.001f },  // STABLE
-            { 0.985f, 0.45f, 0.008f },  // TURBULENT
-            { 0.995f, 0.70f, 0.020f },  // CHAOTIC
-            { 0.998f, 0.15f, 0.001f },  // MARGINAL
+        const float T[4][4] = {
+            // { decay, couple, noise, blur (per axis) }
+            { 0.97f,   0.05f, 0.001f, 1.0f },  // STABLE     · low coupling, low noise
+            { 0.985f,  0.45f, 0.008f, 1.0f },  // TURBULENT  · K_c past 0.30 gate
+            { 0.995f,  0.75f, 0.020f, 1.0f },  // CHAOTIC    · K_c past 0.60 gate
+            { 0.9995f, 0.15f, 0.030f, 0.1f },  // MARGINAL   · ρ → 1, noise pumped, blur → 0
         };
         const char* names[4] = { "STABLE", "TURBULENT", "CHAOTIC", "MARGINAL" };
-        const float blend = 0.7f;
+        const float blend = 0.99f;  // was 0.7f · soft enough to mask the snap visually but firm enough to clear the classifier gates
         S.p.decay  = blend * T[idx][0] + (1.0f - blend) * S.p.decay;
         S.p.couple = blend * T[idx][1] + (1.0f - blend) * S.p.couple;
         S.p.noise  = blend * T[idx][2] + (1.0f - blend) * S.p.noise;
+        S.p.blurX  = blend * T[idx][3] + (1.0f - blend) * S.p.blurX;
+        S.p.blurY  = blend * T[idx][3] + (1.0f - blend) * S.p.blurY;
         char b[64]; snprintf(b, sizeof b, "regime → %s", names[idx]);
         S.ov.logEvent(b);
         return;
@@ -3522,22 +3533,35 @@ static void apply_action(ActionId id, float mag) {
         // No HUD spam — runs at axis rate.
         return;
     }
+    // Helper for boolean-toggle actions that honour an explicit
+    // magnitude · 0 = force off, anything > 0.5 with NO trailing
+    // magnitude bit set forces on. The bound-action default in
+    // input.cpp dispatches with mag = 1.0 on every press, so the
+    // common case (a key/MIDI/OSC trigger that doesn't carry an arg)
+    // still toggles. Lets an OSC controller with stateful buttons
+    // hold the channel at the value it wants.
+    auto apply_toggle = [&mag](bool& flag, const char* on_msg, const char* off_msg) {
+        bool want;
+        if (mag < 0.001f)        want = false;            // explicit OFF
+        else if (mag > 1.5f)     want = (mag != 0.0f);    // future explicit value
+        else                     want = !flag;            // default toggle
+        flag = want;
+        S.ov.logEvent(want ? on_msg : off_msg);
+    };
     if (id == ACT_THEATER_FAILSAFE) {
         // Toggle the failsafe watcher; the actual divergent-detection
         // and recovery lives in main loop's failsafe_tick().
         extern bool g_failsafe_enabled;
-        g_failsafe_enabled = !g_failsafe_enabled;
-        S.ov.logEvent(g_failsafe_enabled
-            ? "theater.failsafe ARMED  (DIVERGENT >2s → recall STABLE)"
-            : "theater.failsafe OFF");
+        apply_toggle(g_failsafe_enabled,
+            "theater.failsafe ARMED  (DIVERGENT >2s → recall STABLE)",
+            "theater.failsafe OFF");
         return;
     }
     if (id == ACT_MATH_ECHO_TOGGLE) {
         extern bool g_math_echo_enabled;
-        g_math_echo_enabled = !g_math_echo_enabled;
-        S.ov.logEvent(g_math_echo_enabled
-            ? "math.echo ON  (/cma/math/* at 30 Hz)"
-            : "math.echo OFF");
+        apply_toggle(g_math_echo_enabled,
+            "math.echo ON  (/cma/math/* at 30 Hz)",
+            "math.echo OFF");
         return;
     }
 

@@ -501,6 +501,19 @@ const ActionInfo* action_info(ActionId id) {
     return nullptr;
 }
 
+// Backwards-compatible aliases. Keep the original binding names working
+// indefinitely; add the new name to the table here so newly-written
+// bindings.ini files (and the docs) can use the clearer term.
+struct ActionAlias { const char* from; const char* to; };
+static const ActionAlias ACTION_ALIASES[] = {
+    // regime.invert is the cockpit's cross-bifurcation-boundary action ·
+    // its name collides with phys.invert (the paper's luminance s = ±1).
+    // regime.flip is the recommended new name; regime.invert still
+    // dispatches to the same handler.
+    { "regime.flip", "regime.invert" },
+};
+static constexpr int N_ACTION_ALIASES = sizeof(ACTION_ALIASES) / sizeof(ACTION_ALIASES[0]);
+
 const ActionInfo* action_info_by_name(const char* name) {
     if (name && std::strncmp(name, "macro.", 6) == 0 && s_macroRegistryOwner) {
         const char* sub = name + 6;
@@ -509,6 +522,13 @@ const ActionInfo* action_info_by_name(const char* name) {
             if (names[i] == sub)
                 return s_macroRegistryOwner->macroInfoByIndex((int)i);
         return nullptr;
+    }
+    // Alias pass first so the canonical name lookup below sees the
+    // alias's target.
+    if (name) {
+        for (int i = 0; i < N_ACTION_ALIASES; i++)
+            if (std::strcmp(ACTION_ALIASES[i].from, name) == 0)
+                return action_info_by_name(ACTION_ALIASES[i].to);
     }
     for (int i = 0; i < N_ACTIONS; i++)
         if (std::strcmp(ACTIONS[i].name, name) == 0) return &ACTIONS[i];
