@@ -3373,6 +3373,20 @@ static void apply_action(ActionId id, float mag) {
     // State snapshots — mag carries the slot number.
     if (id == ACT_SNAPSHOT_SAVE)   { snapshot_save((int)mag);   return; }
     if (id == ACT_SNAPSHOT_RECALL) { snapshot_recall((int)mag); return; }
+    if (id == ACT_SNAPSHOT_RECALL_LAST_STABLE) {
+        // Manual equivalent of FAILSAFE's recovery path. Recall the most
+        // recent slot that was tagged STABLE at save time, or log empty.
+        int slot = snapshot_last_with_regime(dyn::STABLE);
+        if (slot >= 1) {
+            snapshot_recall(slot);
+            char b[80]; snprintf(b, sizeof b,
+                "recall last stable → slot %d", slot);
+            S.ov.logEvent(b);
+        } else {
+            S.ov.logEvent("no STABLE snapshot saved yet");
+        }
+        return;
+    }
     if (id == ACT_MATH_TOGGLE)     { S.ov.toggleMath(); return; }
 
     // ── Math-derived meta-controls ─────────────────────────────────
@@ -5796,6 +5810,16 @@ int main(int argc, char** argv) {
             ms.zoom         = S.p.zoom;
             ms.theta        = S.p.theta;
             S.ov.mathPushFrame(ms);
+            // Push snapshot slot occupancy so the cockpit can tint the
+            // RECALL row by saved-regime colour and only treat used
+            // slots as clickable.
+            Overlay::SnapshotSlotState snap[8];
+            for (int i = 0; i < 8; i++) {
+                snap[i].used       = g_snapshots[i+1].used;
+                snap[i].regimeCode = g_snapshots[i+1].used
+                                   ? g_snapshots[i+1].regimeCode : -1;
+            }
+            S.ov.setSnapshotState(snap);
         }
         // Drain any pending Mathlab slider drag value into apply_action.
         S.ov.mathTickDrag([](int act, float v) {

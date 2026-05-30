@@ -626,11 +626,11 @@ bool Overlay::mathMouseDown(double mx, double my) {
     case MHIT_BUTTON_SNAP_SAVE:
         mathPending_.push_back({ ACT_SNAPSHOT_SAVE, (float)h.value });
         break;
+    case MHIT_BUTTON_SNAP_RECALL:
+        mathPending_.push_back({ ACT_SNAPSHOT_RECALL, (float)h.value });
+        break;
     case MHIT_BUTTON_SNAP_RECALL_STABLE:
-        // We don't have a regime-tagged recall action exposed, so fire
-        // snapshot.recall on slot 1 as a sane default for one-click
-        // recovery. Users can rebind via [osc] for richer behavior.
-        mathPending_.push_back({ ACT_SNAPSHOT_RECALL, 1.0f });
+        mathPending_.push_back({ ACT_SNAPSHOT_RECALL_LAST_STABLE, 1.0f });
         break;
     case MHIT_NONE:
     default: break;
@@ -1098,28 +1098,76 @@ void Overlay::drawMathPanel() {
             mathHits_.push_back({ MHIT_BUTTON_ECHO, rx, ry, rw_btn, rh_btn, 0 });
             ry += rh_btn + 14.f;
         }
-        // Snapshot quick buttons
-        tx(rx, ry, "snapshots", TextRender::SZ_SMALL, dimC);
+        // Snapshot rows · SAVE [1][2][3][4]  on top, RECALL [1][2][3][4]
+        // on the row below. Occupied slots tint by their saved regime so
+        // the operator can see what's there before recalling.
+        //
+        // Regime → bg colour. Empty slots use the neutral default.
+        auto regime_bg = [](int code, unsigned char out[4]) {
+            switch (code) {
+                case dyn::STABLE:    out[0]=60; out[1]=110; out[2]=80;  out[3]=255; break;
+                case dyn::TURBULENT: out[0]=120;out[1]=90;  out[2]=50;  out[3]=255; break;
+                case dyn::CHAOTIC:   out[0]=130;out[1]=55;  out[2]=55;  out[3]=255; break;
+                case dyn::MARGINAL:  out[0]=120;out[1]=100; out[2]=55;  out[3]=255; break;
+                case dyn::DIVERGENT: out[0]=130;out[1]=55;  out[2]=55;  out[3]=255; break;
+                default:             out[0]=45; out[1]=60;  out[2]=85;  out[3]=255; break;
+            }
+        };
+
+        // ── SAVE row ────────────────────────────────────────────────
+        tx(rx, ry, "save", TextRender::SZ_SMALL, dimC);
         ry += lh(TextRender::SZ_SMALL) + 4.f;
         {
             float sbw = (rw_btn - 18.f) / 4.f;
             for (int i = 1; i <= 4; i++) {
                 float sbx = rx + (i - 1) * (sbw + 6.f);
-                unsigned char bg[4] = { 45, 60, 85, 255 };
+                unsigned char bg[4]; regime_bg(-1, bg);  // SAVE row is always neutral
                 drawFilledRect(sbx, ry, sbw, rh_btn, bg, 0.85f);
-                char b[8]; snprintf(b, sizeof b, "%d", i);
+                char b[16];
+                snprintf(b, sizeof b, "S%d", i);
                 unsigned char fg[4] = { 220, 230, 245, 255 };
-                tx(sbx + sbw * 0.5f - 6.f, ry + 8.f, b, TextRender::SZ_SMALL, fg);
+                tx(sbx + sbw * 0.5f - 9.f, ry + 8.f, b, TextRender::SZ_SMALL, fg);
                 mathHits_.push_back({ MHIT_BUTTON_SNAP_SAVE, sbx, ry, sbw, rh_btn, i });
             }
-            ry += rh_btn + 8.f;
+            ry += rh_btn + 6.f;
         }
-        // Recall STABLE
+
+        // ── RECALL row ──────────────────────────────────────────────
+        tx(rx, ry, "recall", TextRender::SZ_SMALL, dimC);
+        ry += lh(TextRender::SZ_SMALL) + 4.f;
+        {
+            float sbw = (rw_btn - 18.f) / 4.f;
+            for (int i = 1; i <= 4; i++) {
+                float sbx = rx + (i - 1) * (sbw + 6.f);
+                // Show slot occupancy + regime tint when used.
+                bool used = snapState_[i-1].used;
+                unsigned char bg[4];
+                regime_bg(used ? snapState_[i-1].regimeCode : -1, bg);
+                drawFilledRect(sbx, ry, sbw, rh_btn, bg, used ? 0.85f : 0.35f);
+                char b[16];
+                snprintf(b, sizeof b, "%d", i);
+                unsigned char fg[4] = { 220, 230, 245, 255 };
+                unsigned char fgDim[4] = { 130, 145, 170, 255 };
+                tx(sbx + sbw * 0.5f - 6.f, ry + 8.f, b,
+                   TextRender::SZ_SMALL, used ? fg : fgDim);
+                // Only push a recall hit when the slot has something
+                // to recall, so empty slots are obviously inert.
+                if (used) {
+                    mathHits_.push_back({ MHIT_BUTTON_SNAP_RECALL, sbx, ry, sbw, rh_btn, i });
+                }
+            }
+            ry += rh_btn + 6.f;
+        }
+
+        // ── Recall LAST STABLE ──────────────────────────────────────
+        // Equivalent to FAILSAFE's recover-from-divergent path; lets the
+        // operator manually snap back to the most recent stable point
+        // without having to remember which slot it was.
         {
             unsigned char bg[4] = { 30, 80, 50, 255 };
             unsigned char fg[4] = { 200, 240, 215, 255 };
             drawFilledRect(rx, ry, rw_btn, rh_btn, bg, 0.85f);
-            tx(rx + 10.f, ry + 8.f, "RECALL  slot 1", TextRender::SZ_SMALL, fg);
+            tx(rx + 10.f, ry + 8.f, "RECALL  last stable", TextRender::SZ_SMALL, fg);
             mathHits_.push_back({ MHIT_BUTTON_SNAP_RECALL_STABLE, rx, ry, rw_btn, rh_btn, 0 });
             ry += rh_btn;
         }

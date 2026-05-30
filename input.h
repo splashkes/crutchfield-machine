@@ -116,6 +116,7 @@ enum ActionId : int {
     // are floor'd.
     ACT_SNAPSHOT_SAVE,
     ACT_SNAPSHOT_RECALL,
+    ACT_SNAPSHOT_RECALL_LAST_STABLE,  // find newest STABLE-tagged slot
     ACT_MATH_TOGGLE,    // toggle the Mathlab dashboard overlay
     // Mathlab nav — fire from keyboard arrows / mouse / OSC. The host's
     // apply_action wires these to Overlay::mathSelectPrev/Next and the

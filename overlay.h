@@ -172,9 +172,17 @@ private:
         MHIT_BUTTON_INVERT,    // regime.invert
         MHIT_BUTTON_FAILSAFE,  // theater.failsafe
         MHIT_BUTTON_ECHO,      // math.echo
-        MHIT_BUTTON_SNAP_SAVE, // snapshot.save           (value = slot)
+        MHIT_BUTTON_SNAP_SAVE,   // snapshot.save           (value = slot)
+        MHIT_BUTTON_SNAP_RECALL, // snapshot.recall         (value = slot)
         MHIT_BUTTON_SNAP_RECALL_STABLE, // recall most-recent STABLE snap
     };
+
+    // Host injects slot occupancy state every frame so the panel can
+    // tint per-slot buttons. `regimeCode` is dyn::Regime; -1 if empty.
+    struct SnapshotSlotState { bool used; int regimeCode; };
+    void setSnapshotState(const SnapshotSlotState states[8]) {
+        for (int i = 0; i < 8; i++) snapState_[i] = states[i];
+    }
     struct MathHit {
         MathHitKind kind;
         float x, y, w, h;
@@ -196,6 +204,7 @@ private:
     double mathDragX_    = 0.0;
     bool   mathDragPending_ = false;       // legacy; no longer set
     float  mathDragValue_   = 0.f;
+    SnapshotSlotState snapState_[8] = {};  // host-pushed each frame
     std::vector<MathSample> mathRing_;     // ring buffer; ~240 samples = 4s @ 60fps
     int                     mathRingHead_ = 0;
     int                     mathRingCount_ = 0;

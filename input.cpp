@@ -245,6 +245,8 @@ static const ActionInfo ACTIONS[] = {
     { ACT_QUIT,             "app.quit",           AK_DISCRETE, "App", "quit" },
 { ACT_SNAPSHOT_SAVE,    "snapshot.save",      AK_STEP,     "App", "save state to slot (value=slot 1..8)" },
 { ACT_SNAPSHOT_RECALL,  "snapshot.recall",    AK_STEP,     "App", "recall state from slot (value=slot 1..8)" },
+{ ACT_SNAPSHOT_RECALL_LAST_STABLE, "snapshot.recall.lastStable", AK_DISCRETE, "App",
+                                  "recall most-recent STABLE-tagged snapshot (FAILSAFE-equivalent)" },
 { ACT_MATH_TOGGLE,      "app.math",           AK_DISCRETE, "App", "toggle math dashboard (M)" },
 { ACT_MATH_CURSOR_UP,   "math.cursor.up",     AK_STEP,     "App", "Mathlab cursor up" },
 { ACT_MATH_CURSOR_DN,   "math.cursor.dn",     AK_STEP,     "App", "Mathlab cursor down" },
