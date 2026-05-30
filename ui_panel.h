@@ -46,6 +46,15 @@ public:
     bool mouseButton(int button, int action, double x, double y);
     bool cursor(double x, double y);
 
+    // Math augmentation — host calls each frame with the current
+    // dynamical regime so the dock can show a colored badge next to
+    // the pinned controls. Empty name disables.
+    void setRegimeBadge(const std::string& name,
+                        unsigned char r, unsigned char g, unsigned char b) {
+        regimeName_ = name;
+        regimeColor_[0] = r; regimeColor_[1] = g; regimeColor_[2] = b;
+    }
+
 private:
     struct Section {
         std::string id;
@@ -75,6 +84,9 @@ private:
     bool visible_ = false;
     bool dragging_ = false;
     bool reorderDragging_ = false;
+    // Regime badge (math augmentation)
+    std::string regimeName_;
+    unsigned char regimeColor_[3] = { 130, 220, 150 };
     int activeSection_ = 0;
     int selectedControl_ = -1;
     int dragControl_ = -1;

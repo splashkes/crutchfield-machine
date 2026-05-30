@@ -67,6 +67,53 @@ public:
 
     bool helpVisible() const { return helpVisible_; }
 
+    // ── Math dashboard ────────────────────────────────────────────────
+    // An elegant, semi-transparent panel that exposes the mathematical
+    // characterization of the running feedback system: spectral radius,
+    // memory half-life, diffusion coefficient, coupling strength, noise
+    // floor — and predicts stability/chaos regime. Plus sparklines for
+    // every continuous parameter over the last few seconds.
+    //
+    // The host calls mathPushFrame() once per frame with the current
+    // Params snapshot; the overlay maintains its own ring buffer.
+    struct MathSample {
+        float decay, blurX, blurY, chroma, gamma, satGain, contrast,
+              hueRate, noise, couple, external, sphereReverb, outFade;
+        float zoom, theta;
+    };
+    void toggleMath() {
+        mathVisible_ = !mathVisible_;
+        if (mathVisible_ && mathSelectedRow_ < 0) mathSelectedRow_ = 0;
+    }
+    bool mathVisible() const { return mathVisible_; }
+    void mathPushFrame(const MathSample& s);
+
+    // Cursor navigation in the Mathlab panel. While mathVisible, the
+    // host should intercept its arrow keys (translate normally) and
+    // route them here. mathSelectedActionDec()/Inc() return the
+    // ActionId to fire for "lower / raise the current parameter" —
+    // host's apply_action will land them in the existing dispatch.
+    void  mathSelectNext();
+    void  mathSelectPrev();
+    int   mathSelectedRow() const { return mathSelectedRow_; }
+    int   mathNumRows() const;                       // total selectable rows
+    int   mathSelectedActionDec() const;             // returns int ActionId
+    int   mathSelectedActionInc() const;
+
+    // Mouse drag editing. When the user clicks-and-drags inside the
+    // Mathlab panel's slider area, the host calls these to translate
+    // pixel coords into "fire setAxis for the active row at value V".
+    // Returns true if the panel handled the event (so the host should
+    // not also dispatch a view-rotate or other downstream interaction).
+    bool  mathMouseDown(double mx, double my);
+    bool  mathMouseDrag(double mx, double my);
+    void  mathMouseUp();
+
+    // Called each frame; pulls the host's apply_action via the supplied
+    // dispatch callback so a drag fires the setAxis action with the
+    // mapped value. The dispatcher signature matches Input::Handler.
+    void  mathTickDrag(const std::function<void(int actionId, float value)>& dispatch);
+
 private:
     enum View { VIEW_MENU, VIEW_SECTION };
 
@@ -109,6 +156,68 @@ private:
     void drawHelpPanel();
     void drawHelpMenu(float x, float y, float w, float h);
     void drawHelpSection(float x, float y, float w, float h);
+
+    // Math dashboard
+    bool mathVisible_ = false;
+    int  mathSelectedRow_ = -1;            // -1 until first open
+    // Hit list for the interactive Dynamics panel. drawMathPanel
+    // rebuilds it every frame; mouse handlers route through it.
+  public:
+    enum MathHitKind {
+        MHIT_NONE = 0,
+        MHIT_SLIDER_DIST,      // regime.distance.axis    (horizontal slider)
+        MHIT_SLIDER_HALFLIFE,  // dyn.halflife.axis       (horizontal slider)
+        MHIT_PAD_COMPASS,      // pad.regime.x + .y       (2D pad)
+        MHIT_BUTTON_REGIME,    // regime.set              (value = idx)
+        MHIT_BUTTON_INVERT,    // regime.invert
+        MHIT_BUTTON_FAILSAFE,  // theater.failsafe
+        MHIT_BUTTON_ECHO,      // math.echo
+        MHIT_BUTTON_SNAP_SAVE,   // snapshot.save           (value = slot)
+        MHIT_BUTTON_SNAP_RECALL, // snapshot.recall         (value = slot)
+        MHIT_BUTTON_SNAP_RECALL_STABLE, // recall most-recent STABLE snap
+    };
+
+    // Host injects slot occupancy state every frame so the panel can
+    // tint per-slot buttons. `regimeCode` is dyn::Regime; -1 if empty.
+    struct SnapshotSlotState { bool used; int regimeCode; };
+    void setSnapshotState(const SnapshotSlotState states[8]) {
+        for (int i = 0; i < 8; i++) snapState_[i] = states[i];
+    }
+    struct MathHit {
+        MathHitKind kind;
+        float x, y, w, h;
+        int   value;           // slot number, regime index, etc.
+    };
+  private:
+  public:
+    struct PendingDispatch { int actionId; float value; };
+  private:
+    std::vector<MathHit> mathHits_;
+    // Mouse drag state (single active hit at a time).
+    int    mathActiveHit_  = -1;
+    bool   mathDragArmed_  = false;
+    // Pending actions for the host's apply_action; drained in
+    // mathTickDrag.
+    std::vector<PendingDispatch> mathPending_;
+    bool   mathDragging_ = false;
+    int    mathDragRow_  = -1;
+    double mathDragX_    = 0.0;
+    bool   mathDragPending_ = false;       // legacy; no longer set
+    float  mathDragValue_   = 0.f;
+    SnapshotSlotState snapState_[8] = {};  // host-pushed each frame
+    std::vector<MathSample> mathRing_;     // ring buffer; ~240 samples = 4s @ 60fps
+    int                     mathRingHead_ = 0;
+    int                     mathRingCount_ = 0;
+    static constexpr int    MATH_RING_CAP = 360;
+    void drawMathPanel();
+    // Render a small sparkline of one scalar from the math ring.
+    // x,y,w,h are pixel rects; value_accessor returns one float per
+    // MathSample. min/max define the y-axis range; pass min=max=NaN
+    // (the function will use auto-scale).
+    void drawSparkline(float x, float y, float w, float h,
+                       float (*accessor)(const MathSample&),
+                       float vmin, float vmax,
+                       unsigned char rgba[4]);
 
     // Helper: split body text into lines for scroll handling.
     static std::vector<std::string> splitLines(const std::string& s);

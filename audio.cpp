@@ -25,7 +25,19 @@
 
 namespace fs = std::filesystem;
 
+// File-scope atomics for audio reactivity. Read by the public C
+// entry points at the bottom of this file AND written by the audio
+// thread inside the anonymous namespace's analyzer_process_block.
+static std::atomic<float> g_analyzer_rms   {0.f};
+static std::atomic<float> g_analyzer_peak  {0.f};
+static std::atomic<float> g_analyzer_low   {0.f};
+static std::atomic<float> g_analyzer_mid   {0.f};
+static std::atomic<float> g_analyzer_high  {0.f};
+
 namespace {
+    // Forward decl for the post-mix analyzer in audio_cb.
+    void analyzer_process_block(const float* stereo, ma_uint32 nframes);
+
     // ── Sample storage ───────────────────────────────────────────────
     // Each sample is a stereo interleaved float buffer at the device
     // sample rate (mono sources are duplicated). Owned by the audio
@@ -485,6 +497,79 @@ namespace {
         }
 
         g_deviceFrame.store(blockEnd, std::memory_order_relaxed);
+
+        // ── Audio reactivity analyzer ──────────────────────────────
+        // RMS, peak, and 3-band split via 1-pole IIR filters. Cheap
+        // (~one mul/add per sample per band). Output state is held
+        // in g_analyzer_* atomics — read by the main thread once per
+        // frame in Input::pollAudio().
+        analyzer_process_block(out, frameCount);
+    }
+
+    // ── Audio reactivity ────────────────────────────────────────────
+    // Per-block analyzer state. 1-pole bandpass via two staggered
+    // lowpass-difference: highpass = signal - lowpass(signal), then
+    // band = lowpass(highpass). With three cutoff knees we split into
+    // low / mid / high. Envelopes follow with attack 5ms / release 80ms.
+    struct AnalyzerState {
+        // band lowpass state (one per band, cascaded for steeper rolloff)
+        float lp_low_1 = 0.f, lp_low_2 = 0.f;
+        float lp_mid_1 = 0.f, lp_mid_2 = 0.f;
+        // env followers
+        float env_rms = 0.f, env_peak = 0.f;
+        float env_low = 0.f, env_mid = 0.f, env_high = 0.f;
+    };
+    AnalyzerState g_an;
+
+    void analyzer_process_block(const float* stereo, ma_uint32 nframes) {
+        // 1-pole alphas. At 48kHz: alpha = 1 - exp(-2*pi*f/sr).
+        // 200 Hz / 2000 Hz cutoffs split into <200 / 200..2000 / >2000.
+        const float sr = (float)g_sampleRate;
+        const float a_low  = 1.f - std::exp(-2.f * 3.14159265f * 200.f  / sr);
+        const float a_mid  = 1.f - std::exp(-2.f * 3.14159265f * 2000.f / sr);
+        // Env follower alphas
+        const float a_att = 1.f - std::exp(-1.f / (0.005f * sr));  // 5 ms attack
+        const float a_rel = 1.f - std::exp(-1.f / (0.08f  * sr));  // 80 ms release
+
+        float sum_sq = 0.f;
+        float pk = 0.f;
+        for (ma_uint32 i = 0; i < nframes; i++) {
+            float s = 0.5f * (stereo[i*2] + stereo[i*2 + 1]);  // mono mix
+            // Bands
+            g_an.lp_low_1 += a_low * (s - g_an.lp_low_1);
+            g_an.lp_low_2 += a_low * (g_an.lp_low_1 - g_an.lp_low_2);
+            float low = g_an.lp_low_2;
+
+            g_an.lp_mid_1 += a_mid * (s - g_an.lp_mid_1);
+            g_an.lp_mid_2 += a_mid * (g_an.lp_mid_1 - g_an.lp_mid_2);
+            float mid_lp = g_an.lp_mid_2;
+            float mid = mid_lp - low;        // bandpass: lp(2k) minus lp(200)
+            float high = s - mid_lp;         // hipass: signal minus lp(2k)
+
+            // Rectify + envelope follow
+            auto env_step = [&](float& env, float x) {
+                float ax = std::fabs(x);
+                float a = (ax > env) ? a_att : a_rel;
+                env += a * (ax - env);
+            };
+            env_step(g_an.env_low,  low);
+            env_step(g_an.env_mid,  mid);
+            env_step(g_an.env_high, high);
+            env_step(g_an.env_peak, s);
+
+            sum_sq += s * s;
+            if (std::fabs(s) > pk) pk = std::fabs(s);
+        }
+        if (nframes > 0) {
+            float rms = std::sqrt(sum_sq / (float)nframes);
+            // Smooth RMS over a slightly longer window
+            g_an.env_rms += 0.2f * (rms - g_an.env_rms);
+            g_analyzer_rms.store(g_an.env_rms, std::memory_order_relaxed);
+            g_analyzer_peak.store(pk, std::memory_order_relaxed);
+            g_analyzer_low.store (g_an.env_low,  std::memory_order_relaxed);
+            g_analyzer_mid.store (g_an.env_mid,  std::memory_order_relaxed);
+            g_analyzer_high.store(g_an.env_high, std::memory_order_relaxed);
+        }
     }
 
     // ── WAV loader via miniaudio's decoder ──────────────────────────
@@ -863,3 +948,15 @@ TriggerPulses consumeTriggerPulses() {
 }
 
 } // namespace Audio
+
+// ─────────────────────────────────────────────────────────────────────────
+// Audio reactivity — public C entry points read by Input::pollAudio()
+// every frame. Values are normalized envelope amplitudes in 0..~1.
+// Slightly above 1 is possible with strong transients; consumers should
+// clamp if they care.
+// ─────────────────────────────────────────────────────────────────────────
+extern "C" float feedback_audio_rms (void) { return g_analyzer_rms .load(std::memory_order_relaxed); }
+extern "C" float feedback_audio_peak(void) { return g_analyzer_peak.load(std::memory_order_relaxed); }
+extern "C" float feedback_audio_low (void) { return g_analyzer_low .load(std::memory_order_relaxed); }
+extern "C" float feedback_audio_mid (void) { return g_analyzer_mid .load(std::memory_order_relaxed); }
+extern "C" float feedback_audio_high(void) { return g_analyzer_high.load(std::memory_order_relaxed); }

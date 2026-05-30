@@ -74,7 +74,15 @@ Camera::~Camera() {
     if (mf_started_) { MFShutdown(); CoUninitialize(); }
 }
 
-bool Camera::open(int w, int h) {
+// The optional `match` filter is macOS-only (Continuity Camera picking).
+// On Windows we still take the first MF video device; the parameter is
+// accepted for API symmetry and ignored.
+int Camera::listDevices() {
+    fprintf(stderr, "[camera] device listing not implemented on this platform\n");
+    return 0;
+}
+
+bool Camera::open(int w, int h, const char* /*match*/) {
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return false;
     if (FAILED(MFStartup(MF_VERSION))) { CoUninitialize(); return false; }
     mf_started_ = true;

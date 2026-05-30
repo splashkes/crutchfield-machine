@@ -1,8 +1,19 @@
 // input.cpp — action registry + binding resolver.
 
 #include "input.h"
+#include "osc.h"
+#include "link_glue.h"
 
 #include <GLFW/glfw3.h>
+#include <sys/stat.h>
+
+// Audio reactivity getters (defined in audio.cpp). Returned values are
+// normalized envelope amplitudes in 0..~1.
+extern "C" float feedback_audio_rms (void);
+extern "C" float feedback_audio_peak(void);
+extern "C" float feedback_audio_low (void);
+extern "C" float feedback_audio_mid (void);
+extern "C" float feedback_audio_high(void);
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -12,6 +23,7 @@
 #include <cmath>
 #include <deque>
 #include <mutex>
+#include <unordered_map>
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -50,6 +62,15 @@ struct MidiRuntime {
     double lastClockT = 0.0;
 };
 MidiRuntime g_midiRt;
+
+// OSC runtime — small per-address state for delta tracking. The hot
+// dispatch path is linear over bindings; for delta mode we need to
+// remember the last value per address.
+struct OscRuntime {
+    std::unordered_map<std::string, float> prevValue;
+    std::unordered_map<std::string, bool>  prevInit;
+};
+OscRuntime g_oscRt;
 
 static float midi_relative_delta(int value) {
     value &= 0x7F;
@@ -199,7 +220,9 @@ static const ActionInfo ACTIONS[] = {
     { ACT_HELP_BACK,        "help.back",          AK_DISCRETE, "App", "help back / close" },
     { ACT_RELOAD_SHADERS,   "app.reloadShaders",  AK_DISCRETE, "App", "reload shaders" },
     { ACT_FULLSCREEN,       "app.fullscreen",     AK_DISCRETE, "App", "fullscreen toggle" },
-    { ACT_REC_TOGGLE,       "rec.toggle",         AK_DISCRETE, "App", "recording start/stop" },
+    { ACT_REC_TOGGLE,       "rec.toggle",         AK_DISCRETE, "App", "recording start/stop (lossless EXR sequence)" },
+    { ACT_REC_MP4_TOGGLE,   "rec.mp4.toggle",     AK_DISCRETE, "App", "HQ MP4 recording start/stop (hardware HEVC)" },
+    { ACT_REC_MP4_CYCLE,    "rec.mp4.codec",      AK_DISCRETE, "App", "cycle MP4 codec preset (HEVC → H264 → ProRes)" },
     { ACT_SCREENSHOT,       "app.screenshot",     AK_DISCRETE, "App", "screenshot (PNG, sim resolution, no HUD)" },
     { ACT_SCREENSHOT_HIRES, "app.screenshot.hires", AK_DISCRETE, "App", "screenshot (PNG, supersampled K x sim, no HUD)" },
     { ACT_PRESET_SAVE,      "preset.save",        AK_DISCRETE, "App", "preset save" },
@@ -220,6 +243,27 @@ static const ActionInfo ACTIONS[] = {
     { ACT_PATTERN_CURSOR_DN,"pattern.cursor.dn",  AK_DISCRETE, "Inject", "pattern next" },
     { ACT_PRINT_HELP_STDOUT,"app.helpStdout",     AK_DISCRETE, "App", "print help to stdout" },
     { ACT_QUIT,             "app.quit",           AK_DISCRETE, "App", "quit" },
+{ ACT_SNAPSHOT_SAVE,    "snapshot.save",      AK_STEP,     "App", "save state to slot (value=slot 1..8)" },
+{ ACT_SNAPSHOT_RECALL,  "snapshot.recall",    AK_STEP,     "App", "recall state from slot (value=slot 1..8)" },
+{ ACT_SNAPSHOT_RECALL_LAST_STABLE, "snapshot.recall.lastStable", AK_DISCRETE, "App",
+                                  "recall most-recent STABLE-tagged snapshot (FAILSAFE-equivalent)" },
+{ ACT_MATH_TOGGLE,      "app.math",           AK_DISCRETE, "App", "toggle math dashboard (M)" },
+{ ACT_MATH_CURSOR_UP,   "math.cursor.up",     AK_STEP,     "App", "Mathlab cursor up" },
+{ ACT_MATH_CURSOR_DN,   "math.cursor.dn",     AK_STEP,     "App", "Mathlab cursor down" },
+{ ACT_MATH_ADJUST_DEC,  "math.adjust.dec",    AK_STEP,     "App", "Mathlab decrement selected" },
+{ ACT_MATH_ADJUST_INC,  "math.adjust.inc",    AK_STEP,     "App", "Mathlab increment selected" },
+{ ACT_DYN_HALFLIFE_AXIS,       "dyn.halflife.axis",       AK_RATE,     "Dynamics", "memory half-life (axis 0..1 → 0.05..10 s)" },
+{ ACT_DYN_HALFLIFE_BEATS_AXIS, "dyn.halflife.beats.axis", AK_RATE,     "Dynamics", "memory half-life in beats (needs Link)" },
+{ ACT_REGIME_DISTANCE_AXIS,    "regime.distance.axis",    AK_RATE,     "Math",     "0 = deep STABLE → 1 = deep CHAOTIC (one fader)" },
+{ ACT_REGIME_SET,              "regime.set",              AK_STEP,     "Math",     "discrete regime jump (value = 0..3)" },
+{ ACT_REGIME_INVERT,           "regime.invert",           AK_DISCRETE, "Math",     "cross nearest regime boundary" },
+{ ACT_PAD_REGIME_X,            "pad.regime.x",            AK_RATE,     "Math",     "regime compass X (0..1 maps to -1..+1)" },
+{ ACT_PAD_REGIME_Y,            "pad.regime.y",            AK_RATE,     "Math",     "regime compass Y (0..1 maps to -1..+1)" },
+{ ACT_THEATER_FAILSAFE,        "theater.failsafe",        AK_DISCRETE, "Math",     "toggle: DIVERGENT >2s → auto-recall STABLE snap" },
+{ ACT_MATH_ECHO_TOGGLE,        "math.echo",               AK_DISCRETE, "Math",     "toggle outbound OSC of math metrics" },
+{ ACT_LINK_TOGGLE,      "link.toggle",        AK_DISCRETE, "App", "Ableton Link enable/disable" },
+{ ACT_LINK_TAP,         "link.tap",           AK_DISCRETE, "App", "Ableton Link tap tempo" },
+{ ACT_LINK_TRANSPORT,   "link.transport",     AK_DISCRETE, "App", "Ableton Link start/stop transport" },
 
     // V-4 slots (bindings wired in C4+)
     { ACT_VFX1_CYCLE_FWD, "vfx1.next",      AK_DISCRETE, "VFX-1", "slot 1: next effect" },
@@ -305,16 +349,195 @@ static constexpr int N_ACTIONS = (int)(sizeof(ACTIONS) / sizeof(ACTIONS[0]));
 
 int action_info_count() { return N_ACTIONS; }
 
+// Forward-declared for action_info / action_info_by_name lookup of
+// macro-synthesized ActionIds. Initialized by registerMacro().
+static Input* s_macroRegistryOwner = nullptr;
+
+// ─────────────────────────────────────────────────────────────────────────
+// OSC address pattern matching (per OSC 1.0 spec):
+//   ?           matches a single char (except '/')
+//   *           matches any number of chars (except '/')
+//   [abc]       matches one char in the set; [a-z] is a range; [!abc] negates
+//   {foo,bar}   matches one of the comma-separated alternatives
+// Matching is segment-aware: '/' separators are anchors and patterns never
+// cross them. This is the standard OSC interpretation.
+// ─────────────────────────────────────────────────────────────────────────
+static bool osc_match_segment(const char* pat, const char* p_end,
+                              const char* str, const char* s_end);
+
+static bool osc_match_class(const char*& p, const char* p_end, char c) {
+    // p points at '[' on entry; advance past matching ']' on success.
+    // Returns true if c matches the class.
+    if (p >= p_end || *p != '[') return false;
+    p++;
+    bool neg = (p < p_end && *p == '!');
+    if (neg) p++;
+    bool match = false;
+    while (p < p_end && *p != ']') {
+        char a = *p++;
+        if (p + 1 < p_end && *p == '-' && p[1] != ']') {
+            char b = p[1]; p += 2;
+            if (c >= a && c <= b) match = true;
+        } else {
+            if (c == a) match = true;
+        }
+    }
+    if (p < p_end && *p == ']') p++;
+    return neg ? !match : match;
+}
+
+static bool osc_match_alts(const char*& p, const char* p_end,
+                           const char*& s, const char* s_end) {
+    // p points at '{' on entry. Try each comma-separated alternative
+    // against the head of s. On success: advance both p and s.
+    if (p >= p_end || *p != '{') return false;
+    const char* p0 = p + 1;
+    const char* alt_start = p0;
+    int depth = 1;
+    const char* alts[64]; int n_alts = 0;
+    const char* p_close = nullptr;
+    for (const char* q = p0; q < p_end; q++) {
+        if (*q == '{') depth++;
+        else if (*q == '}') {
+            depth--;
+            if (depth == 0) {
+                if (n_alts < 64) alts[n_alts++] = q;
+                p_close = q;
+                break;
+            }
+        } else if (*q == ',' && depth == 1) {
+            if (n_alts < 64) alts[n_alts++] = q;
+        }
+    }
+    if (!p_close) return false;
+    const char* cursor = alt_start;
+    for (int i = 0; i < n_alts; i++) {
+        size_t alen = (size_t)(alts[i] - cursor);
+        if ((size_t)(s_end - s) >= alen && std::memcmp(s, cursor, alen) == 0) {
+            s += alen;
+            p = p_close + 1;
+            return true;
+        }
+        cursor = alts[i] + 1;
+    }
+    return false;
+}
+
+static bool osc_match_segment(const char* pat, const char* p_end,
+                              const char* str, const char* s_end) {
+    while (pat < p_end) {
+        char pc = *pat;
+        if (pc == '*') {
+            pat++;
+            // Try every possible suffix of the remaining string.
+            for (const char* try_s = str; try_s <= s_end; try_s++) {
+                if (osc_match_segment(pat, p_end, try_s, s_end)) return true;
+            }
+            return false;
+        }
+        if (pc == '?') {
+            if (str >= s_end) return false;
+            pat++; str++;
+            continue;
+        }
+        if (pc == '[') {
+            if (str >= s_end) return false;
+            if (!osc_match_class(pat, p_end, *str)) return false;
+            str++;
+            continue;
+        }
+        if (pc == '{') {
+            if (!osc_match_alts(pat, p_end, str, s_end)) return false;
+            continue;
+        }
+        // Literal char
+        if (str >= s_end || *str != pc) return false;
+        pat++; str++;
+    }
+    return str == s_end;
+}
+
+bool osc_address_matches(const char* pattern, const char* address) {
+    // Both must start with /
+    if (!pattern || !address) return false;
+    if (pattern[0] != '/' || address[0] != '/') return false;
+    // Walk segment by segment so wildcards never cross '/'
+    const char* p = pattern + 1;
+    const char* a = address + 1;
+    while (true) {
+        const char* p_slash = std::strchr(p, '/');
+        const char* a_slash = std::strchr(a, '/');
+        const char* p_end = p_slash ? p_slash : (p + std::strlen(p));
+        const char* a_end = a_slash ? a_slash : (a + std::strlen(a));
+        if (!osc_match_segment(p, p_end, a, a_end)) return false;
+        if (!p_slash && !a_slash) return true;
+        if (!p_slash || !a_slash) return false;
+        p = p_slash + 1;
+        a = a_slash + 1;
+    }
+}
+
 const ActionInfo* action_info(ActionId id) {
+    if ((int)id >= ACT_MACRO_BASE && s_macroRegistryOwner) {
+        int n = (int)id - ACT_MACRO_BASE;
+        const auto& infos = s_macroRegistryOwner->bindings(); (void)infos; // tickle
+        // Friend-equivalent access via a const_cast-free path: we stored
+        // macroInfos_ inside Input and expose it through a small accessor.
+        // For now, use a helper that walks Input via its public methods.
+        // Direct private access is allowed because this function lives
+        // in the same translation unit as Input's definition.
+        // Walk the names_ vector to find the index (already known) and
+        // return the matching ActionInfo pointer.
+        const std::vector<std::string>& names = s_macroRegistryOwner->macroNames();
+        if (n < (int)names.size()) {
+            // s_macroRegistryOwner->macroInfos_[n] — but that's private.
+            // We expose macroInfoByIndex() as a public accessor.
+            return s_macroRegistryOwner->macroInfoByIndex(n);
+        }
+        return nullptr;
+    }
     for (int i = 0; i < N_ACTIONS; i++)
         if (ACTIONS[i].id == id) return &ACTIONS[i];
     return nullptr;
 }
 
+// Backwards-compatible aliases. Keep the original binding names working
+// indefinitely; add the new name to the table here so newly-written
+// bindings.ini files (and the docs) can use the clearer term.
+struct ActionAlias { const char* from; const char* to; };
+static const ActionAlias ACTION_ALIASES[] = {
+    // regime.invert is the cockpit's cross-bifurcation-boundary action ·
+    // its name collides with phys.invert (the paper's luminance s = ±1).
+    // regime.flip is the recommended new name; regime.invert still
+    // dispatches to the same handler.
+    { "regime.flip", "regime.invert" },
+};
+static constexpr int N_ACTION_ALIASES = sizeof(ACTION_ALIASES) / sizeof(ACTION_ALIASES[0]);
+
 const ActionInfo* action_info_by_name(const char* name) {
+    if (name && std::strncmp(name, "macro.", 6) == 0 && s_macroRegistryOwner) {
+        const char* sub = name + 6;
+        const std::vector<std::string>& names = s_macroRegistryOwner->macroNames();
+        for (size_t i = 0; i < names.size(); i++)
+            if (names[i] == sub)
+                return s_macroRegistryOwner->macroInfoByIndex((int)i);
+        return nullptr;
+    }
+    // Alias pass first so the canonical name lookup below sees the
+    // alias's target.
+    if (name) {
+        for (int i = 0; i < N_ACTION_ALIASES; i++)
+            if (std::strcmp(ACTION_ALIASES[i].from, name) == 0)
+                return action_info_by_name(ACTION_ALIASES[i].to);
+    }
     for (int i = 0; i < N_ACTIONS; i++)
         if (std::strcmp(ACTIONS[i].name, name) == 0) return &ACTIONS[i];
     return nullptr;
+}
+
+const ActionInfo* action_info_by_index(int idx) {
+    if (idx < 0 || idx >= N_ACTIONS) return nullptr;
+    return &ACTIONS[idx];
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -522,9 +745,14 @@ void Input::installDefaults() {
     K(in, ACT_CLEAR,             GLFW_KEY_C);
     K(in, ACT_PAUSE,             GLFW_KEY_P);                      // plain P
     K(in, ACT_HELP,              GLFW_KEY_H);
+    K(in, ACT_MATH_TOGGLE,       GLFW_KEY_M);
     K(in, ACT_RELOAD_SHADERS,    GLFW_KEY_BACKSLASH);
     K(in, ACT_FULLSCREEN,        GLFW_KEY_F11);
     K(in, ACT_REC_TOGGLE,        GLFW_KEY_GRAVE_ACCENT);
+    // HQ MP4 recorder. Cmd+R toggles, Cmd+Shift+R cycles codec preset.
+    // (Plain R is taken by sat-up; backtick is the EXR archive recorder.)
+    K(in, ACT_REC_MP4_TOGGLE,    GLFW_KEY_R, GLFW_MOD_SUPER);
+    K(in, ACT_REC_MP4_CYCLE,     GLFW_KEY_R, GLFW_MOD_SUPER | GLFW_MOD_SHIFT);
     K(in, ACT_SCREENSHOT,        GLFW_KEY_PRINT_SCREEN);
     K(in, ACT_SCREENSHOT_HIRES,  GLFW_KEY_PRINT_SCREEN, GLFW_MOD_SHIFT);
     K(in, ACT_PRESET_SAVE,       GLFW_KEY_S, GLFW_MOD_CONTROL);
@@ -1161,6 +1389,10 @@ static std::string key_spec_string(int key, int mods) {
 bool Input::loadIni(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "r");
     if (!f) return false;
+    // Remember the path + mtime for hot-reload tracking.
+    bindingsPath_ = path;
+    struct stat st {};
+    if (::stat(path.c_str(), &st) == 0) bindingsMtime_ = (int64_t)st.st_mtime;
     char line[512];
     std::string section;
 
@@ -1179,6 +1411,63 @@ bool Input::loadIni(const std::string& path) {
         size_t hash = v.find('#');
         if (hash != std::string::npos) v = s_trim(v.substr(0, hash));
 
+        // [macros] section: each line defines a named macro that any
+        // binding can target by writing "macro.<name>" as the action.
+        //   scene.intro = layer.warp(1) ; dyn.decay.axis(0.95) ; color.sat.setAxis(0.2)
+        // Trailing semicolons and whitespace are tolerated. Each step
+        // is "action.name(value)" — value defaults to 1.0 if omitted.
+        if (section == "macros") {
+            std::vector<MacroStep> steps;
+            size_t pos = 0;
+            std::string body = v;
+            while (pos < body.size()) {
+                size_t semi = body.find(';', pos);
+                std::string step = s_trim(body.substr(
+                    pos, (semi == std::string::npos ? body.size() : semi) - pos));
+                pos = (semi == std::string::npos ? body.size() : semi + 1);
+                if (step.empty()) continue;
+                // action.name(value)  or  action.name  (value defaults 1.0)
+                std::string act;
+                float vv = 1.0f;
+                size_t paren = step.find('(');
+                if (paren != std::string::npos) {
+                    act = s_trim(step.substr(0, paren));
+                    size_t close = step.find(')', paren);
+                    if (close == std::string::npos) close = step.size();
+                    std::string val = s_trim(step.substr(paren + 1, close - paren - 1));
+                    if (!val.empty()) vv = (float)std::atof(val.c_str());
+                } else {
+                    act = step;
+                }
+                const ActionInfo* info = action_info_by_name(act.c_str());
+                if (!info) {
+                    std::fprintf(stderr,
+                        "[macros] '%s': unknown action '%s' — step skipped\n",
+                        k.c_str(), act.c_str());
+                    continue;
+                }
+                steps.push_back({ info->id, vv });
+            }
+            // Only log the registration on first definition (or when the
+            // step count changes) to avoid spam on every hot-reload.
+            bool isNew = true;
+            size_t prevSteps = 0;
+            for (size_t i = 0; i < macroNames_.size(); i++) {
+                if (macroNames_[i] == k) {
+                    isNew = false;
+                    prevSteps = macroSteps_[i].size();
+                    break;
+                }
+            }
+            size_t newSteps = steps.size();
+            registerMacro(k, std::move(steps));
+            if (isNew || prevSteps != newSteps) {
+                std::fprintf(stdout, "[macros] registered '%s' (%zu steps)\n",
+                             k.c_str(), newSteps);
+            }
+            continue;
+        }
+
         // Top-level keys inside [midi]: `port = …`, `clock = follow|ignore`,
         // `learn = on|off`. These configure the MIDI input rather than
         // mapping to an action.
@@ -1196,6 +1485,38 @@ bool Input::loadIni(const std::string& path) {
             if (k == "clock") {
                 if (v == "ignore")
                     std::fprintf(stderr, "[midi] clock=ignore honored by main.cpp side\n");
+                continue;
+            }
+        }
+
+        // [osc] section header keys: listen=PORT, learn=on|off. Action
+        // mappings (action.name = osc:/addr) fall through to the
+        // section-aware keyPart parser below.
+        if (section == "osc") {
+            if (k == "listen" || k == "port") {
+                int p = std::atoi(v.c_str());
+                if (p > 0 && p < 65536) setOscPort(p);
+                continue;
+            }
+            if (k == "learn") {
+                std::string lo = v;
+                for (char& c : lo) c = (char)std::tolower((unsigned char)c);
+                oscLearn_ = (lo == "1" || lo == "yes" || lo == "true" || lo == "on");
+                continue;
+            }
+            if (k == "echo") {
+                // echo = host:port  or  echo = :port  or  echo = port
+                std::string host;
+                int port = 0;
+                size_t colon = v.rfind(':');
+                if (colon != std::string::npos) {
+                    host = v.substr(0, colon);
+                    port = std::atoi(v.c_str() + colon + 1);
+                } else {
+                    port = std::atoi(v.c_str());
+                }
+                if (host.empty()) host = "127.0.0.1";
+                if (port > 0 && port < 65536) setOscEcho(host, port);
                 continue;
             }
         }
@@ -1284,6 +1605,50 @@ bool Input::loadIni(const std::string& path) {
         b.shifted  = shifted;
         b.context  = ctx;
 
+        // link: source — Ableton Link bridge. Channels:
+        //   phase   sweep 0..quantum within each bar
+        //   beat    fires once per beat (use with discrete/trigger actions)
+        //   bpm     network tempo, raw BPM (e.g. 120.0)
+        //   peers   peer count on the local Link session
+        if (keyPart.rfind("link:", 0) == 0) {
+            std::string ch = keyPart.substr(5);
+            if (ch.empty()) continue;
+            b.source     = SRC_LINK;
+            b.code       = 0;
+            b.modmask    = 0;
+            b.oscAddress = ch;
+            bindings_.erase(std::remove_if(bindings_.begin(), bindings_.end(),
+                [&](const Binding& x) {
+                    if (x.action != b.action || x.source != b.source ||
+                        x.context != b.context) return false;
+                    return x.oscAddress == b.oscAddress;
+                }), bindings_.end());
+            bindings_.push_back(b);
+            continue;
+        }
+
+        // audio: source — valid in any section. Bindings of the form
+        //   action.name = audio:rms       [scale=X] [invert] [bipolar]
+        // dispatch through Input::pollAudio() once per frame using the
+        // current value of the audio analyzer's envelope follower.
+        if (keyPart.rfind("audio:", 0) == 0) {
+            std::string ch = keyPart.substr(6);
+            if (ch.empty()) continue;
+            b.source     = SRC_AUDIO;
+            b.code       = 0;
+            b.modmask    = 0;
+            b.oscAddress = ch;   // reusing for channel name (rms/peak/low/mid/high)
+            // Fall through to dedup + push.
+            bindings_.erase(std::remove_if(bindings_.begin(), bindings_.end(),
+                [&](const Binding& x) {
+                    if (x.action != b.action || x.source != b.source ||
+                        x.context != b.context) return false;
+                    return x.oscAddress == b.oscAddress;
+                }), bindings_.end());
+            bindings_.push_back(b);
+            continue;
+        }
+
         if (section == "keyboard" || section.empty()) {
             int code = 0, mods = 0;
             if (!parse_key_spec(keyPart, code, mods)) {
@@ -1321,6 +1686,34 @@ bool Input::loadIni(const std::string& path) {
             } else {
                 continue;
             }
+        } else if (section == "osc") {
+            // OSC binding spec: osc:/path/to/addr  OR  osct:/path (force trigger)
+            //   osc:/addr   → SRC_OSC_F if action is continuous (AK_STEP/RATE);
+            //                  SRC_OSC_TRIG if discrete/trigger
+            //   osct:/addr  → always SRC_OSC_TRIG (useful for one-shot pulses
+            //                  on otherwise-continuous addresses)
+            std::string addr;
+            bool forceTrig = false;
+            if (keyPart.rfind("osc:", 0) == 0) {
+                addr = keyPart.substr(4);
+            } else if (keyPart.rfind("osct:", 0) == 0) {
+                addr = keyPart.substr(5);
+                forceTrig = true;
+            } else {
+                continue;
+            }
+            if (addr.empty() || addr[0] != '/') {
+                std::fprintf(stderr, "[bindings] osc address must start with '/': '%s'\n",
+                             keyPart.c_str());
+                continue;
+            }
+            const ActionInfo* ai = action_info(b.action);
+            bool isTrigger = forceTrig ||
+                             (ai && (ai->kind == AK_DISCRETE || ai->kind == AK_TRIGGER));
+            b.source     = isTrigger ? SRC_OSC_TRIG : SRC_OSC_F;
+            b.code       = 0;
+            b.modmask    = 0;
+            b.oscAddress = addr;
         } else {
             continue;  // unknown section
         }
@@ -1336,6 +1729,8 @@ bool Input::loadIni(const std::string& path) {
                 if (b.source == SRC_MIDI_CC || b.source == SRC_MIDI_CC14 || b.source == SRC_MIDI_NOTE)
                     return x.code == b.code && x.modmask == b.modmask
                         && x.shifted == b.shifted;
+                if (b.source == SRC_OSC_F || b.source == SRC_OSC_TRIG)
+                    return x.oscAddress == b.oscAddress;
                 return true;
             }), bindings_.end());
         bindings_.push_back(b);
@@ -2082,6 +2477,355 @@ void Input::pollMidi(float) {
 bool Input::sendMidiNote(int, int, int) { return false; }
 #endif
 
+// ─────────────────────────────────────────────────────────────────────────
+// OSC polling — cross-platform. Opens the UDP listener on first call if
+// oscPort_ > 0, drains the queue, and dispatches each message through
+// handler_ via SRC_OSC_F / SRC_OSC_TRIG bindings. Address matching is
+// literal — no wildcard support in v1.
+// ─────────────────────────────────────────────────────────────────────────
+void Input::pollOsc(float /*dt*/) {
+    if (oscPort_ <= 0) {
+        if (oscOpened_) {
+            feedback_osc_close();
+            oscOpened_ = false;
+        }
+        oscFailedPort_ = 0;
+        return;
+    }
+    if (!oscOpened_) {
+        // Don't spam the log: once a port fails to bind, stop retrying
+        // until the user changes the port. The latch only clears when
+        // oscPort_ changes.
+        if (oscFailedPort_ == oscPort_) return;
+        if (feedback_osc_open(oscPort_) != 0) {
+            oscOpened_ = true;
+            oscFailedPort_ = 0;
+        } else {
+            oscFailedPort_ = oscPort_;
+            return;
+        }
+    }
+
+    FeedbackOscMsg msgs[256];
+    int n = feedback_osc_poll(msgs, 256);
+    if (n <= 0) return;
+
+    for (int i = 0; i < n; i++) {
+        const FeedbackOscMsg& m = msgs[i];
+
+        if (oscLearn_) {
+            switch (m.arg_type) {
+                case 'f': std::printf("[osc-learn] %s f=%.4f\n", m.address, m.arg_f); break;
+                case 'i': std::printf("[osc-learn] %s i=%d\n",   m.address, m.arg_i); break;
+                case 'T': std::printf("[osc-learn] %s T\n",      m.address); break;
+                case 'F': std::printf("[osc-learn] %s F\n",      m.address); break;
+                case 's': std::printf("[osc-learn] %s s\n",      m.address); break;
+                case 0:   std::printf("[osc-learn] %s (no args)\n", m.address); break;
+                default:  std::printf("[osc-learn] %s %c=?\n",   m.address, m.arg_type); break;
+            }
+        }
+        if (!handler_) continue;
+
+        // Linear scan — number of OSC bindings is small (tens at most).
+        for (const Binding& b : bindings_) {
+            if (b.source != SRC_OSC_F && b.source != SRC_OSC_TRIG) continue;
+            if (b.oscAddress.empty()) continue;
+            if (!osc_address_matches(b.oscAddress.c_str(), m.address)) continue;
+            const ActionInfo* info = action_info(b.action);
+            if (!info) continue;
+
+            // Treat any incoming arg as a float in [0..1] or signed. T/F
+            // become 1.0/0.0. No-arg messages become 1.0 (treat as a
+            // "bang" for triggers).
+            float norm = (m.arg_type == 0) ? 1.0f : m.arg_f;
+
+            auto fire = [&](ActionId a, float mg) {
+                handler_(a, mg);
+                if (usageLogger_) usageLogger_({USAGE_OSC, 0, 0, 0, a, mg});
+            };
+
+            if (b.source == SRC_OSC_TRIG) {
+                // Discrete: any value > 0.5 = press; trigger: edge both ways.
+                switch (info->kind) {
+                case AK_DISCRETE:
+                    if (norm > 0.5f) fire(b.action, 1.0f);
+                    break;
+                case AK_TRIGGER:
+                    fire(b.action, norm > 0.5f ? 1.0f : 0.0f);
+                    break;
+                case AK_STEP:
+                case AK_RATE:
+                    // Bound as trigger but action is continuous — fire scaled.
+                    {
+                        float mg = norm * b.scale;
+                        if (b.invert) mg = -mg;
+                        fire(b.action, mg);
+                    }
+                    break;
+                }
+                continue;
+            }
+
+            // SRC_OSC_F (axis-style)
+            float mg = norm;
+            if (b.delta) {
+                bool& init = g_oscRt.prevInit[b.oscAddress];
+                float& prev = g_oscRt.prevValue[b.oscAddress];
+                if (!init) {
+                    init = true;
+                    prev = norm;
+                    continue;
+                }
+                mg = norm - prev;
+                prev = norm;
+            } else if (b.bipolar) {
+                mg = norm * 2.0f - 1.0f;
+            }
+            if (b.invert) mg = -mg;
+            mg *= b.scale;
+
+            switch (info->kind) {
+            case AK_RATE:
+            case AK_STEP:
+                fire(b.action, mg);
+                break;
+            case AK_DISCRETE:
+                if (norm > 0.5f) fire(b.action, 1.0f);
+                break;
+            case AK_TRIGGER:
+                fire(b.action, norm > 0.5f ? 1.0f : 0.0f);
+                break;
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Hot reload — polls the bindings file's mtime once per second and runs
+// a full reload when it changes. Also honors an explicit SIGHUP-driven
+// flag (set by the signal handler in main.cpp). A full reload clears
+// every binding, re-runs installDefaults(), then loadIni() — equivalent
+// to a process restart without losing the GL context or simulation
+// state.
+// ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// OSC echo — emits /cma/echo/<action.name> <value> for every dispatched
+// action, regardless of the source that triggered it. Useful for:
+//   - TouchDesigner UI panels that mirror Crutchfield's current state
+//   - Multi-instance sync (a master Crutchfield driving N followers)
+//   - Show-control state recall / sequencer feedback
+//
+// Single-sink design: one host:port destination. Set via setOscEcho()
+// from CLI or bindings.ini. The downstream listener subscribes to
+// /cma/echo/* and reads action.name + value pairs.
+// ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// Macros — defined in bindings.ini's [macros] section as:
+//   scene1 = layer.warp(1) ; layer.noise(0) ; dyn.decay.axis(0.85)
+// Bound by referring to "macro.scene1" on the LHS of any binding line in
+// [keyboard]/[gamepad]/[midi]/[osc] sections. apply_action in main.cpp
+// detects synthetic ActionIds >= ACT_MACRO_BASE and short-circuits to
+// fireMacroById() which iterates the step list and re-enters handler_.
+// ─────────────────────────────────────────────────────────────────────────
+// s_macroRegistryOwner is declared near action_info() at the top of this
+// file so it's visible to both the lookup helpers and registerMacro().
+static void register_macro_registry_owner(Input* in) { s_macroRegistryOwner = in; }
+
+ActionId Input::registerMacro(const std::string& name, std::vector<MacroStep> steps) {
+    register_macro_registry_owner(this);
+    for (size_t i = 0; i < macroNames_.size(); i++) {
+        if (macroNames_[i] == name) {
+            macroSteps_[i] = std::move(steps);
+            return (ActionId)(ACT_MACRO_BASE + (int)i);
+        }
+    }
+    size_t idx = macroNames_.size();
+    macroNames_.push_back(name);
+    macroSteps_.push_back(std::move(steps));
+    macroDescs_.push_back("macro: " + name);
+    // ActionInfo points into macroNames_ / macroDescs_ — both are stable
+    // because we only push_back (never erase) and string contents are
+    // moved into the vector at append time.
+    ActionInfo info {};
+    info.id    = (ActionId)(ACT_MACRO_BASE + (int)idx);
+    info.kind  = AK_DISCRETE;
+    info.group = "Macros";
+    macroInfos_.push_back(info);
+    // Patch the name/desc pointers after the vector is stable. We must
+    // re-patch after every push_back because vector growth invalidates
+    // the const char* slots in earlier ActionInfo entries.
+    for (size_t i = 0; i < macroInfos_.size(); i++) {
+        macroInfos_[i].name = macroNames_[i].c_str();
+        macroInfos_[i].desc = macroDescs_[i].c_str();
+    }
+    return (ActionId)(ACT_MACRO_BASE + (int)idx);
+}
+
+bool Input::fireMacro(const std::string& name) {
+    for (size_t i = 0; i < macroNames_.size(); i++) {
+        if (macroNames_[i] == name) {
+            fireMacroById((ActionId)(ACT_MACRO_BASE + (int)i));
+            return true;
+        }
+    }
+    return false;
+}
+
+void Input::fireMacroById(ActionId id) {
+    int n = (int)id - ACT_MACRO_BASE;
+    if (n < 0 || n >= (int)macroSteps_.size() || !handler_) return;
+    for (const MacroStep& step : macroSteps_[n]) {
+        // Recursive macros (a macro that fires another macro) work
+        // because handler_ is set to apply_action which itself detects
+        // ACT_MACRO_BASE and re-enters fireMacroById.
+        handler_(step.action, step.value);
+    }
+}
+
+void Input::echoActionDispatch(ActionId id, float value) {
+    if (oscEchoPort_ <= 0 || oscEchoHost_.empty()) return;
+    if (!oscEchoApplied_) {
+        oscEchoApplied_ =
+            feedback_osc_set_echo(oscEchoHost_.c_str(), oscEchoPort_) != 0;
+        if (!oscEchoApplied_) return;
+    }
+    const ActionInfo* info = action_info(id);
+    if (!info || !info->name) return;
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "/cma/echo/%s", info->name);
+    feedback_osc_send_f(buf, value);
+}
+
+void Input::rememberBindingsPath(const std::string& path) {
+    bindingsPath_ = path;
+    struct stat st {};
+    if (::stat(path.c_str(), &st) == 0) bindingsMtime_ = (int64_t)st.st_mtime;
+}
+
+bool Input::tryReload(float dt) {
+    if (bindingsPath_.empty()) return false;
+
+    bool fire = reloadRequested_;
+    reloadRequested_ = false;
+    if (!fire) {
+        // Throttle mtime checks to once per second.
+        reloadAccum_ += dt;
+        if (reloadAccum_ < 1.0f) return false;
+        reloadAccum_ = 0.0f;
+        struct stat st {};
+        if (::stat(bindingsPath_.c_str(), &st) != 0) return false;
+        if ((int64_t)st.st_mtime <= bindingsMtime_) return false;
+        fire = true;
+    }
+    if (!fire) return false;
+
+    std::fprintf(stdout, "[bindings] hot-reload triggered for %s\n",
+                 bindingsPath_.c_str());
+    // Save the path before clear/installDefaults wipes it.
+    std::string path = bindingsPath_;
+    clear();
+    installDefaults();
+    bool ok = loadIni(path);
+    std::fprintf(stdout, "[bindings] reload %s — %zu bindings active\n",
+                 ok ? "ok" : "fallback to defaults",
+                 bindings_.size());
+    return ok;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// pollAudio — drives bindings whose source is SRC_AUDIO each frame.
+// Audio-reactive bindings continuously dispatch the current envelope
+// value, with flag transformations applied (scale, invert, bipolar).
+// Channel names are: rms, peak, low, mid, high.
+// ─────────────────────────────────────────────────────────────────────────
+void Input::pollAudio(float /*dt*/) {
+    if (!handler_) return;
+    // Cache values once per frame — atomics are read-cheap but still
+    // worth memoizing per-channel.
+    float vals[5] = {
+        feedback_audio_rms(),
+        feedback_audio_peak(),
+        feedback_audio_low(),
+        feedback_audio_mid(),
+        feedback_audio_high()
+    };
+    auto lookup = [&](const std::string& ch) -> float {
+        if (ch == "rms")  return vals[0];
+        if (ch == "peak") return vals[1];
+        if (ch == "low")  return vals[2];
+        if (ch == "mid")  return vals[3];
+        if (ch == "high") return vals[4];
+        return 0.f;
+    };
+    for (const Binding& b : bindings_) {
+        if (b.source != SRC_AUDIO) continue;
+        float norm = lookup(b.oscAddress);
+        if (b.bipolar) norm = norm * 2.0f - 1.0f;
+        if (b.invert)  norm = -norm;
+        norm *= b.scale;
+        const ActionInfo* info = action_info(b.action);
+        if (!info) continue;
+        switch (info->kind) {
+        case AK_RATE:
+        case AK_STEP:
+            handler_(b.action, norm);
+            break;
+        case AK_DISCRETE:
+            if (norm > 0.5f) handler_(b.action, 1.0f);
+            break;
+        case AK_TRIGGER:
+            handler_(b.action, norm > 0.5f ? 1.0f : 0.0f);
+            break;
+        }
+        if (usageLogger_) usageLogger_({USAGE_OSC, 0, 0, 0, b.action, norm});
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// pollLink — dispatches bindings whose source is SRC_LINK using the
+// Ableton Link bridge. Channels: phase (0..quantum), beat (once per
+// beat), bpm (raw network tempo), peers (peer count on the Link
+// session).
+// ─────────────────────────────────────────────────────────────────────────
+void Input::pollLink(float /*dt*/) {
+    if (!handler_) return;
+    double phase = link_beat_phase(4.0);
+    double bpm   = link_tempo();
+    int    peers = link_num_peers();
+    bool   beat  = link_did_beat(4.0) != 0;
+
+    for (const Binding& b : bindings_) {
+        if (b.source != SRC_LINK) continue;
+        float norm = 0.f;
+        bool   isTrigger = false;
+        if      (b.oscAddress == "phase") norm = (float)(phase / 4.0);
+        else if (b.oscAddress == "beat")  { norm = beat ? 1.f : 0.f; isTrigger = true; }
+        else if (b.oscAddress == "bpm")   norm = (float)bpm;
+        else if (b.oscAddress == "peers") norm = (float)peers;
+        else continue;
+
+        if (b.bipolar) norm = norm * 2.0f - 1.0f;
+        if (b.invert)  norm = -norm;
+        norm *= b.scale;
+
+        const ActionInfo* info = action_info(b.action);
+        if (!info) continue;
+        switch (info->kind) {
+        case AK_RATE:
+        case AK_STEP:
+            handler_(b.action, norm);
+            break;
+        case AK_DISCRETE:
+            if (isTrigger ? (norm > 0.f) : (norm > 0.5f))
+                handler_(b.action, 1.0f);
+            break;
+        case AK_TRIGGER:
+            handler_(b.action, norm > 0.5f ? 1.0f : 0.0f);
+            break;
+        }
+    }
+}
+
 bool Input::saveIni(const std::string& path) const {
     FILE* f = std::fopen(path.c_str(), "w");
     if (!f) return false;
@@ -2136,6 +2880,14 @@ bool Input::saveIni(const std::string& path) const {
                     std::fprintf(f, "%-24s = cc14:%d", ACTIONS[i].name, b.code);
                 } else if (src == SRC_MIDI_NOTE) {
                     std::fprintf(f, "%-24s = note:%d", ACTIONS[i].name, b.code);
+                } else if (src == SRC_OSC_F) {
+                    std::fprintf(f, "%-24s = osc:%s", ACTIONS[i].name, b.oscAddress.c_str());
+                } else if (src == SRC_OSC_TRIG) {
+                    std::fprintf(f, "%-24s = osct:%s", ACTIONS[i].name, b.oscAddress.c_str());
+                } else if (src == SRC_AUDIO) {
+                    std::fprintf(f, "%-24s = audio:%s", ACTIONS[i].name, b.oscAddress.c_str());
+                } else if (src == SRC_LINK) {
+                    std::fprintf(f, "%-24s = link:%s", ACTIONS[i].name, b.oscAddress.c_str());
                 }
                 if ((src == SRC_MIDI_CC || src == SRC_MIDI_CC14 || src == SRC_MIDI_NOTE)
                     && b.modmask != 0) {
@@ -2202,6 +2954,66 @@ bool Input::saveIni(const std::string& path) const {
     dump_section("midi",     SRC_MIDI_CC,   /*emitHeader=*/false);
     dump_section("midi",     SRC_MIDI_CC14, /*emitHeader=*/false);
     dump_section("midi",     SRC_MIDI_NOTE, /*emitHeader=*/false);
+
+    // OSC section — UDP listener for TouchDesigner and any OSC source.
+    std::fprintf(f,
+"[osc]\n"
+"# OSC ingestion over UDP. Disabled by default; enable with --osc-listen\n"
+"# on the command line or by setting `listen = PORT` here.\n"
+"#\n"
+"# Top-level keys:\n"
+"#   listen = 7700   UDP port to bind. 0 = disabled.\n"
+"#   learn  = on     print every incoming OSC address+arg to stdout.\n"
+"#\n"
+"# Binding syntax:\n"
+"#   action.name = osc:/path/to/addr            axis (continuous) or auto-trigger\n"
+"#   action.name = osct:/path/to/addr           force trigger semantics\n"
+"#\n"
+"# Options match the MIDI options where they make sense: scale=X, invert,\n"
+"# bipolar (remap 0..1 -> -1..+1), delta (dispatch change vs. last value).\n"
+"#\n"
+"listen = %d\n"
+"learn  = %s\n"
+"\n",
+    oscPort_, oscLearn_ ? "on" : "off");
+
+    dump_section("osc", SRC_OSC_F,    /*emitHeader=*/false);
+    dump_section("osc", SRC_OSC_TRIG, /*emitHeader=*/false);
+
+    // ── Built-in source bindings ──────────────────────────────────────
+    // audio: and link: bindings live in their own sections so they can
+    // be edited or removed independently of the OSC ingestion config.
+    // Both source types tolerate any [section] header at parse time
+    // (the keyPart prefix decides), but persisted writes use dedicated
+    // [audio] and [link] sections for clarity.
+
+    // [audio] — built-in audio reactivity bindings.
+    {
+        bool hasAny = false;
+        for (const Binding& b : bindings_) if (b.source == SRC_AUDIO) { hasAny = true; break; }
+        if (hasAny) {
+            std::fprintf(f,
+"\n[audio]\n"
+"# Built-in audio analyzer. Channels: rms peak low mid high\n"
+"# (no top-level config keys; bindings only)\n"
+"\n");
+            dump_section("audio", SRC_AUDIO, /*emitHeader=*/false);
+        }
+    }
+
+    // [link] — Ableton Link bindings.
+    {
+        bool hasAny = false;
+        for (const Binding& b : bindings_) if (b.source == SRC_LINK) { hasAny = true; break; }
+        if (hasAny) {
+            std::fprintf(f,
+"\n[link]\n"
+"# Ableton Link bridge. Channels: phase beat bpm peers\n"
+"# Enable from CLI with --link or via the link.toggle action.\n"
+"\n");
+            dump_section("link", SRC_LINK, /*emitHeader=*/false);
+        }
+    }
 
     std::fclose(f);
     return true;

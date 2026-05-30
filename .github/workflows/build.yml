@@ -1,0 +1,138 @@
+name: build
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ main ]
+
+# Cancel in-progress runs for the same ref + workflow if a new push lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────
+  # macOS — Apple Silicon (the primary dev path on this branch).
+  # Uses the existing Makefile.macos which expects Homebrew glfw + glew.
+  # ────────────────────────────────────────────────────────────────────
+  macos:
+    name: macos-arm64
+    runs-on: macos-14   # M-series runners
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: init Link submodules (asio-standalone)
+        run: |
+          if [ -d vendor/link ]; then \
+            cd vendor/link && git submodule update --init --recursive || true; \
+          fi
+
+      - name: install deps
+        run: brew install glfw glew pkg-config
+
+      - name: build (Syphon off — framework not pre-built in CI)
+        run: make -f Makefile.macos SYPHON=0 -j
+
+      - name: --list-actions sanity
+        run: |
+          count=$(./feedback --list-actions | wc -l | tr -d ' ')
+          echo "actions: $count"
+          test "$count" -gt 100
+
+      - name: --help sanity
+        run: ./feedback --help | grep -E "osc-listen|midi-learn|list-actions"
+
+      - name: package dist
+        run: make -f Makefile.macos SYPHON=0 dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feedback-macos-arm64
+          path: feedback-macos-arm64.zip
+          if-no-files-found: error
+
+  # ────────────────────────────────────────────────────────────────────
+  # Linux — Ubuntu, using the linux/ prep-script build.
+  # ────────────────────────────────────────────────────────────────────
+  linux:
+    name: linux-x64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: init Link submodules
+        run: |
+          if [ -d vendor/link ]; then \
+            cd vendor/link && git submodule update --init --recursive || true; \
+          fi
+
+      - name: install deps
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential python3 pkg-config \
+                              libglfw3-dev libglew-dev libgl1-mesa-dev \
+                              libasound2-dev zlib1g-dev ffmpeg
+
+      - name: build
+        run: |
+          cd linux
+          make -j
+
+      - name: package dist
+        run: |
+          cd linux
+          make dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feedback-linux-x64
+          path: linux/feedback-linux-x64.tar.gz
+          if-no-files-found: warn
+
+  # ────────────────────────────────────────────────────────────────────
+  # Windows — MSYS2 / MinGW-w64 build via the root Makefile.
+  # ────────────────────────────────────────────────────────────────────
+  windows:
+    name: windows-x64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: init Link submodules
+        run: |
+          if [ -d vendor/link ]; then \
+            cd vendor/link && git submodule update --init --recursive || true; \
+          fi
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-glfw
+            mingw-w64-x86_64-glew
+            make
+            zip
+
+      - name: build
+        run: make -j
+
+      - name: package dist
+        run: make dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feedback-windows-x64
+          path: feedback-windows-x64.zip
+          if-no-files-found: warn

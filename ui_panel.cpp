@@ -409,13 +409,17 @@ bool UiPanel::textInput(unsigned int codepoint) {
 bool UiPanel::mouseButton(int button, int action, double x, double y) {
     if (button != GLFW_MOUSE_BUTTON_LEFT || !visible_) return false;
     if (action == GLFW_RELEASE) {
+        // Only swallow the release if we owned the press — otherwise let
+        // it fall through to the overlay panels (DYNAMICS cockpit) that
+        // need the release event to disarm their own drag state.
+        bool owned = dragging_ || reorderDragging_;
         dragging_ = false;
         reorderDragging_ = false;
         dragControl_ = -1;
         reorderControl_ = -1;
-        return true;
+        return owned;
     }
-    if (action != GLFW_PRESS) return true;
+    if (action != GLFW_PRESS) return false;
 
     cancelEdit();
     for (const Hit& h : hits_) {
@@ -466,7 +470,8 @@ bool UiPanel::mouseButton(int button, int action, double x, double y) {
             return true;
         }
     }
-    return true;
+    // No hit matched — let the overlay (DYNAMICS cockpit) try.
+    return false;
 }
 
 bool UiPanel::cursor(double x, double y) {
@@ -482,7 +487,9 @@ bool UiPanel::cursor(double x, double y) {
         movePinnedControl(reorderControl_, pos);
         return true;
     }
-    if (!dragging_ || dragControl_ < 0) return true;
+    // Only consume cursor movement if we own an active drag — otherwise
+    // pass through so overlay panels can drive their own drag state.
+    if (!dragging_ || dragControl_ < 0) return false;
     for (const Hit& h : hits_) {
         if (h.kind != HitKind::Slider || h.index != dragControl_) continue;
         const UiControl& c = controls_[h.index];
@@ -584,6 +591,29 @@ void UiPanel::drawSliderRow(int idx, float x, float y, float w, bool pinnedRow) 
     float t = (c.maxValue > c.minValue) ? (v - c.minValue) / (c.maxValue - c.minValue) : 0.0f;
     t = clampf(t, 0.0f, 1.0f);
     drawRect(sx, y + 18.0f, sw, 7.0f, line, enabled ? 0.85f : 0.35f);
+
+    // Math augmentation — bifurcation markers on the sliders whose
+    // values directly affect regime classification. Couple has two
+    // thresholds (TURBULENT entry at 0.3, CHAOTIC entry at 0.6).
+    // Decay shows a single danger zone above 0.99 (near-MARGINAL).
+    // We draw a thin vertical tick at the threshold position and a
+    // 1-pixel "danger band" beyond it.
+    if (c.id == "couple") {
+        unsigned char tWarn[4]   = { 250, 180,  90, 255 };
+        unsigned char tDanger[4] = { 248, 110, 110, 255 };
+        float t30 = clampf((0.30f - c.minValue) / (c.maxValue - c.minValue), 0.f, 1.f);
+        float t60 = clampf((0.60f - c.minValue) / (c.maxValue - c.minValue), 0.f, 1.f);
+        // Mark at K_c=0.3 (TURBULENT entry)
+        drawRect(sx + sw * t30 - 1.0f, y + 15.0f, 2.0f, 13.0f, tWarn, 0.85f);
+        // Mark at K_c=0.6 (CHAOTIC entry)
+        drawRect(sx + sw * t60 - 1.0f, y + 15.0f, 2.0f, 13.0f, tDanger, 0.85f);
+    } else if (c.id == "decay") {
+        unsigned char tWarn[4] = { 250, 180,  90, 255 };
+        float t99 = clampf((0.99f - c.minValue) / (c.maxValue - c.minValue), 0.f, 1.f);
+        // Mark at decay=0.99 (approaching MARGINAL)
+        drawRect(sx + sw * t99 - 1.0f, y + 15.0f, 2.0f, 13.0f, tWarn, 0.85f);
+    }
+
     drawRect(sx, y + 18.0f, sw * t, 7.0f, enabled ? hi : dim, enabled ? 0.95f : 0.38f);
     drawRect(sx + sw * t - 3.0f, y + 12.0f, 6.0f, 19.0f, enabled ? fg : dim, enabled ? 0.9f : 0.42f);
     hits_.push_back({HitKind::Control, idx, x, y, w - 34.0f, 40.0f, sx, sw});
@@ -784,15 +814,30 @@ void UiPanel::drawDock() {
     unsigned char fg[4] = {226, 236, 232, 255};
     unsigned char hi[4] = {92, 214, 170, 255};
     float x = 10.0f, y = 10.0f;
-    drawRect(x, y, std::min(900.0f, (float)winW_ - 20.0f), 42.0f, bg, 0.52f);
+    float dockW = std::min(900.0f, (float)winW_ - 20.0f);
+    drawRect(x, y, dockW, 42.0f, bg, 0.52f);
     drawText(x + 12.0f, y + 13.0f, "Tab/H: UI", hi, 0.95f, 1.35f);
+    // Right-side regime badge (math augmentation). Fixed width so it
+    // doesn't disturb the pinned-controls layout to its left.
+    float badgeW = 0.0f;
+    if (!regimeName_.empty()) {
+        badgeW = 140.0f;
+        float bx = x + dockW - badgeW - 4.0f;
+        unsigned char tag[4] = { regimeColor_[0], regimeColor_[1], regimeColor_[2], 255 };
+        drawRect(bx, y + 7.0f, badgeW, 28.0f, tag, 0.22f);
+        // tiny dim "regime" label
+        unsigned char dim[4] = { 110, 122, 140, 255 };
+        drawText(bx + 10.0f, y + 11.0f, "regime", dim, 0.85f, 0.85f);
+        drawText(bx + 10.0f, y + 22.0f, regimeName_, tag, 1.0f, 1.30f);
+    }
     float cx = x + 118.0f;
+    float maxCx = x + dockW - badgeW - 10.0f;
     for (const auto& id : pinned_) {
         int idx = controlIndexById(id);
         if (idx < 0) continue;
         std::string label = controls_[idx].label + " " + valueText(idx);
         float cw = std::min(210.0f, 24.0f + (float)label.size() * 9.2f);
-        if (cx + cw > winW_ - 10.0f) break;
+        if (cx + cw > maxCx) break;
         drawRect(cx, y + 7.0f, cw, 28.0f, hi, 0.15f);
         drawText(cx + 9.0f, y + 14.0f, label, fg, 0.78f, 1.15f);
         cx += cw + 6.0f;

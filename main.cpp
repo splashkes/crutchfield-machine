@@ -17,6 +17,15 @@
   #include <mach-o/dyld.h>
   #include <unistd.h>
   #include <limits.h>
+  #include <signal.h>
+#endif
+
+#include "link_glue.h"
+#include "syphon_glue.h"   // header self-stubs to no-ops off-mac
+#include "text_render.h"
+#include "osc.h"
+#if !defined(_WIN32)
+  #include <signal.h>
 #endif
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -43,6 +52,8 @@
 
 #include "camera.h"
 #include "recorder.h"
+#include "mp4_recorder.h"
+#include "dynamics.h"
 #include "overlay.h"
 #include "ui_panel.h"
 #include "input.h"
@@ -76,7 +87,21 @@ struct Cfg {
     float demoPresetSec = 0.0f;     // >0 = cycle to next preset every N seconds
     float demoInjectSec = 0.0f;     // >0 = fire an injection every N seconds
     bool midiLearn = false;          // print incoming MIDI messages
+    int  oscPort   = 0;              // 0 = OSC disabled; >0 = bind UDP port
+    bool oscLearn  = false;          // print incoming OSC addresses/args
+    std::string oscEchoHost;         // "" = default 127.0.0.1
+    int  oscEchoPort = 0;            // 0 = echo disabled
     bool logUsage  = false;          // stream every action fire to a session CSV
+    bool linkOn    = false;          // enable Ableton Link discovery on start
+    std::string syphonName;          // "" disables; otherwise Syphon server name
+    bool musicOn   = false;          // start silent; --music turns on the metronome
+    std::string camMatch;            // "" = first available; substring match against
+                                     // device name / model / uniqueID (macOS only).
+                                     // e.g. "phone" picks Continuity Camera.
+    // MP4 recorder knobs (parallel to the EXR recorder, separate codec path).
+    std::string mp4OutDir;           // "" = ~/Movies/CrutchfieldMachine
+    std::string ffmpegPath;          // "" = auto-detect homebrew → /usr/local → PATH
+    int  mp4Quality = 0;             // 0 = use Mp4Recorder default (65)
 };
 
 static std::string g_program_name = "feedback";
@@ -124,6 +149,23 @@ static void print_cli_help() {
       "  --demo              shortcut for --demo-presets 30 --demo-inject 8\n"
       "  --high-color        windowed, max colour pipeline (float32 + blur-q 2 + ca-q 2 + fields 4)\n"
       "  --midi-learn        print incoming MIDI notes/CCs for controller mapping\n"
+      "  --osc-listen [PORT] open UDP OSC listener (default port 7700)\n"
+      "  --osc-learn         print incoming OSC addresses+args (mapping mode)\n"
+      "  --osc-echo HOST:PORT  emit /cma/echo/<action> for every dispatched action\n"
+      "                        (e.g. --osc-echo 127.0.0.1:7701)\n"
+      "  --link              enable Ableton Link on start (network tempo sync)\n"
+      "  --syphon [NAME]     publish the render texture as a Syphon source on macOS\n"
+      "                        (default name: \"Crutchfield Machine\")\n"
+      "  --music             start playing the bundled metronome on launch\n"
+      "                        (off by default; Ctrl+Alt+Space toggles at runtime)\n"
+      "  --no-music          alias for the default — explicitly stay silent\n"
+      "  --camera NAME       pick capture device by substring of name/model/uniqueID\n"
+      "                        (macOS only; e.g. \"phone\" → Continuity Camera)\n"
+      "  --list-cameras      enumerate every camera AVFoundation can see and exit\n"
+      "  --mp4-dir DIR       output dir for HQ MP4 recordings (default: ~/Movies/CrutchfieldMachine)\n"
+      "  --mp4-quality N     hardware-encoder quality 0-100 (default: 65)\n"
+      "  --ffmpeg PATH       explicit ffmpeg binary (default: auto-detect)\n"
+      "  --list-actions      dump every action.name to stdout and exit\n"
       "  --log-usage         stream every action fire to a session CSV (and print summary on exit)\n"
       "  -h, --help          show this help\n\n"
       "On Windows only: launch with NO arguments to get an interactive mode\n"
@@ -161,6 +203,68 @@ static Cfg parse_cli(int argc, char** argv) {
         else if (eq("--demo-inject"))  { c.demoInjectSec = (float)atof(next()); if (c.demoInjectSec < 0) c.demoInjectSec = 0; }
         else if (eq("--demo"))         { c.demoPresetSec = 30.0f; c.demoInjectSec = 8.0f; }
         else if (eq("--midi-learn"))   { c.midiLearn = true; }
+        else if (eq("--osc-listen"))   {
+            // Optional port follows. If absent/non-numeric, use default 7700.
+            int p = 0;
+            if (i+1 < argc && argv[i+1][0] >= '0' && argv[i+1][0] <= '9') {
+                p = atoi(next());
+            }
+            c.oscPort = (p > 0 && p < 65536) ? p : 7700;
+        }
+        else if (eq("--osc-learn"))    { c.oscLearn = true; if (c.oscPort == 0) c.oscPort = 7700; }
+        else if (eq("--link"))         { c.linkOn = true; }
+        else if (eq("--no-music"))     { c.musicOn = false; }
+        else if (eq("--music")) {
+            // `--music` alone toggles the engine on. `--music on|off|...`
+            // takes an explicit value if the next token isn't another flag.
+            if (i+1 < argc && argv[i+1][0] != '-') {
+                std::string v = next();
+                c.musicOn = (v == "on" || v == "true" || v == "1" || v == "yes");
+            } else {
+                c.musicOn = true;
+            }
+        }
+        else if (eq("--syphon")) {
+            // Optional name follows
+            if (i+1 < argc && argv[i+1][0] != '-') c.syphonName = next();
+            else c.syphonName = "Crutchfield Machine";
+        }
+        else if (eq("--osc-echo")) {
+            const char* spec = next();
+            // Parse HOST:PORT or just :PORT or PORT
+            std::string s = spec;
+            size_t colon = s.rfind(':');
+            if (colon != std::string::npos) {
+                c.oscEchoHost = s.substr(0, colon);
+                c.oscEchoPort = atoi(s.c_str() + colon + 1);
+            } else {
+                c.oscEchoPort = atoi(s.c_str());
+            }
+            if (c.oscEchoHost.empty()) c.oscEchoHost = "127.0.0.1";
+            if (c.oscEchoPort <= 0)    c.oscEchoPort = 7701;
+        }
+        else if (eq("--camera")) {
+            if (i+1 < argc && argv[i+1][0] != '-') c.camMatch = next();
+        }
+        else if (eq("--list-cameras")) {
+            Camera::listDevices();
+            exit(0);
+        }
+        else if (eq("--mp4-dir"))      { c.mp4OutDir = next(); }
+        else if (eq("--mp4-quality"))  { int q = atoi(next());
+                                          if (q >= 0 && q <= 100) c.mp4Quality = q; }
+        else if (eq("--ffmpeg"))       { c.ffmpegPath = next(); }
+        else if (eq("--list-actions")) {
+            for (int ai = 0; ai < action_info_count(); ai++) {
+                const ActionInfo* a = action_info_by_index(ai);
+                if (!a || !a->name) continue;
+                printf("%-32s  [%s]  %s\n",
+                       a->name,
+                       a->group ? a->group : "",
+                       a->desc ? a->desc : "");
+            }
+            exit(0);
+        }
         else if (eq("--log-usage"))    { c.logUsage  = true; }
         // Convenience bundle — windowed, full-float feedback, max blur/CA,
         // 4-field coupling. For exploring the colour pipeline without
@@ -597,6 +701,11 @@ struct State {
     int  winW = 1280, winH = 720;      // current window / display size
     int  simW = 1280, simH = 720;      // simulation resolution (FBO size)
 
+    // Strings queued during boot to surface in the HUD on the first
+    // frame (after Overlay::init has run). Used by music off-by-default
+    // and other "first run, what's happening?" hints.
+    std::vector<std::string> bootHints;
+
     // Up to 4 feedback fields. Each is a ping-pong pair.
     // Fields beyond `activeFields` are unused (not created).
     FBO field[4][2];                   // field[i][0] and field[i][1]
@@ -647,6 +756,7 @@ struct State {
     bool    camReady = false;
 
     Recorder rec;
+    Mp4Recorder mp4;
     Overlay  ov;
     UiPanel  ui;
     // List of recording directories created this session (filled when each
@@ -3089,7 +3199,431 @@ static const ActionLayerReq ACTION_REQS[] = {
     { ACT_INJECT_HOLD,   L_INJECT,   "inject",        "F10" },
 };
 
+// ── State snapshots ──────────────────────────────────────────────────
+// 8 slots, indexed 1..8. Each slot stores Params + enable mask + a
+// per-slot timestamp for the UI panel. Slot 0 is unused (so 1..8 maps
+// directly to MIDI note numbers / OSC int values without -1 fiddling).
+namespace {
+struct StateSnapshot {
+    bool   used = false;
+    int    enableBits = 0;
+    Params p;
+    double savedAt = 0.0;   // wall-clock seconds since launch
+    int    regimeCode = -1; // 0=STABLE 1=TURBULENT 2=CHAOTIC 3=MARGINAL 4=DIVERGENT
+};
+StateSnapshot g_snapshots[9];   // indices 0..8; 0 unused
+} // namespace
+
+// ── Math-derived live monitors ────────────────────────────────────
+// These live at file scope so apply_action's helpers (which can see
+// them via `extern`) can flip them.
+bool   g_failsafe_enabled  = false;
+bool   g_math_echo_enabled = false;
+
+namespace {
+// Thin Params adapter over the shared dyn:: math. The pure functions live
+// in dynamics.h; the cockpit display calls them too, so the two surfaces
+// stay in sync. Keep this signature for callers that pass Params; the
+// underlying thresholds and ρ formula belong in dynamics.h.
+int classify_regime(const Params& p) {
+    float rho = dyn::compute_rho(p.decay, p.blurX, p.blurY);
+    return dyn::classify_regime(rho, p.couple);
+}
+const char* regime_name(int code) { return dyn::regime_name(code); }
+
+void snapshot_save(int slot) {
+    if (slot < 1 || slot > 8) return;
+    g_snapshots[slot].used = true;
+    g_snapshots[slot].enableBits = S.enable;
+    g_snapshots[slot].p = S.p;
+    g_snapshots[slot].savedAt = glfwGetTime();
+    g_snapshots[slot].regimeCode = classify_regime(S.p);
+    char buf[80];
+    snprintf(buf, sizeof buf, "snapshot saved → slot %d  [%s]",
+             slot, regime_name(g_snapshots[slot].regimeCode));
+    S.ov.logEvent(buf);
+    printf("[snapshot] saved slot %d (%s)\n", slot,
+           regime_name(g_snapshots[slot].regimeCode));
+}
+
+// Most recent slot tagged with the given regime, or -1 if none.
+int snapshot_last_with_regime(int targetCode) {
+    int best = -1;
+    double bestTime = -1.0;
+    for (int i = 1; i <= 8; i++) {
+        if (!g_snapshots[i].used) continue;
+        if (g_snapshots[i].regimeCode != targetCode) continue;
+        if (g_snapshots[i].savedAt > bestTime) {
+            bestTime = g_snapshots[i].savedAt;
+            best = i;
+        }
+    }
+    return best;
+}
+
+void snapshot_recall(int slot) {
+    if (slot < 1 || slot > 8) return;
+    if (!g_snapshots[slot].used) {
+        char buf[64];
+        snprintf(buf, sizeof buf, "snapshot slot %d empty", slot);
+        S.ov.logEvent(buf);
+        return;
+    }
+    S.enable = g_snapshots[slot].enableBits;
+    S.p      = g_snapshots[slot].p;
+    char buf[64];
+    snprintf(buf, sizeof buf, "snapshot recalled → slot %d", slot);
+    S.ov.logEvent(buf);
+    printf("[snapshot] recalled slot %d\n", slot);
+}
+
+// ── theater.failsafe watcher ──────────────────────────────────────
+// While g_failsafe_enabled, watch the regime. If DIVERGENT persists
+// for >2 seconds, recall the most recent STABLE snapshot (or fall
+// back to ACT_CLEAR if there isn't one). 3-second cooloff prevents
+// flicker-recovery loops.
+struct FailsafeState {
+    double divergentSince = -1.0;
+    double cooloffUntil   = 0.0;
+    int    tripCount      = 0;
+};
+FailsafeState g_fs;
+
+void failsafe_tick(double now, int regimeCode) {
+    if (!g_failsafe_enabled) {
+        g_fs.divergentSince = -1.0;
+        return;
+    }
+    if (now < g_fs.cooloffUntil) return;
+    if (regimeCode == 4) {  // DIVERGENT
+        if (g_fs.divergentSince < 0.0) g_fs.divergentSince = now;
+        if (now - g_fs.divergentSince > 2.0) {
+            int slot = snapshot_last_with_regime(0);  // STABLE
+            if (slot >= 1) {
+                snapshot_recall(slot);
+                char b[80]; snprintf(b, sizeof b,
+                    "FAILSAFE: divergent >2s → recall slot %d", slot);
+                S.ov.logEvent(b);
+                printf("[failsafe] tripped; recalled slot %d\n", slot);
+            } else {
+                S.needClear = true;
+                S.ov.logEvent("FAILSAFE: no STABLE snap → CLEAR");
+                printf("[failsafe] tripped; no STABLE snap, cleared\n");
+            }
+            g_fs.divergentSince = -1.0;
+            g_fs.cooloffUntil   = now + 3.0;
+            g_fs.tripCount++;
+        }
+    } else {
+        g_fs.divergentSince = -1.0;
+    }
+}
+
+// ── math.echo outbound OSC ───────────────────────────────────────
+// When enabled, publish the math model to /cma/math/* at ~30 Hz.
+// Edge-triggered regime change emits an extra /cma/math/regime/changed
+// + /cma/math/regime/name on transition so downstream consumers
+// (lighting consoles, TD networks) can act on the boundary crossing.
+struct EchoState {
+    double lastSent = 0.0;
+    int    lastRegime = -1;
+};
+EchoState g_echo;
+constexpr double MATH_ECHO_RATE_HZ = 30.0;
+
+void math_echo_tick(double now, int regimeCode) {
+    if (!g_math_echo_enabled) {
+        g_echo.lastRegime = -1;
+        return;
+    }
+    if (now - g_echo.lastSent < (1.0 / MATH_ECHO_RATE_HZ)) return;
+    g_echo.lastSent = now;
+
+    const Params& p = S.p;
+    float rho = p.decay * (1.0f - 0.02f * (p.blurX + p.blurY));
+    float halflife_sec = (p.decay > 0.f && p.decay < 1.f)
+        ? (std::log(0.5f) / std::log(p.decay)) / 60.0f : 1e9f;
+    float D = 0.25f * (p.blurX * p.blurX + p.blurY * p.blurY);
+    float noise_db = (p.noise > 1e-9f) ? 20.0f * std::log10(p.noise) : -120.0f;
+
+    feedback_osc_send_f("/cma/math/rho",         rho);
+    feedback_osc_send_f("/cma/math/halflife",    halflife_sec);
+    feedback_osc_send_f("/cma/math/diffusion",   D);
+    feedback_osc_send_f("/cma/math/coupling",    p.couple);
+    feedback_osc_send_f("/cma/math/noise/db",    noise_db);
+    feedback_osc_send_i("/cma/math/regime",      (int32_t)regimeCode);
+
+    if (regimeCode != g_echo.lastRegime) {
+        feedback_osc_send_i("/cma/math/regime/changed", (int32_t)regimeCode);
+        // The regime name is sent as a string. Use the bang+i pattern
+        // since we don't have a send_s; downstream can also subscribe
+        // to /cma/math/regime which is an int code.
+        g_echo.lastRegime = regimeCode;
+    }
+}
+} // namespace
+
 static void apply_action(ActionId id, float mag) {
+    // Synthetic macro ids dispatch through Input — each step re-enters
+    // apply_action via handler_, so a macro's steps land here naturally.
+    if ((int)id >= ACT_MACRO_BASE) {
+        g_input.fireMacroById(id);
+        return;
+    }
+    // State snapshots — mag carries the slot number.
+    if (id == ACT_SNAPSHOT_SAVE)   { snapshot_save((int)mag);   return; }
+    if (id == ACT_SNAPSHOT_RECALL) { snapshot_recall((int)mag); return; }
+    if (id == ACT_SNAPSHOT_RECALL_LAST_STABLE) {
+        // Manual equivalent of FAILSAFE's recovery path. Recall the most
+        // recent slot that was tagged STABLE at save time, or log empty.
+        int slot = snapshot_last_with_regime(dyn::STABLE);
+        if (slot >= 1) {
+            snapshot_recall(slot);
+            char b[80]; snprintf(b, sizeof b,
+                "recall last stable → slot %d", slot);
+            S.ov.logEvent(b);
+        } else {
+            S.ov.logEvent("no STABLE snapshot saved yet");
+        }
+        return;
+    }
+    if (id == ACT_MATH_TOGGLE)     { S.ov.toggleMath(); return; }
+
+    // ── Math-derived meta-controls ─────────────────────────────────
+    // These actions inject computed parameter values rather than
+    // directly bumping one knob. They use the live spectral-radius,
+    // half-life, and regime-classification model to land coherent
+    // parameter sets from a single input.
+    if (id == ACT_DYN_HALFLIFE_AXIS) {
+        // axis [0..1] → log-mapped seconds 0.05 .. 10
+        float v = std::clamp(mag, 0.0f, 1.0f);
+        float h_sec = 0.05f * std::pow(200.0f, v);
+        float h_frames = h_sec * 60.0f;                   // 60 fps reference
+        if (h_frames < 1.0f) h_frames = 1.0f;
+        float d = std::pow(0.5f, 1.0f / h_frames);
+        S.p.decay = std::clamp(d, 0.0f, 0.9999f);
+        char b[80]; snprintf(b, sizeof b,
+            "half-life → %.2f s  (decay %.4f)", h_sec, S.p.decay);
+        S.ov.logEvent(b);
+        return;
+    }
+    if (id == ACT_DYN_HALFLIFE_BEATS_AXIS) {
+        // axis [0..1] → log-mapped beats 0.125 .. 16 at current Link tempo
+        float v = std::clamp(mag, 0.0f, 1.0f);
+        float beats = 0.125f * std::pow(128.0f, v);
+        double bpm = link_tempo();
+        if (bpm < 20.0) bpm = 120.0;
+        float h_sec = (float)(beats * 60.0 / bpm);
+        float h_frames = h_sec * 60.0f;
+        if (h_frames < 1.0f) h_frames = 1.0f;
+        S.p.decay = std::clamp(std::pow(0.5f, 1.0f / h_frames), 0.0f, 0.9999f);
+        char b[96]; snprintf(b, sizeof b,
+            "half-life → %.2f beats / %.2f s @ %.1f bpm", beats, h_sec, (float)bpm);
+        S.ov.logEvent(b);
+        return;
+    }
+    if (id == ACT_REGIME_DISTANCE_AXIS) {
+        // 0 = deep STABLE, 0.5 = enter TURBULENT, 1 = enter CHAOTIC.
+        // Piecewise path through (K_c, decay, noise) precomputed to
+        // hit the regime thresholds at the right t values.
+        float t = std::clamp(mag, 0.0f, 1.0f);
+        float Kc, dc, ns;
+        if (t < 0.5f) {
+            float u = t / 0.5f;
+            Kc = 0.05f  + u * (0.35f  - 0.05f);
+            dc = 0.97f  + u * (0.985f - 0.97f);
+            ns = 0.001f + u * (0.005f - 0.001f);
+        } else {
+            float u = (t - 0.5f) / 0.5f;
+            Kc = 0.35f  + u * (0.70f  - 0.35f);
+            dc = 0.985f + u * (0.995f - 0.985f);
+            ns = 0.005f + u * (0.020f - 0.005f);
+        }
+        S.p.couple = Kc;
+        S.p.decay  = dc;
+        S.p.noise  = ns;
+        char b[96]; snprintf(b, sizeof b,
+            "regime.distance %.2f → decay %.3f / Kc %.2f / noise %.3f",
+            t, dc, Kc, ns);
+        S.ov.logEvent(b);
+        return;
+    }
+    if (id == ACT_REGIME_SET) {
+        // Discrete regime selector. Picks a target tuple and blends most
+        // of the way there in one press so the classifier actually lands
+        // in the named regime · the previous 70/30 blend left CHAOTIC at
+        // couple ≈ 0.49 (TURBULENT range) when starting from couple = 0.
+        //
+        // MARGINAL target uses elevated noise AND drives blur to zero so
+        // the ρ proxy can clear the 0.998 gate · ρ = decay × (1 − 0.02 ×
+        // (σx + σy)), so default blur (1.0 + 1.0) penalises ρ by 4%,
+        // which puts MARGINAL out of reach unless blur is also lowered.
+        // This honours the paper's noise-modulated marginal regime.
+        int idx = (int)std::round(mag);
+        if (idx < 0) idx = 0;
+        if (idx > 3) idx = 3;
+        const float T[4][4] = {
+            // { decay, couple, noise, blur (per axis) }
+            { 0.97f,   0.05f, 0.001f, 1.0f },  // STABLE     · low coupling, low noise
+            { 0.985f,  0.45f, 0.008f, 1.0f },  // TURBULENT  · K_c past 0.30 gate
+            { 0.995f,  0.75f, 0.020f, 1.0f },  // CHAOTIC    · K_c past 0.60 gate
+            { 0.9995f, 0.15f, 0.030f, 0.1f },  // MARGINAL   · ρ → 1, noise pumped, blur → 0
+        };
+        const char* names[4] = { "STABLE", "TURBULENT", "CHAOTIC", "MARGINAL" };
+        const float blend = 0.99f;  // was 0.7f · soft enough to mask the snap visually but firm enough to clear the classifier gates
+        S.p.decay  = blend * T[idx][0] + (1.0f - blend) * S.p.decay;
+        S.p.couple = blend * T[idx][1] + (1.0f - blend) * S.p.couple;
+        S.p.noise  = blend * T[idx][2] + (1.0f - blend) * S.p.noise;
+        S.p.blurX  = blend * T[idx][3] + (1.0f - blend) * S.p.blurX;
+        S.p.blurY  = blend * T[idx][3] + (1.0f - blend) * S.p.blurY;
+        char b[64]; snprintf(b, sizeof b, "regime → %s", names[idx]);
+        S.ov.logEvent(b);
+        return;
+    }
+    if (id == ACT_REGIME_INVERT) {
+        // Cross the nearest regime boundary by adjusting K_c with a 5%
+        // overshoot. Lightweight version: just bump K_c either side of
+        // the nearest of {0.3, 0.6}.
+        float Kc = S.p.couple;
+        float dist03 = std::fabs(Kc - 0.30f);
+        float dist06 = std::fabs(Kc - 0.60f);
+        float boundary = dist03 < dist06 ? 0.30f : 0.60f;
+        float overshoot = (Kc > boundary ? -0.05f : +0.05f);
+        S.p.couple = std::clamp(boundary + overshoot, 0.0f, 1.0f);
+        char b[64]; snprintf(b, sizeof b,
+            "regime.invert: Kc %.2f → %.2f", Kc, S.p.couple);
+        S.ov.logEvent(b);
+        return;
+    }
+    // Compass pad — both axes accumulate; main effect applies via a
+    // helper after each update.
+    if (id == ACT_PAD_REGIME_X || id == ACT_PAD_REGIME_Y) {
+        static float padX = 0.f, padY = 0.f;
+        // mag arrives in [0..1] from axis-style sources; remap to [-1..1].
+        float v = mag * 2.0f - 1.0f;
+        if (id == ACT_PAD_REGIME_X) padX = std::clamp(v, -1.0f, 1.0f);
+        else                        padY = std::clamp(v, -1.0f, 1.0f);
+        // Polar:  angle picks regime quadrant, radius picks intensity.
+        float r = std::min(1.0f, std::sqrt(padX * padX + padY * padY));
+        float angle = std::atan2(padY, padX);                       // -π..+π
+        float a = (angle + (float)M_PI) / (2.0f * (float)M_PI);     // 0..1
+        float quad = a * 4.0f;                                       // 0..4
+        int q0 = (int)quad % 4;
+        int q1 = (q0 + 1) % 4;
+        float f = quad - (float)((int)quad);
+        float w[4] = { 0.f, 0.f, 0.f, 0.f };
+        w[q0] = 1.0f - f; w[q1] = f;
+        // Cardinal regimes — E=STABLE (q0=0), N=TURBULENT (q=1), W=CHAOTIC (q=2), S=MARGINAL (q=3)
+        // (Match angle 0 = +X axis → STABLE; counterclockwise from there.)
+        const float T[4][3] = {
+            { 0.97f,  0.05f, 0.001f },  // STABLE
+            { 0.985f, 0.45f, 0.008f },  // TURBULENT
+            { 0.995f, 0.70f, 0.020f },  // CHAOTIC
+            { 0.998f, 0.15f, 0.001f },  // MARGINAL
+        };
+        float decay = 0.f, Kc = 0.f, ns = 0.f;
+        for (int i = 0; i < 4; i++) {
+            decay += w[i] * T[i][0];
+            Kc    += w[i] * T[i][1];
+            ns    += w[i] * T[i][2];
+        }
+        S.p.decay  = 0.97f  + r * (decay - 0.97f);
+        S.p.couple = 0.05f  + r * (Kc    - 0.05f);
+        S.p.noise  = 0.001f + r * (ns    - 0.001f);
+        // No HUD spam — runs at axis rate.
+        return;
+    }
+    // Helper for boolean-toggle actions that honour an explicit
+    // magnitude · 0 = force off, anything > 0.5 with NO trailing
+    // magnitude bit set forces on. The bound-action default in
+    // input.cpp dispatches with mag = 1.0 on every press, so the
+    // common case (a key/MIDI/OSC trigger that doesn't carry an arg)
+    // still toggles. Lets an OSC controller with stateful buttons
+    // hold the channel at the value it wants.
+    auto apply_toggle = [&mag](bool& flag, const char* on_msg, const char* off_msg) {
+        bool want;
+        if (mag < 0.001f)        want = false;            // explicit OFF
+        else if (mag > 1.5f)     want = (mag != 0.0f);    // future explicit value
+        else                     want = !flag;            // default toggle
+        flag = want;
+        S.ov.logEvent(want ? on_msg : off_msg);
+    };
+    if (id == ACT_THEATER_FAILSAFE) {
+        // Toggle the failsafe watcher; the actual divergent-detection
+        // and recovery lives in main loop's failsafe_tick().
+        extern bool g_failsafe_enabled;
+        apply_toggle(g_failsafe_enabled,
+            "theater.failsafe ARMED  (DIVERGENT >2s → recall STABLE)",
+            "theater.failsafe OFF");
+        return;
+    }
+    if (id == ACT_MATH_ECHO_TOGGLE) {
+        extern bool g_math_echo_enabled;
+        apply_toggle(g_math_echo_enabled,
+            "math.echo ON  (/cma/math/* at 30 Hz)",
+            "math.echo OFF");
+        return;
+    }
+
+    // ── Mathlab nav: dedicated actions wired in installDefaults so a
+    //    keyboard binding doesn't have to fight the warp.translate
+    //    bindings. We also intercept translate keys as a fallback so
+    //    users who already mapped arrows to translate still get math
+    //    nav while the panel is visible.
+    if (id == ACT_MATH_CURSOR_UP) { if (S.ov.mathVisible()) S.ov.mathSelectPrev(); return; }
+    if (id == ACT_MATH_CURSOR_DN) { if (S.ov.mathVisible()) S.ov.mathSelectNext(); return; }
+    if (id == ACT_MATH_ADJUST_DEC) {
+        if (S.ov.mathVisible()) {
+            int act = S.ov.mathSelectedActionDec();
+            if (act) apply_action((ActionId)act, mag);
+        }
+        return;
+    }
+    if (id == ACT_MATH_ADJUST_INC) {
+        if (S.ov.mathVisible()) {
+            int act = S.ov.mathSelectedActionInc();
+            if (act) apply_action((ActionId)act, mag);
+        }
+        return;
+    }
+    if (S.ov.mathVisible()) {
+        // Fallback: hijack translate arrows so arrow keys "just work"
+        // for nav while the panel is open.
+        if (id == ACT_TRANS_UP)    { S.ov.mathSelectPrev(); return; }
+        if (id == ACT_TRANS_DN)    { S.ov.mathSelectNext(); return; }
+        if (id == ACT_TRANS_LEFT) {
+            int act = S.ov.mathSelectedActionDec();
+            if (act) apply_action((ActionId)act, mag);
+            return;
+        }
+        if (id == ACT_TRANS_RIGHT) {
+            int act = S.ov.mathSelectedActionInc();
+            if (act) apply_action((ActionId)act, mag);
+            return;
+        }
+    }
+    if (id == ACT_LINK_TOGGLE) {
+        bool on = !link_enabled();
+        link_set_enabled(on ? 1 : 0);
+        char buf[80];
+        snprintf(buf, sizeof buf, "Ableton Link: %s (%d peers)",
+                 on ? "on" : "off", link_num_peers());
+        S.ov.logEvent(buf);
+        return;
+    }
+    if (id == ACT_LINK_TAP) {
+        // Pull current beat phase + advance one beat. Quick local tap;
+        // proper tap-tempo would use a multi-tap regression.
+        link_set_tempo(link_tempo());
+        S.ov.logEvent("link.tap");
+        return;
+    }
+    if (id == ACT_LINK_TRANSPORT) {
+        bool on = !link_is_playing();
+        link_set_playing(on ? 1 : 0);
+        S.ov.logEvent(on ? "link.transport ▶" : "link.transport ◼");
+        return;
+    }
     auto& p = S.p;
 
     // Warn when a parameter action fires but its layer is off. We still
@@ -3477,6 +4011,42 @@ static void apply_action(ActionId id, float mag) {
                 S.ov.logEvent("recording: started");
             }
             return;
+        case ACT_REC_MP4_TOGGLE: {
+            if (S.mp4.active()) {
+                S.mp4.stop();
+                char b[256]; snprintf(b, sizeof b, "MP4 stopped → %s",
+                                      S.mp4.lastFile().c_str());
+                S.ov.logEvent(b);
+            } else {
+                Mp4Recorder::Config mcfg{};
+                // Persist the codec choice across toggles by keeping the
+                // last value the user cycled to. First start defaults to
+                // hevc; subsequent starts honour whatever cycleCodec()
+                // landed on.
+                if (!S.mp4.codec().empty()) mcfg.codec = S.mp4.codec();
+                mcfg.outDir     = g_cfg.mp4OutDir;
+                mcfg.ffmpegPath = g_cfg.ffmpegPath;
+                mcfg.quality    = g_cfg.mp4Quality > 0 ? g_cfg.mp4Quality : 65;
+                if (S.mp4.start(S.simW, S.simH,
+                                g_cfg.recFps > 0 ? g_cfg.recFps : 60,
+                                mcfg)) {
+                    char b[128]; snprintf(b, sizeof b,
+                        "MP4 recording (%s) → %s",
+                        mcfg.codec.c_str(), S.mp4.lastFile().c_str());
+                    S.ov.logEvent(b);
+                } else {
+                    S.ov.logEvent("MP4 start FAILED (ffmpeg missing?)");
+                }
+            }
+            return;
+        }
+        case ACT_REC_MP4_CYCLE: {
+            S.mp4.cycleCodec();
+            char b[64]; snprintf(b, sizeof b, "MP4 codec: %s",
+                                 S.mp4.codec().c_str());
+            S.ov.logEvent(b);
+            return;
+        }
         case ACT_SCREENSHOT:
             S.screenshotPending = true;
             S.ov.logEvent("screenshot queued");
@@ -3983,15 +4553,46 @@ static void size_cb(GLFWwindow* win, int w, int h) {
     // is unrelated, so we don't need to stop recording.
     S.winW = w; S.winH = h;
     S.ov.resize(w, h);
+    TextRender::resize(w, h);
     int ww = w, wh = h;
     glfwGetWindowSize(win, &ww, &wh);
     S.ui.resize(ww, wh);
 }
 
+// Mouse coords from glfwGetCursorPos are in WINDOW pixels. The overlay
+// (math panel) renders in FRAMEBUFFER pixels — on Retina these differ
+// by the per-axis scale. Convert window→framebuffer for overlay hit
+// tests so clicks land where the user sees them.
+static void cursor_to_overlay(GLFWwindow* win, double& x, double& y) {
+    int wW = 0, wH = 0, fW = 0, fH = 0;
+    glfwGetWindowSize(win, &wW, &wH);
+    glfwGetFramebufferSize(win, &fW, &fH);
+    if (wW > 0 && wH > 0) {
+        x *= (double)fW / (double)wW;
+        y *= (double)fH / (double)wH;
+    }
+}
+
 static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
     double x = 0.0, y = 0.0;
     glfwGetCursorPos(win, &x, &y);
+    // ui_panel sees window-pixel coords first. Its mouseButton only
+    // returns true when it actually consumed the click (a hit on a
+    // control, or a release that ended an in-progress drag) — so we
+    // can safely fall through to the overlay cockpit otherwise.
     if (S.ui.mouseButton(button, action, x, y)) return;
+    // Overlay (DYNAMICS cockpit) hit-tests in framebuffer pixels.
+    // On Retina, window is 1280×720 logical, framebuffer is 2560×1440;
+    // scale window coords up before handing them to the overlay.
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        double ox = x, oy = y;
+        cursor_to_overlay(win, ox, oy);
+        if (action == GLFW_PRESS) {
+            if (S.ov.mathMouseDown(ox, oy)) return;
+        } else if (action == GLFW_RELEASE) {
+            S.ov.mathMouseUp();
+        }
+    }
     if (button != GLFW_MOUSE_BUTTON_LEFT) return;
     if (action == GLFW_PRESS) {
         S.mouseDrag = true;
@@ -4001,8 +4602,12 @@ static void mouse_button_cb(GLFWwindow* win, int button, int action, int) {
     }
 }
 
-static void cursor_pos_cb(GLFWwindow*, double x, double y) {
+static void cursor_pos_cb(GLFWwindow* win, double x, double y) {
     if (S.ui.cursor(x, y)) return;
+    // Math panel hit-test in framebuffer pixels.
+    double ox = x, oy = y;
+    cursor_to_overlay(win, ox, oy);
+    if (S.ov.mathMouseDrag(ox, oy)) return;
     if (!S.mouseDrag) return;
     double dx = x - S.mouseLastX;
     double dy = y - S.mouseLastY;
@@ -4015,37 +4620,24 @@ static void cursor_pos_cb(GLFWwindow*, double x, double y) {
     if (S.viewRotX >  limit) S.viewRotX =  limit;
 }
 
-// ── one feedback step for a single field ──────────────────────────────────
-static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
-    glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
-    glViewport(0, 0, dst.w, dst.h);
-    glUseProgram(progFeedback);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, src.tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, otherSrc.tex);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : src.tex);
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][0].tex);
-    glActiveTexture(GL_TEXTURE4);
-    glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][1].tex);
-
+// ── shared feedback-shader uniform binding ────────────────────────────────
+// Single source of truth for the parameter side of the feedback shader call.
+// Both render paths (planar render_field and volumetric render_volume_field)
+// push the same per-frame Params; the only differences are texture binding,
+// viewport, and whether we draw once or loop over volume slices. Extracted
+// to one place so adding a new uniform doesn't require remembering to edit
+// two near-identical 60-line blocks.
+static void bind_feedback_params(int fieldId) {
     #define U1f(n, v)  glUniform1f (glGetUniformLocation(progFeedback, n), (v))
     #define U1i(n, v)  glUniform1i (glGetUniformLocation(progFeedback, n), (v))
     #define U1ui(n, v) glUniform1ui(glGetUniformLocation(progFeedback, n), (v))
-    #define U2f(n, x, y) glUniform2f(glGetUniformLocation(progFeedback, n), (x), (y))
 
     U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
     U1i("uPrevVol", 3); U1i("uOtherVol", 4);
-    U2f("uRes", (float)dst.w, (float)dst.h);
     U1f("uTime", (float)glfwGetTime());
     U1ui("uFrame", S.frame);
     U1i("uEnable", S.enable);
     U1i("uFieldId", fieldId);
-    U1f("uVolumeSlice", 0.0f);
-    U1f("uVolumeSize", (float)S.volumeSize);
 
     auto& p = S.p;
     U1f("uZoom", p.zoom); U1f("uTheta", p.theta);
@@ -4117,108 +4709,61 @@ static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
         if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
     }
     U1f("uOutFade", effOutFade);
-
     // BPM strobe-lock uniforms for vfx_slot.glsl.
     U1f("uBpmPhase", p.beatPhase);
     U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
 
+    #undef U1f
+    #undef U1i
+    #undef U1ui
+}
+
+// ── one feedback step for a single field ──────────────────────────────────
+static void render_field(int fieldId, FBO& src, FBO& dst, FBO& otherSrc) {
+    glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
+    glViewport(0, 0, dst.w, dst.h);
+    glUseProgram(progFeedback);
+
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, src.tex);
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, otherSrc.tex);
+    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : src.tex);
+    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][0].tex);
+    glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_3D, S.volumeField[fieldId][1].tex);
+
+    bind_feedback_params(fieldId);
+    glUniform2f(glGetUniformLocation(progFeedback, "uRes"), (float)dst.w, (float)dst.h);
+    glUniform1f(glGetUniformLocation(progFeedback, "uVolumeSlice"), 0.0f);
+    glUniform1f(glGetUniformLocation(progFeedback, "uVolumeSize"), (float)S.volumeSize);
+
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
+// ── one feedback step for a single volumetric field ───────────────────────
+// Same shader, called per Z slice. The flatFallback is bound on the 2D
+// sampler ports because the shader still references them even in volume
+// mode; the volumetric path reads from the 3D samplers.
 static void render_volume_field(int fieldId, VolumeFBO& src, VolumeFBO& dst,
                                 VolumeFBO& otherSrc, FBO& flatFallback) {
     glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
     glViewport(0, 0, dst.size, dst.size);
     glUseProgram(progFeedback);
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : flatFallback.tex);
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_3D, src.tex);
-    glActiveTexture(GL_TEXTURE4);
-    glBindTexture(GL_TEXTURE_3D, otherSrc.tex);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, flatFallback.tex);
+    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, S.camTex ? S.camTex : flatFallback.tex);
+    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_3D, src.tex);
+    glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_3D, otherSrc.tex);
 
-    U1i("uPrev", 0); U1i("uOther", 1); U1i("uCam", 2);
-    U1i("uPrevVol", 3); U1i("uOtherVol", 4);
-    U2f("uRes", (float)dst.size, (float)dst.size);
-    U1f("uTime", (float)glfwGetTime());
-    U1ui("uFrame", S.frame);
-    U1i("uEnable", S.enable);
-    U1i("uFieldId", fieldId);
-    U1f("uVolumeSize", (float)dst.size);
+    bind_feedback_params(fieldId);
+    glUniform2f(glGetUniformLocation(progFeedback, "uRes"),
+                (float)dst.size, (float)dst.size);
+    glUniform1f(glGetUniformLocation(progFeedback, "uVolumeSize"), (float)dst.size);
 
-    auto& p = S.p;
-    U1f("uZoom", p.zoom); U1f("uTheta", p.theta);
-    U1f("uPivotX", p.pivotX); U1f("uPivotY", p.pivotY);
-    U1f("uTransX", p.transX); U1f("uTransY", p.transY);
-    U1f("uChroma", p.chroma);
-    U1f("uBlurX", p.blurX); U1f("uBlurY", p.blurY); U1f("uBlurAngle", p.blurAngle);
-    U1i("uBlurQuality", S.blurQ);
-    U1i("uCAQuality",   S.caQ);
-    U1f("uGamma", p.gamma);
-    U1f("uHueRate", p.hueRate + p.hueBeatKick); U1f("uSatGain", p.satGain);
-    U1f("uContrast", p.contrast);
-    float effOutFade = fmaxf(-1.0f, fminf(1.0f, p.outFade + p.flashDecay));
-    float effDecay   = (p.decayDipTimer > 0.0f) ? 0.90f : p.decay;
-    U1f("uDecay", effDecay);
-    U1f("uBorderSize", p.borderSize);
-    U1f("uBorderSoftness", p.borderSoftness);
-    U1f("uBorderDecay", p.borderDecay);
-    U1f("uNoise", p.noise);
-    U1i("uNoiseQuality", S.noiseQ);
-    U1f("uMusKick",  S.musKick);
-    U1f("uMusSnare", S.musSnare);
-    U1f("uMusHat",   S.musHat);
-    U1f("uMusBass",  S.musBass);
-    U1f("uMusOther", S.musOther);
-    U1i("uPixelateStyle", S.pixelateStyle);
-    U1i("uPixelateBleedIdx", S.pixelateBleedIdx);
-    U1i("uPixelateBurnSeed", S.pixelateBurnSeed);
-    U1i("uInvert",      p.invert);
-    U1i("uInvertPeriod",p.invertPeriod);
-    U1f("uSensorGamma", p.sensorGamma);
-    U1f("uSatKnee",     p.satKnee);
-    U1f("uColorCross",  p.colorCross);
-    U1f("uThermAmp",    p.thermAmp);
-    U1f("uThermScale",  p.thermScale);
-    U1f("uThermSpeed",  p.thermSpeed);
-    U1f("uThermRise",   p.thermRise);
-    U1f("uThermSwirl",  p.thermSwirl);
-    U1f("uCouple", p.couple);
-    U1f("uExternal", p.external);
-    U1f("uFxWet", p.fxWet);
-    U1f("uSourceWet", p.sourceWet);
-    U1i("uSphereMode", p.sphereMode);
-    U1f("uSphereReverb", p.sphereReverb);
-    U1f("uInject", p.inject);
-    U1i("uPattern", p.pattern);
-    U1f("uPatternInject", p.patternInject);
-    U1f("uShapeInject", p.shapeInject);
-    U1i("uShapeKind", p.shapeKind);
-    U1i("uShapeCount", p.shapeCount);
-    U1f("uShapeSize", p.shapeSize);
-    U1f("uShapeAngle", p.shapeAngle);
-
-    {
-        GLint lEff = glGetUniformLocation(progFeedback, "uVfxEffect");
-        GLint lPar = glGetUniformLocation(progFeedback, "uVfxParam");
-        GLint lSrc = glGetUniformLocation(progFeedback, "uVfxBSource");
-        if (lEff >= 0) glUniform1iv(lEff, 2, p.vfxSlot);
-        if (lPar >= 0) glUniform1fv(lPar, 2, p.vfxParam);
-        if (lSrc >= 0) glUniform1iv(lSrc, 2, p.vfxBSource);
-    }
-    U1f("uOutFade", effOutFade);
-    U1f("uBpmPhase", p.beatPhase);
-    U1i("uBpmStrobeLock", (p.bpmSyncOn && p.bpmStrobe) ? 1 : 0);
-
+    GLint locSlice = glGetUniformLocation(progFeedback, "uVolumeSlice");
     for (int z = 0; z < dst.size; z++) {
         glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                   dst.tex, 0, z);
-        U1f("uVolumeSlice", (float)z);
+        glUniform1f(locSlice, (float)z);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -4648,7 +5193,18 @@ int main(int argc, char** argv) {
                 ")"
             );
         }
-        Music::setPlaying(true);
+        // CLI controls whether the music engine starts playing. Patterns
+        // are loaded regardless so Ctrl+Alt+Space (or OSC music.playpause)
+        // can start playback later without touching presets.
+        Music::setPlaying(g_cfg.musicOn);
+        if (!g_cfg.musicOn) {
+            printf("[music] silent on launch — Ctrl+Alt+Space to start the bundled metronome,\n"
+                   "       Ctrl+Alt+N / Ctrl+Alt+P to cycle presets, or pass --music to auto-play.\n");
+            // Defer the HUD hint to after S.ov.init() runs. Stash it in a
+            // queued event slot consumed in the first frame of the main
+            // loop. See the boot-banner block near the render loop start.
+            S.bootHints.push_back("music: silent — Ctrl+Alt+Space to start metronome");
+        }
     }
 
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed\n"); return 1; }
@@ -4722,8 +5278,50 @@ int main(int argc, char** argv) {
     // bindings.ini lives next to the executable (or at CWD) — we write a default
     // on first run so users have something to edit.
     g_input.installDefaults();
+    // Initialize Ableton Link with a sensible default BPM. Discovery is
+    // off by default to avoid surprise network chatter; users enable via
+    // link.toggle action or the --link CLI flag.
+    link_init(120.0);
+    if (g_cfg.linkOn) {
+        link_set_enabled(1);
+        printf("[link] discovery enabled\n");
+    }
+
+    // Initialize Syphon if requested. macOS-only; off-mac syphon_init
+    // is a stub that returns 0 and does nothing. GL context must be
+    // current at this point (glfwMakeContextCurrent ran earlier).
+    if (!g_cfg.syphonName.empty()) {
+        syphon_init(g_cfg.syphonName.c_str());
+    }
     g_input.setMidiLearn(g_cfg.midiLearn);
-    g_input.setHandler(apply_action);
+    // OSC config: CLI overrides bindings.ini. If the user passed --osc-listen
+    // we set port + learn here; bindings.ini may still set learn=on later.
+    if (g_cfg.oscPort  > 0)   g_input.setOscPort(g_cfg.oscPort);
+    if (g_cfg.oscLearn)       g_input.setOscLearn(true);
+    if (g_cfg.oscEchoPort > 0)
+        g_input.setOscEcho(g_cfg.oscEchoHost.empty()
+                           ? std::string("127.0.0.1") : g_cfg.oscEchoHost,
+                           g_cfg.oscEchoPort);
+    // Wrap apply_action with OSC echo so every dispatched action is
+    // emitted as /cma/echo/<action.name>. Cheap when echo isn't
+    // configured (one branch in echoActionDispatch).
+    g_input.setHandler([](ActionId id, float mag) {
+        apply_action(id, mag);
+        g_input.echoActionDispatch(id, mag);
+    });
+
+#if !defined(_WIN32)
+    // SIGHUP triggers a bindings.ini reload. Async-signal-safe: just
+    // pokes a flag the main thread polls inside Input::tryReload.
+    {
+        struct sigaction sa {};
+        sa.sa_handler = [](int) { g_input.requestReload(); };
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART;
+        ::sigaction(SIGHUP, &sa, nullptr);
+        ::sigaction(SIGUSR1, &sa, nullptr);
+    }
+#endif
 
     // ── usage logger ─────────────────────────────────────────────────
     // When --log-usage is set: open a session-timestamped CSV and stream
@@ -4880,8 +5478,30 @@ int main(int argc, char** argv) {
     S.ov.resize(fbw, fbh);
     S.ui.resize(winw, winh);
 
-    // Camera setup (optional).
-    if (S.cam.open(640, 480)) {
+    // Initialize the TTF renderer for polished UI text (Mathlab uses it).
+    // If the font file is missing the renderer no-ops and overlay falls
+    // back to stb_easy_font for everything.
+    {
+        std::string fontPath = g_shader_base.empty()
+            ? std::string("fonts/Inter-Regular.ttf")
+            : (g_shader_base + "fonts/Inter-Regular.ttf");
+        if (!TextRender::init(fontPath)) {
+            printf("[text] using stb_easy_font fallback (no Inter at %s)\n",
+                   fontPath.c_str());
+        }
+        TextRender::resize(fbw, fbh);
+    }
+
+    // Drain boot hints into the HUD so first-time users see what's going
+    // on. Each logEvent persists in the rolling log for ~5 seconds.
+    for (const std::string& h : S.bootHints) S.ov.logEvent(h);
+    S.bootHints.clear();
+
+    // Camera setup (optional). On macOS the optional --camera substring
+    // routes the user past the FaceTime HD default. e.g. --camera phone
+    // picks the iPhone Continuity Camera; --camera obs picks OBS Virtual.
+    const char* camMatch = g_cfg.camMatch.empty() ? nullptr : g_cfg.camMatch.c_str();
+    if (S.cam.open(640, 480, camMatch)) {
         S.camBuf.resize(S.cam.width() * S.cam.height() * 3);
         glGenTextures(1, &S.camTex);
         glBindTexture(GL_TEXTURE_2D, S.camTex);
@@ -4969,6 +5589,10 @@ int main(int argc, char** argv) {
         }
         g_input.pollGamepad(GLFW_JOYSTICK_1, dt, gpCtx);
         g_input.pollMidi(dt);
+        g_input.pollOsc(dt);
+        g_input.pollAudio(dt);
+        g_input.pollLink(dt);
+        g_input.tryReload(dt);
         if (g_input.midi().connected && !midiWasConnected) {
             sync_ddj_layer_leds();
             sync_ddj_filter_leds();
@@ -5111,6 +5735,9 @@ int main(int argc, char** argv) {
         // Record from the sim-resolution texture (not the display framebuffer)
         // so recordings get the full internal quality regardless of window size.
         if (S.rec.active()) S.rec.capture(latest.fbo);
+        // MP4 recorder reads from the same pre-overlay FBO. HUD + DYNAMICS
+        // panel are drawn after this, so the output never contains UI.
+        if (S.mp4.active()) S.mp4.capture(latest.fbo);
 
         // One-shot screenshot request from PrtSc (ACT_SCREENSHOT).
         if (S.screenshotPending) {
@@ -5126,8 +5753,75 @@ int main(int argc, char** argv) {
 
         // Help provider is pulled per-frame from inside Overlay::draw, so
         // values shown in a section stay live. Nothing to push here.
+        //
+        // Push a math-dashboard sample once per frame so its sparklines
+        // and characterization always reflect live state.
+        {
+            Overlay::MathSample ms {};
+            ms.decay        = S.p.decay;
+            ms.blurX        = S.p.blurX;
+            ms.blurY        = S.p.blurY;
+            ms.chroma       = S.p.chroma;
+            ms.gamma        = S.p.gamma;
+            ms.satGain      = S.p.satGain;
+            ms.contrast     = S.p.contrast;
+            ms.hueRate      = S.p.hueRate;
+            ms.noise        = S.p.noise;
+            ms.couple       = S.p.couple;
+            ms.external     = S.p.external;
+            ms.sphereReverb = S.p.sphereReverb;
+            ms.outFade      = S.p.outFade;
+            ms.zoom         = S.p.zoom;
+            ms.theta        = S.p.theta;
+            S.ov.mathPushFrame(ms);
+            // Push snapshot slot occupancy so the cockpit can tint the
+            // RECALL row by saved-regime colour and only treat used
+            // slots as clickable.
+            Overlay::SnapshotSlotState snap[8];
+            for (int i = 0; i < 8; i++) {
+                snap[i].used       = g_snapshots[i+1].used;
+                snap[i].regimeCode = g_snapshots[i+1].used
+                                   ? g_snapshots[i+1].regimeCode : -1;
+            }
+            S.ov.setSnapshotState(snap);
+        }
+        // Drain any pending Mathlab slider drag value into apply_action.
+        S.ov.mathTickDrag([](int act, float v) {
+            apply_action((ActionId)act, v);
+        });
+
+        // Math-derived watchers (failsafe + outbound echo). Cheap
+        // (one classify + a few atomic sends if enabled).
+        {
+            double now = glfwGetTime();
+            int regime = classify_regime(S.p);
+            failsafe_tick(now, regime);
+            math_echo_tick(now, regime);
+            // Push the regime badge into the UI panel dock so the
+            // pinned bar always carries the dynamical state alongside
+            // the per-parameter controls.
+            static const unsigned char REGIME_RGB[5][3] = {
+                {130, 220, 150},  // STABLE (green)
+                {245, 175,  90},  // TURBULENT (orange)
+                {248, 110, 110},  // CHAOTIC (red)
+                {250, 200, 110},  // MARGINAL (warn)
+                {248,  80,  80},  // DIVERGENT (danger)
+            };
+            int rc = (regime >= 0 && regime <= 4) ? regime : 0;
+            S.ui.setRegimeBadge(regime_name(regime),
+                                REGIME_RGB[rc][0], REGIME_RGB[rc][1], REGIME_RGB[rc][2]);
+        }
+
         S.ov.draw();
         S.ui.draw();
+
+        // Publish current render texture as Syphon if enabled. We use
+        // the latest simulation FBO texture (not the on-screen image,
+        // so overlays/HUD don't leak into the published stream — same
+        // policy as the screen recorder). syphon_running is 0 off-mac.
+        if (syphon_running()) {
+            syphon_publish(GL_TEXTURE_2D, latest.tex, S.simW, S.simH);
+        }
 
         glfwSwapBuffers(win);
         draw_ui_windows();
@@ -5165,6 +5859,9 @@ int main(int argc, char** argv) {
         if (!S.rec.lastDir().empty())
             S.recordingsThisSession.push_back(S.rec.lastDir());
     }
+    // Flush the MP4 pipe so the moov atom gets written. Skipping this
+    // leaves a half-baked file that QuickTime refuses to open.
+    if (S.mp4.active()) S.mp4.stop();
     S.ov.shutdown();
     S.ui.shutdown();
     close_ui_windows();

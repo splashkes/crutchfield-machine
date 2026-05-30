@@ -92,6 +92,8 @@ enum ActionId : int {
     ACT_RELOAD_SHADERS,
     ACT_FULLSCREEN,
     ACT_REC_TOGGLE,
+    ACT_REC_MP4_TOGGLE,        // HEVC MP4 recorder (separate from EXR archive)
+    ACT_REC_MP4_CYCLE,         // cycle MP4 codec preset (HEVC → H264 → ProRes)
     ACT_SCREENSHOT,
     ACT_SCREENSHOT_HIRES,
     ACT_PRESET_SAVE, ACT_PRESET_NEXT, ACT_PRESET_PREV,
@@ -106,6 +108,42 @@ enum ActionId : int {
     ACT_PATTERN_CURSOR_UP, ACT_PATTERN_CURSOR_DN,
     ACT_PRINT_HELP_STDOUT,
     ACT_QUIT,
+
+    // ── State snapshots (8 named slots, 1..8) ─────────────────────────
+    // Snapshot a complete parameter state (every continuous value +
+    // every layer enable bit) into a numbered slot, then recall it later.
+    // value passed to dispatch selects the slot (1..8); fractional values
+    // are floor'd.
+    ACT_SNAPSHOT_SAVE,
+    ACT_SNAPSHOT_RECALL,
+    ACT_SNAPSHOT_RECALL_LAST_STABLE,  // find newest STABLE-tagged slot
+    ACT_MATH_TOGGLE,    // toggle the Mathlab dashboard overlay
+    // Mathlab nav — fire from keyboard arrows / mouse / OSC. The host's
+    // apply_action wires these to Overlay::mathSelectPrev/Next and the
+    // currently-selected row's decrement/increment actions.
+    ACT_MATH_CURSOR_UP,
+    ACT_MATH_CURSOR_DN,
+    ACT_MATH_ADJUST_DEC,
+    ACT_MATH_ADJUST_INC,
+
+    // ── Math-derived meta-controls ─────────────────────────────────────
+    // These actions don't directly map to one parameter — they consume
+    // the math model (spectral radius, regime classifier, memory
+    // half-life) to control multiple parameters coherently.
+    ACT_DYN_HALFLIFE_AXIS,        // axis 0..1 → seconds (log mapped 0.05..10s)
+    ACT_DYN_HALFLIFE_BEATS_AXIS,  // axis 0..1 → beats (log mapped 0.125..16)
+    ACT_REGIME_DISTANCE_AXIS,     // 0 = deep STABLE, 1 = deep CHAOTIC
+    ACT_REGIME_SET,               // discrete: 0=STABLE, 1=TURBULENT, 2=CHAOTIC, 3=MARGINAL
+    ACT_REGIME_INVERT,            // discrete: cross nearest boundary
+    ACT_PAD_REGIME_X,             // radial compass: X axis (-1..+1)
+    ACT_PAD_REGIME_Y,             // radial compass: Y axis (-1..+1)
+    ACT_THEATER_FAILSAFE,         // toggle: auto-recover from DIVERGENT
+    ACT_MATH_ECHO_TOGGLE,         // toggle: outbound OSC of math metrics
+
+    // Ableton Link
+    ACT_LINK_TOGGLE,    // enable/disable Link network discovery
+    ACT_LINK_TAP,       // local tap-tempo into Link (ignored if disabled)
+    ACT_LINK_TRANSPORT, // toggle start/stop sync
 
     // ── V-4 effect slots (C4+) ───────────────────────────────────────
     ACT_VFX1_CYCLE_FWD, ACT_VFX1_CYCLE_BACK, ACT_VFX1_OFF,
@@ -185,7 +223,17 @@ enum BindSource : int {
     SRC_MIDI_CC,       // code = CC number,        modmask = channel (0 = omni)
     SRC_MIDI_CC14,     // code = CC MSB number,    modmask = channel (0 = omni)
     SRC_MIDI_NOTE,     // code = MIDI note number, modmask = channel (0 = omni)
+    SRC_OSC_F,         // OSC address dispatched as an axis (float 0..1 or signed)
+    SRC_OSC_TRIG,      // OSC address dispatched as discrete/trigger (>0.5 = press)
+    SRC_AUDIO,         // built-in audio analyzer; oscAddress = "rms"/"peak"/"low"/"mid"/"high"
+    SRC_LINK,          // Ableton Link beat/phase; oscAddress = "phase"/"beat"/"bpm"/"peers"
 };
+
+// Macros get synthetic ActionIds above this base. action_info() resolves
+// them to dynamically-registered entries via Input. The dispatch path
+// treats them as AK_DISCRETE; the apply_action handler in main.cpp
+// short-circuits to Input::fireMacroById().
+static constexpr int ACT_MACRO_BASE = 10000;
 
 // Gamepad binding context — what "mode" the controller is in. Keyboard
 // always uses CTX_ANY (keyboard is never contextually remapped).
@@ -233,6 +281,7 @@ struct Binding {
     bool      bipolar  = false;    // MIDI CC/CC14 absolute: 0..1 -> -1..+1
     bool      shifted  = false;    // MIDI note: require software Shift note held
     BindContext context = CTX_ANY; // gamepad only; keyboard ignores this
+    std::string oscAddress;        // SRC_OSC_*: literal OSC address (e.g. /cma/decay)
 };
 
 
@@ -248,6 +297,10 @@ struct ActionInfo {
 const ActionInfo* action_info(ActionId id);
 const ActionInfo* action_info_by_name(const char* name);
 
+// Lookup by table index (0..action_info_count()-1). Useful for iterating the
+// catalogue without re-querying by ActionId.
+const ActionInfo* action_info_by_index(int idx);
+
 // Total count of entries in the action_info table.
 int action_info_count();
 
@@ -262,6 +315,7 @@ enum UsageSource : int {
     USAGE_MIDI_CC,
     USAGE_GAMEPAD_BTN,
     USAGE_GAMEPAD_AXIS,
+    USAGE_OSC,
 };
 
 // Per-fire event for the optional usage logger. Channel is 0 for non-MIDI.
@@ -351,11 +405,73 @@ public:
     void setMidiLearn(bool enabled) { midiLearn_ = enabled; }
     bool sendMidiNote(int channel, int note, int velocity);
 
+    // OSC input — opens a UDP listener on the given port and dispatches
+    // incoming addresses through handler_ via the same [osc] bindings the
+    // INI parser populates. setOscPort(0) disables. Idempotent.
+    void pollOsc(float dt);
+    void setOscPort(int port) { oscPort_ = port; }
+    void setOscLearn(bool enabled) { oscLearn_ = enabled; }
+    int  oscPort() const { return oscPort_; }
+    bool oscLearn() const { return oscLearn_; }
+
+    // OSC echo (outbound) configuration. If host is non-empty and port>0,
+    // every action dispatch by ANY source emits an OSC message at
+    // /cma/echo/<action.name> for downstream listeners (TD UI mirror,
+    // multi-instance sync). Calls feedback_osc_set_echo() lazily.
+    void setOscEcho(const std::string& host, int port) {
+        oscEchoHost_ = host; oscEchoPort_ = port; oscEchoApplied_ = false;
+    }
+    const std::string& oscEchoHost() const { return oscEchoHost_; }
+    int  oscEchoPort() const { return oscEchoPort_; }
+    // Called internally on every dispatched action. Public so an
+    // external policy (e.g. only echo certain actions) can call it.
+    void echoActionDispatch(ActionId id, float value);
+
+    // Built-in audio reactivity. The audio engine writes RMS/peak/band
+    // values to global atomics; pollAudio() fires bound handlers each
+    // frame using those values. Bindings are written as:
+    //   dyn.decay.axis = audio:rms scale=2.0
+    //   color.sat.setAxis = audio:mid bipolar
+    void pollAudio(float dt);
+
+    // Ableton Link — dispatched by bindings of the form
+    //   action.name = link:phase   [scale=X]  ; 0..quantum, smooth sweep
+    //   action.name = link:beat                ; once per beat (trigger)
+    //   action.name = link:bpm                 ; tempo in BPM
+    //   action.name = link:peers               ; peer count
+    void pollLink(float dt);
+
+    // Hot reload: tracks the last loaded bindings file. tryReload()
+    // checks its mtime against a remembered value and, if newer,
+    // clears bindings, re-installs defaults, and re-runs loadIni.
+    // Safe to call every frame — internally rate-limited.
+    void rememberBindingsPath(const std::string& path);
+    bool tryReload(float dt);    // returns true if a reload happened
+    void requestReload() { reloadRequested_ = true; }
+
     // Low-level insert (used by installDefaults and loadIni).
     void bind(const Binding& b) { bindings_.push_back(b); }
 
     // Read-only access (help UI wants to print "Q/A  zoom" style rows).
     const std::vector<Binding>& bindings() const { return bindings_; }
+
+    // Action macros — fire a sequence of (action, value) pairs as one
+    // logical unit. Defined in bindings.ini's [macros] section as
+    //   macro.name = action1(v1) ; action2(v2) ; action3(v3) ; ...
+    // Bound from any source via the `macro:macro.name` pseudo-source,
+    // or invoked programmatically via fireMacro().
+    struct MacroStep { ActionId action; float value; };
+
+    // Register or update a macro. Returns the synthetic ActionId assigned
+    // to this macro (stable across re-registration of the same name).
+    ActionId registerMacro(const std::string& name, std::vector<MacroStep> steps);
+    bool fireMacro(const std::string& name);
+    void fireMacroById(ActionId id);
+    const std::vector<std::string>& macroNames() const { return macroNames_; }
+    const ActionInfo* macroInfoByIndex(int idx) const {
+        if (idx < 0 || idx >= (int)macroInfos_.size()) return nullptr;
+        return &macroInfos_[idx];
+    }
 
 private:
     std::vector<Binding> bindings_;
@@ -364,6 +480,30 @@ private:
     MidiState   midi_;
     std::string midiPortHint_;
     bool        midiLearn_ = false;
+    int         oscPort_   = 0;     // 0 = disabled
+    bool        oscLearn_  = false;
+    bool        oscOpened_ = false; // set after first successful open
+    int         oscFailedPort_ = 0; // latch: stop retrying after first failure
+
+    // Hot-reload bookkeeping
+    std::string bindingsPath_;      // set by loadIni / rememberBindingsPath
+    int64_t     bindingsMtime_ = 0; // last-known mtime in seconds (0 = never loaded)
+    float       reloadAccum_   = 0.0f; // accumulator: throttle stat() to 1 Hz
+    bool        reloadRequested_ = false; // set by SIGHUP handler
+
+    // OSC echo (outbound)
+    std::string oscEchoHost_;       // e.g. "127.0.0.1"
+    int         oscEchoPort_   = 0; // 0 = disabled
+    bool        oscEchoApplied_ = false; // lazy bind to feedback_osc_set_echo
+
+    // Macros — synthetic ActionId range starts at ACT_MACRO_BASE. The
+    // index into macroSteps_ + macroNames_ is (id - ACT_MACRO_BASE).
+    // macroInfos_ holds an ActionInfo per macro so action_info() can
+    // return a stable pointer.
+    std::vector<std::string>                macroNames_;
+    std::vector<std::vector<MacroStep>>     macroSteps_;
+    std::vector<ActionInfo>                 macroInfos_;
+    std::vector<std::string>                macroDescs_;  // backing storage for ActionInfo::desc
 };
 
 // Global instance; defined in input.cpp.

@@ -1,3 +1,48 @@
+# Crutchfield Machine
+
+A real-time implementation of the GPU video feedback engine described in
+James P. Crutchfield's "Space-time dynamics in video feedback" (Physica
+D 10, 229–245, 1984). The original paper modeled video feedback as a
+discrete-time iterated functional equation
+
+    I_{n+1}(x) = L · I_n(x) + s · f · I_n(b R x)
+
+with optional Gaussian diffusion and temporal averaging. The shader
+stack here implements that map directly: `L` ↔ `decay`, `s` ↔ `invert`,
+`f` ↔ `external`, `b` ↔ `zoom`, `R(φ)` ↔ `theta`, with Gaussian
+diffusion handled by `blurX`/`blurY`. The DYNAMICS cockpit is a
+semantic operator surface over the same parameter space, classifying the
+loop into fixed point / limit cycle / chaotic / quasi-attractor /
+divergent in the paper's language.
+
+Symbol mapping table: [CREDITS.md](CREDITS.md). Long-form grounding:
+[research/PHILOSOPHY.md](research/PHILOSOPHY.md). The paper itself is in
+`research/Crutchfield_1984_Vasulka.pdf`.
+
+## Features
+
+- [DYNAMICS cockpit](docs/features/DYNAMICS.md) · clickable operator
+  surface with regime classifier, walk-to-chaos, memory, jump buttons,
+  compass pad, snapshots, FAILSAFE, MATH ECHO
+- [Camera input](docs/features/CAMERA.md) · AVFoundation discovery with
+  iPhone Continuity Camera, USB webcams, OBS Virtual · `--camera <name>`
+- [MP4 recorder](docs/features/MP4_RECORDER.md) · hardware HEVC / H264 /
+  ProRes via VideoToolbox · `Cmd+R` or OSC `/cma/rec/mp4`
+- [EXR archive recorder](docs/features/EXR_RECORDER.md) · lossless
+  half-float per-frame image sequence · backtick or OSC
+- [Ableton Link](docs/features/ABLETON_LINK.md) · network-wide tempo
+  sync · `--link`
+- [Syphon](docs/features/SYPHON.md) · zero-copy GPU texture share to
+  Resolume, Mad Mapper, Isadora · `--syphon NAME`
+- [OSC echo](docs/features/OSC_ECHO.md) · publish action dispatches +
+  live math state for TouchDesigner / external controllers
+- [Snapshots](docs/features/MACROS_SNAPSHOTS.md) · save / recall
+  complete parameter sets, with regime tagging for FAILSAFE recall
+- [Audio reactivity](docs/features/AUDIO_REACTIVITY.md) · onset, BPM,
+  envelope follower modulation
+- [Hot reload](docs/features/HOT_RELOAD.md) · live shader and bindings
+  reload during a session
+
 # Video feedback — Windows build (RTX 3090), with an experimental Apple Silicon path
 
 <table>

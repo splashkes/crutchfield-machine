@@ -13,7 +13,14 @@ public:
     // Open the first available video device at approximately w×h.
     // Returns true on success. If there is no webcam, returns false and the
     // app runs without external input — the External layer simply becomes a no-op.
-    bool open(int w, int h);
+    // `match` (optional) is a case-insensitive substring filter against
+    // device localizedName / modelID / uniqueID — handy for "phone" picking
+    // Continuity Camera, or "facetime" forcing the built-in. nullptr = first.
+    bool open(int w, int h, const char* match = nullptr);
+
+    // Print every camera AVFoundation can see to stdout. macOS only; on
+    // other backends this is a no-op. Returns the count.
+    static int listDevices();
 
     // Non-blocking. Fills `rgb` (w*h*3 bytes, top-down) if a new frame is ready.
     // Returns true only when a new frame was actually captured this call.

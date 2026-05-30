@@ -12,22 +12,54 @@ BREW_PREFIX ?= $(shell brew --prefix 2>/dev/null || echo /opt/homebrew)
 CXX         ?= clang++
 ARCH        ?= arm64
 
+# Syphon is optional. Default ON if vendor/syphon/build/Release/
+# Syphon.framework exists; OFF otherwise. Override with SYPHON=0/1.
+SYPHON ?= $(shell test -d vendor/syphon/build/Release/Syphon.framework && echo 1 || echo 0)
+
 CXXFLAGS ?= -O3 -std=c++17 -Wall -Wextra -Wno-deprecated-declarations \
             -Wno-missing-field-initializers \
             -DGL_SILENCE_DEPRECATION -arch $(ARCH) -I$(BREW_PREFIX)/include \
-            -Ivendor/quickjs
+            -Ivendor/quickjs $(SYPHON_DEFS)
+
+# Ableton Link needs ASIO + a platform define. Build a separate flag set
+# for link_glue.o so the rest of the tree doesn't drag the Link headers.
+LINK_CXXFLAGS = $(CXXFLAGS) \
+                -Ivendor/link/include \
+                -Ivendor/link/modules/asio-standalone/asio/include \
+                -DLINK_PLATFORM_MACOSX=1 -DLINK_PLATFORM_UNIX=1 \
+                -DASIO_STANDALONE -DASIO_DISABLE_THREADS=0 \
+                -Wno-unused-but-set-variable -Wno-unused-variable \
+                -Wno-unused-parameter
 QJSFLAGS = -O3 -std=c99 -DCONFIG_VERSION="\"2025-04-26\"" \
            -Wno-sign-compare -Wno-unused-parameter -Wno-implicit-fallthrough \
            -Wno-array-bounds -Wno-format-truncation
 OBJCXXFLAGS ?= $(CXXFLAGS) -fobjc-arc
-LDFLAGS  ?= -arch $(ARCH) -L$(BREW_PREFIX)/lib
+ifeq ($(SYPHON),1)
+  SYPHON_FFLAGS = -F vendor/syphon/build/Release
+  SYPHON_LIBS   = -framework Syphon \
+                  -Xlinker -rpath -Xlinker @executable_path/Frameworks \
+                  -Xlinker -rpath -Xlinker $(CURDIR)/vendor/syphon/build/Release
+  SYPHON_DEFS   =
+else
+  SYPHON_FFLAGS =
+  SYPHON_LIBS   =
+  # CRUTCHFIELD_NO_SYPHON makes syphon_glue.h stub every entry point.
+  SYPHON_DEFS   = -DCRUTCHFIELD_NO_SYPHON
+endif
+
+LDFLAGS  ?= -arch $(ARCH) -L$(BREW_PREFIX)/lib $(SYPHON_FFLAGS)
 LDLIBS   ?= -lglfw -lGLEW -lz \
             -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo \
             -framework Foundation -framework AVFoundation -framework CoreMedia \
-            -framework CoreMIDI
+            -framework CoreMIDI \
+            $(SYPHON_LIBS)
 
 SRCS = main.cpp input.cpp camera_avfoundation.mm macOS/midi_coremidi.mm \
-       recorder.cpp overlay.cpp ui_panel.cpp music.cpp audio.cpp
+       recorder.cpp mp4_recorder.cpp overlay.cpp ui_panel.cpp music.cpp \
+       audio.cpp osc.cpp link_glue.cpp text_render.cpp
+ifeq ($(SYPHON),1)
+SRCS += syphon_glue.mm
+endif
 OBJS = $(SRCS:.cpp=.o)
 OBJS := $(OBJS:.mm=.o)
 QJS_SRCS = vendor/quickjs/quickjs.c vendor/quickjs/libregexp.c \
@@ -52,6 +84,15 @@ $(BIN): $(OBJS) $(QJS_OBJS)
 vendor/quickjs/%.o: vendor/quickjs/%.c
 	$(CC) $(QJSFLAGS) -Ivendor/quickjs -c -o $@ $<
 
+# link_glue.cpp gets a heavier flag set because it pulls in Link + ASIO.
+link_glue.o: link_glue.cpp link_glue.h
+	$(CXX) $(LINK_CXXFLAGS) -c -o $@ $<
+
+# Syphon glue is Objective-C++. -F points clang at the framework.
+# Only built when SYPHON=1 (auto-detected from vendor/syphon presence).
+syphon_glue.o: syphon_glue.mm syphon_glue.h
+	$(CXX) $(OBJCXXFLAGS) -F vendor/syphon/build/Release -c -o $@ $<
+
 dist: $(BIN)
 	rm -rf $(DIST_DIR) $(DIST_ZIP)
 	mkdir -p $(DIST_DIR)
@@ -62,7 +103,14 @@ dist: $(BIN)
 	cp -r js $(DIST_DIR)/
 	cp -r music $(DIST_DIR)/
 	@if [ -d samples ]; then cp -r samples $(DIST_DIR)/; fi
+	@if [ -d bindings.examples ]; then cp -r bindings.examples $(DIST_DIR)/; fi
 	cp README.md LICENSE CREDITS.md $(DIST_DIR)/
+	@# Bundle Syphon.framework next to the binary so --syphon works on
+	@# a fresh Mac without the user having to build the framework.
+	@if [ -d vendor/syphon/build/Release/Syphon.framework ]; then \
+		mkdir -p $(DIST_DIR)/Frameworks ; \
+		cp -R vendor/syphon/build/Release/Syphon.framework $(DIST_DIR)/Frameworks/ ; \
+	fi
 	ditto -c -k --sequesterRsrc --keepParent $(DIST_DIR) $(DIST_ZIP)
 
 clean:

@@ -137,19 +137,78 @@ static NSString* choosePreset(int w, int h) {
     return AVCaptureSessionPresetHigh;
 }
 
-static AVCaptureDevice* chooseDevice() {
-    AVCaptureDeviceDiscoverySession* ds =
-        [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:@[
+// Build the discovery type list. macOS 14+ has separate types for
+// External (regular USB cams), Continuity Camera (iPhone via Wi-Fi /
+// USB), and Desk View. On older releases we fall back to the deprecated
+// ExternalUnknown bucket. This is what lets Sean's iPhone show up at
+// all — the previous list excluded it entirely.
+static NSArray<AVCaptureDeviceType>* discoveryTypes() {
+    if (@available(macOS 14.0, *)) {
+        return @[
             AVCaptureDeviceTypeBuiltInWideAngleCamera,
-            AVCaptureDeviceTypeExternalUnknown
-        ]
-        mediaType:AVMediaTypeVideo
-        position:AVCaptureDevicePositionUnspecified];
+            AVCaptureDeviceTypeExternal,
+            AVCaptureDeviceTypeContinuityCamera,
+            AVCaptureDeviceTypeDeskViewCamera,
+        ];
+    }
+    return @[
+        AVCaptureDeviceTypeBuiltInWideAngleCamera,
+        AVCaptureDeviceTypeExternalUnknown,
+    ];
+}
 
+// Case-insensitive substring search across the user-facing name, model
+// ID, and unique ID. Either field hit = match. Empty/null `needle` =
+// always match.
+static bool deviceMatches(AVCaptureDevice* d, const char* needle) {
+    if (!needle || !*needle) return true;
+    NSString* n = [[NSString stringWithUTF8String:needle] lowercaseString];
+    NSString* a = [[d localizedName] lowercaseString];
+    NSString* b = [[d modelID] lowercaseString];
+    NSString* c = [[d uniqueID] lowercaseString];
+    return [a containsString:n] || [b containsString:n] || [c containsString:n];
+}
+
+static AVCaptureDevice* chooseDevice(const char* match) {
+    AVCaptureDeviceDiscoverySession* ds =
+        [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:discoveryTypes()
+                                                               mediaType:AVMediaTypeVideo
+                                                                position:AVCaptureDevicePositionUnspecified];
+
+    // First pass: honour the user filter strictly.
+    if (match && *match) {
+        for (AVCaptureDevice* d in ds.devices) {
+            if (deviceMatches(d, match)) return d;
+        }
+        std::fprintf(stderr,
+            "[camera] no device matched \"%s\" — falling back to first available\n",
+            match);
+    }
     for (AVCaptureDevice* d in ds.devices) {
         if (d) return d;
     }
     return [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+}
+
+int Camera::listDevices() {
+    @autoreleasepool {
+        AVCaptureDeviceDiscoverySession* ds =
+            [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:discoveryTypes()
+                                                                   mediaType:AVMediaTypeVideo
+                                                                    position:AVCaptureDevicePositionUnspecified];
+        int i = 0;
+        std::printf("camera devices visible to AVFoundation:\n");
+        for (AVCaptureDevice* d in ds.devices) {
+            std::printf("  [%d]  %s\n", i++, [[d localizedName] UTF8String]);
+            std::printf("        model:    %s\n", [[d modelID]       UTF8String]);
+            std::printf("        type:     %s\n", [[d deviceType]    UTF8String]);
+            std::printf("        uniqueID: %s\n", [[d uniqueID]      UTF8String]);
+        }
+        if (i == 0) std::printf("  (no devices found)\n");
+        std::printf("(%d device%s) — use --camera <substring> to pick one\n",
+                    i, i == 1 ? "" : "s");
+        return i;
+    }
 }
 
 Camera::Camera() {}
@@ -170,7 +229,7 @@ Camera::~Camera() {
     }
 }
 
-bool Camera::open(int w, int h) {
+bool Camera::open(int w, int h, const char* match) {
     @autoreleasepool {
         if (impl_) return true;
 
@@ -199,11 +258,14 @@ bool Camera::open(int w, int h) {
             }
         }
 
-        AVCaptureDevice* device = chooseDevice();
+        AVCaptureDevice* device = chooseDevice(match);
         if (!device) {
             std::fprintf(stderr, "[camera] no webcam found\n");
             return false;
         }
+        std::fprintf(stderr, "[camera] using \"%s\" (%s)\n",
+                     [[device localizedName] UTF8String],
+                     [[device modelID]       UTF8String]);
 
         NSError* err = nil;
         AVCaptureDeviceInput* input =

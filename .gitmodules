@@ -1,0 +1,6 @@
+[submodule "vendor/syphon"]
+	path = vendor/syphon
+	url = https://github.com/Syphon/Syphon-Framework.git
+[submodule "vendor/link"]
+	path = vendor/link
+	url = https://github.com/Ableton/link.git

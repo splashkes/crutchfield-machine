@@ -14,6 +14,17 @@ CXX      ?= g++
 CXXFLAGS ?= -O3 -std=c++17 -Wall -Wextra -Wno-missing-field-initializers \
             -pthread -DGLEW_STATIC -Ivendor/quickjs
 
+# Ableton Link bridge — heavier flag set, isolated to link_glue.o so
+# the rest of the project doesn't drag the Link headers. Falls back to
+# a stub if vendor/link/include/ableton/Link.hpp isn't reachable.
+LINK_CXXFLAGS = $(CXXFLAGS) \
+                -Ivendor/link/include \
+                -Ivendor/link/modules/asio-standalone/asio/include \
+                -DLINK_PLATFORM_WINDOWS=1 \
+                -DASIO_STANDALONE -DASIO_DISABLE_THREADS=0 \
+                -D_WIN32_WINNT=0x0601 \
+                -Wno-unused-parameter -Wno-unused-variable
+
 # QuickJS is pure C. Compile it with C99 (required by QuickJS) and suppress
 # warnings that fire from its internal patterns — the codebase uses a few
 # pragmas that trip -Wextra noisily but are correct (unused-params in
@@ -42,10 +53,11 @@ LDFLAGS   = -static -static-libgcc -static-libstdc++
 LDLIBS    = -Wl,-Bstatic -lglfw3 -lglew32 -lz -lwinpthread \
             -Wl,-Bdynamic -lopengl32 -lgdi32 \
             -lmfplat -lmfreadwrite -lmf -lmfuuid -lole32 -loleaut32 \
-            -lwinmm \
+            -lwinmm -lws2_32 -liphlpapi \
             -Wl,-Bstatic
 
-SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp ui_panel.cpp input.cpp music.cpp audio.cpp
+SRCS = main.cpp camera.cpp recorder.cpp overlay.cpp ui_panel.cpp input.cpp \
+       music.cpp audio.cpp osc.cpp link_glue.cpp
 OBJS = $(SRCS:.cpp=.o)
 
 # Vendored QuickJS — compiled as C99, separate rule below.
@@ -67,6 +79,10 @@ $(BIN): $(OBJS) $(QJS_OBJS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+# Override for link_glue.o — uses LINK_CXXFLAGS for ASIO + Link headers.
+link_glue.o: link_glue.cpp link_glue.h
+	$(CXX) $(LINK_CXXFLAGS) -c -o $@ $<
 
 vendor/quickjs/%.o: vendor/quickjs/%.c
 	$(CC) $(QJSFLAGS) -Ivendor/quickjs -c -o $@ $<
